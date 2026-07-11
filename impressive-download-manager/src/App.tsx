@@ -256,6 +256,16 @@ function App() {
     }
   };
 
+  // Trigger system folder picker GUI
+  const handlePickFolder = async () => {
+    try {
+      const chosen = await invoke<string>("select_folder");
+      setSavePath(chosen);
+    } catch (e) {
+      console.warn("Folder picker cancelled or failed:", e);
+    }
+  };
+
   // Controls bindings
   const handlePause = async (e: React.MouseEvent | null, id: String) => {
     if (e) e.stopPropagation();
@@ -375,26 +385,29 @@ function App() {
   // STANDALONE POPUP RENDER logic
   if (popupMode === "add") {
     return (
-      <div className="modal-content" style={{ width: "100vw", height: "100vh", borderRadius: 0, border: "none", padding: "20px" }}>
+      <div className="standalone-popup">
         <div className="modal-header">
-          <span className="modal-title">New Download Intercepted</span>
+          <span className="modal-title">New Download Captured</span>
         </div>
         <div className="form-group">
-          <span className="form-label">Download URL</span>
+          <span className="form-label">Source URL</span>
           <input type="text" className="form-input" value={popupUrl} onChange={(e) => setPopupUrl(e.target.value)} />
         </div>
         <div className="form-group">
-          <span className="form-label">Save Filename</span>
+          <span className="form-label">Save As Filename</span>
           <input type="text" className="form-input" value={popupFilename} onChange={(e) => setPopupFilename(e.target.value)} />
         </div>
         <div className="form-group">
-          <span className="form-label">Save Location</span>
-          <input type="text" className="form-input" value={savePath} onChange={(e) => setSavePath(e.target.value)} />
+          <span className="form-label">Save Folder Path</span>
+          <div style={{ display: "flex", gap: "8px" }}>
+            <input type="text" className="form-input" value={savePath} onChange={(e) => setSavePath(e.target.value)} />
+            <button className="action-btn" style={{ padding: "0 14px", height: "40px" }} onClick={handlePickFolder}>Browse</button>
+          </div>
         </div>
-        <div className="modal-actions" style={{ marginTop: "12px" }}>
+        <div className="modal-actions">
           <button className="action-btn" onClick={handleClosePopup}>Cancel</button>
           <button className="btn-add-download" style={{ padding: "8px 20px" }} onClick={handlePopupStartDownload} disabled={!popupUrl}>
-            <span>Download Now</span>
+            <span>Start Download</span>
           </button>
         </div>
       </div>
@@ -407,7 +420,7 @@ function App() {
       : 0;
 
     return (
-      <div className="modal-content" style={{ width: "100vw", height: "100vh", borderRadius: 0, border: "none", padding: "24px" }}>
+      <div className="standalone-popup">
         <div className="modal-header">
           <span className="modal-title" style={{ display: "flex", alignItems: "center", gap: "8px" }}>
             <Activity size={18} color="var(--accent-cyan)" />
@@ -415,25 +428,25 @@ function App() {
           </span>
         </div>
         {popupProgress ? (
-          <div style={{ display: "flex", flexDirection: "column", gap: "14px" }}>
-            <span className="file-name" style={{ fontSize: "0.95rem", fontWeight: 600, color: "var(--text-primary)" }}>
+          <div style={{ display: "flex", flexDirection: "column", gap: "12px", height: "100%" }}>
+            <div className="file-display-box" title={popupProgress.filename}>
               {popupProgress.filename}
-            </span>
-            <div className="progress-container" style={{ gap: "8px" }}>
-              <div className="progress-bar-track" style={{ height: "8px" }}>
+            </div>
+            <div className="progress-container">
+              <div className="progress-bar-track" style={{ height: "6px" }}>
                 <div 
                   className={`progress-bar-fill ${getStatusText(popupProgress.status) === "Paused" ? "paused" : ""}`}
                   style={{ width: `${progressPercent}%` }}
                 />
               </div>
-              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "10px", fontSize: "0.85rem", color: "var(--text-secondary)" }}>
+              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "8px", marginTop: "12px", fontSize: "0.78rem", color: "var(--text-secondary)" }}>
                 <div>Progress: <span style={{ color: "var(--text-primary)", fontWeight: 600 }}>{progressPercent}%</span></div>
                 <div style={{ textAlign: "right" }}>Speed: <span style={{ color: "var(--accent-cyan)", fontWeight: 600 }}>{formatBytes(popupProgress.speed)}/s</span></div>
                 <div>Downloaded: <span style={{ color: "var(--text-primary)", fontWeight: 600 }}>{formatBytes(popupProgress.downloaded)}</span> of {popupProgress.total_size > 0 ? formatBytes(popupProgress.total_size) : "Dynamic Size"}</div>
                 <div style={{ textAlign: "right" }}>ETA: <span style={{ color: "var(--text-primary)", fontWeight: 600 }}>{popupProgress.eta}</span></div>
               </div>
             </div>
-            <div className="modal-actions" style={{ borderTop: "1px solid var(--border-color)", paddingTop: "14px" }}>
+            <div className="modal-actions">
               {getStatusText(popupProgress.status) === "Downloading" ? (
                 <button className="action-btn" onClick={() => handlePause(null, popupProgress.id)}>
                   <Pause size={14} />
@@ -452,7 +465,7 @@ function App() {
             </div>
           </div>
         ) : (
-          <div style={{ padding: "20px 0", color: "var(--text-secondary)" }}>Connecting to engine...</div>
+          <div style={{ padding: "20px 0", color: "var(--text-secondary)", fontSize: "0.85rem" }}>Connecting to backend...</div>
         )}
       </div>
     );
@@ -460,26 +473,26 @@ function App() {
 
   if (popupMode === "complete") {
     return (
-      <div className="modal-content" style={{ width: "100vw", height: "100vh", borderRadius: 0, border: "none", padding: "24px" }}>
+      <div className="standalone-popup">
         <div className="modal-header">
           <span className="modal-title" style={{ display: "flex", alignItems: "center", gap: "8px", color: "var(--accent-green)" }}>
             <CheckCircle size={20} />
             Download Complete!
           </span>
         </div>
-        <div style={{ display: "flex", flexDirection: "column", gap: "10px", margin: "8px 0" }}>
-          <span style={{ fontSize: "0.95rem", fontWeight: 600, color: "var(--text-primary)", wordBreak: "break-all" }}>
+        <div style={{ display: "flex", flexDirection: "column", gap: "10px", height: "100%" }}>
+          <div className="file-display-box" style={{ background: "rgba(16, 185, 129, 0.03)", borderColor: "rgba(16, 185, 129, 0.15)" }}>
             {popupFilename}
-          </span>
-          <p style={{ fontSize: "0.85rem", color: "var(--text-secondary)", margin: 0 }}>
-            The file was downloaded successfully and saved to your default destination directory.
+          </div>
+          <p style={{ fontSize: "0.8rem", color: "var(--text-secondary)", margin: "4px 0 0 0" }}>
+            The file was downloaded successfully and saved to your destination directory.
           </p>
-        </div>
-        <div className="modal-actions" style={{ borderTop: "1px solid var(--border-color)", paddingTop: "14px" }}>
-          <button className="action-btn" style={{ background: "rgba(16, 185, 129, 0.1)", borderColor: "rgba(16, 185, 129, 0.2)", color: "var(--accent-green)" }} onClick={handleClosePopup}>
-            <CheckCircle size={14} />
-            <span>OK / Close</span>
-          </button>
+          <div className="modal-actions">
+            <button className="action-btn" style={{ background: "rgba(16, 185, 129, 0.1)", borderColor: "rgba(16, 185, 129, 0.2)", color: "var(--accent-green)" }} onClick={handleClosePopup}>
+              <CheckCircle size={14} />
+              <span>Dismiss</span>
+            </button>
+          </div>
         </div>
       </div>
     );
@@ -901,13 +914,16 @@ function App() {
 
             <div className="form-group">
               <span className="form-label">Save Location</span>
-              <input
-                type="text"
-                placeholder="Enter absolute directory path..."
-                className="form-input"
-                value={savePath}
-                onChange={(e) => setSavePath(e.target.value)}
-              />
+              <div style={{ display: "flex", gap: "8px" }}>
+                <input
+                  type="text"
+                  placeholder="Enter absolute directory path..."
+                  className="form-input"
+                  value={savePath}
+                  onChange={(e) => setSavePath(e.target.value)}
+                />
+                <button className="action-btn" style={{ padding: "0 14px", height: "46px" }} onClick={handlePickFolder}>Browse</button>
+              </div>
             </div>
 
             <div className="modal-actions">

@@ -935,3 +935,94 @@
   from { transform: translateY(-30px); opacity: 0; }
   to { transform: translateY(0); opacity: 1; }
 }
+
+/* Standalone Window Layouts */
+.standalone-popup {
+  width: 100vw;
+  height: 100vh;
+  display: flex;
+  flex-direction: column;
+  background: radial-gradient(circle at 50% 0%, rgba(26, 31, 46, 0.98), rgba(12, 14, 18, 0.99));
+  padding: 16px 20px;
+  color: var(--text-primary);
+  box-sizing: border-box;
+  overflow: hidden;
+  user-select: none;
+  font-family: 'Inter', system-ui, -apple-system, sans-serif;
+  border: 1px solid rgba(255, 255, 255, 0.05);
+}
+
+.standalone-popup .modal-header {
+  margin-bottom: 12px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+  padding-bottom: 8px;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.standalone-popup .modal-title {
+  font-size: 1.05rem;
+  font-weight: 700;
+  letter-spacing: -0.01em;
+  background: linear-gradient(135deg, #ffffff 0%, var(--text-secondary) 100%);
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+}
+
+.standalone-popup .form-group {
+  gap: 4px;
+  margin-bottom: 10px;
+}
+
+.standalone-popup .form-label {
+  font-size: 0.78rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  color: var(--text-muted);
+}
+
+.standalone-popup .form-input {
+  background: rgba(255, 255, 255, 0.01);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 8px;
+  padding: 10px 12px;
+  font-size: 0.85rem;
+  transition: all 0.25s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+.standalone-popup .form-input:focus {
+  border-color: var(--accent-cyan);
+  background: rgba(255, 255, 255, 0.02);
+  box-shadow: 0 0 10px rgba(0, 240, 255, 0.15);
+}
+
+.standalone-popup .modal-actions {
+  margin-top: auto;
+  padding-top: 12px;
+  border-top: 1px solid rgba(255, 255, 255, 0.06);
+  display: flex;
+  justify-content: flex-end;
+  gap: 12px;
+}
+
+.standalone-popup .progress-container {
+  background: rgba(255, 255, 255, 0.01);
+  border: 1px solid rgba(255, 255, 255, 0.04);
+  border-radius: 12px;
+  padding: 14px;
+  margin-top: 4px;
+}
+
+.standalone-popup .file-display-box {
+  background: rgba(255, 255, 255, 0.02);
+  border: 1px solid rgba(255, 255, 255, 0.05);
+  border-radius: 8px;
+  padding: 10px;
+  font-size: 0.82rem;
+  color: var(--text-primary);
+  line-height: 1.4;
+  word-break: break-all;
+}
+

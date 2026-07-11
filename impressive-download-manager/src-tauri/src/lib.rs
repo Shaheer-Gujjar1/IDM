@@ -39,6 +39,19 @@ async fn cancel_download(
 }
 
 #[tauri::command]
+async fn select_folder() -> Result<String, String> {
+    let folder = rfd::AsyncFileDialog::new()
+        .pick_folder()
+        .await;
+    
+    if let Some(path) = folder {
+        Ok(path.path().to_string_lossy().to_string())
+    } else {
+        Err("Cancelled".to_string())
+    }
+}
+
+#[tauri::command]
 async fn open_progress_window(app_handle: tauri::AppHandle, id: String) -> Result<(), String> {
     let progress_url = format!("/index.html?popup=progress&id={}", id);
     
@@ -49,7 +62,8 @@ async fn open_progress_window(app_handle: tauri::AppHandle, id: String) -> Resul
         tauri::WebviewUrl::App(progress_url.into()),
     )
     .title("Downloading...")
-    .inner_size(550.0, 240.0)
+    .inner_size(520.0, 260.0)
+    .center()
     .resizable(false)
     .build()
     .map_err(|e| e.to_string())?;
@@ -72,7 +86,8 @@ async fn open_complete_window(app_handle: tauri::AppHandle, filename: String) ->
         tauri::WebviewUrl::App(complete_url.into()),
     )
     .title("Download Finished")
-    .inner_size(500.0, 200.0)
+    .inner_size(500.0, 220.0)
+    .center()
     .resizable(false)
     .build()
     .map_err(|e| e.to_string())?;
@@ -84,6 +99,32 @@ async fn open_complete_window(app_handle: tauri::AppHandle, filename: String) ->
 async fn close_window(window: tauri::Window) -> Result<(), String> {
     let _ = window.close();
     Ok(())
+}
+
+fn parse_content_disposition(value: &str) -> Option<String> {
+    if let Some(pos) = value.find("filename=") {
+        let mut filename = value[pos + 9..].trim().to_string();
+        if let Some(semi) = filename.find(';') {
+            filename = filename[..semi].trim().to_string();
+        }
+        if filename.starts_with('"') && filename.ends_with('"') {
+            filename = filename[1..filename.len() - 1].to_string();
+        }
+        return Some(filename);
+    }
+    if let Some(pos) = value.find("filename*=") {
+        let mut filename = value[pos + 10..].trim().to_string();
+        if let Some(semi) = filename.find(';') {
+            filename = filename[..semi].trim().to_string();
+        }
+        if filename.to_lowercase().starts_with("utf-8''") {
+            filename = filename[7..].to_string();
+        }
+        if let Ok(decoded) = urlencoding::decode(&filename) {
+            return Some(decoded.to_string());
+        }
+    }
+    None
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -156,21 +197,48 @@ pub fn run() {
 
                                         let body_clean = body.trim_end_matches('\0').trim();
                                         if let Ok(payload) = serde_json::from_str::<DownloadPayload>(body_clean) {
+                                            // Resolve real filename via fast HTTP HEAD inspection
+                                            let mut filename = payload.filename.clone();
+                                            let client = reqwest::Client::builder()
+                                                .redirect(reqwest::redirect::Policy::limited(10))
+                                                .build()
+                                                .unwrap_or_default();
+
+                                            if let Ok(res) = client.head(&payload.url).timeout(std::time::Duration::from_secs(2)).send().await {
+                                                if let Some(cd_val) = res.headers().get(reqwest::header::CONTENT_DISPOSITION).and_then(|h| h.to_str().ok()) {
+                                                    if let Some(parsed) = parse_content_disposition(cd_val) {
+                                                        filename = parsed;
+                                                    }
+                                                }
+
+                                                let has_hash_filename = filename.chars().all(|c| c.is_numeric() || c.is_ascii_lowercase()) && filename.len() > 10;
+                                                if has_hash_filename || filename == "download" || filename == "captured_download" {
+                                                    let final_url = res.url().as_str();
+                                                    if let Ok(parsed_url) = reqwest::Url::parse(final_url) {
+                                                        if let Some(last_seg) = parsed_url.path_segments().and_then(|s| s.last()) {
+                                                            if !last_seg.is_empty() && last_seg != "download" {
+                                                                filename = last_seg.to_string();
+                                                            }
+                                                        }
+                                                    }
+                                                }
+                                            }
+
                                             // Spawn native popup-add window pre-filled with payload
                                             let add_url = format!(
                                                 "/index.html?popup=add&url={}&filename={}",
                                                 urlencoding::encode(&payload.url),
-                                                urlencoding::encode(&payload.filename)
+                                                urlencoding::encode(&filename)
                                             );
                                             
-                                            let app_handle_clone = app_handle.clone();
                                             let _ = tauri::WebviewWindowBuilder::new(
-                                                &app_handle_clone,
+                                                &app_handle,
                                                 "popup-add",
                                                 tauri::WebviewUrl::App(add_url.into()),
                                             )
                                             .title("New Download")
-                                            .inner_size(500.0, 320.0)
+                                            .inner_size(520.0, 360.0)
+                                            .center()
                                             .resizable(false)
                                             .build();
                                             
@@ -202,6 +270,7 @@ pub fn run() {
             pause_download,
             resume_download,
             cancel_download,
+            select_folder,
             open_progress_window,
             open_complete_window,
             close_window
