@@ -1,0 +1,197 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <style>
+    @import url('https://fonts.googleapis.com/css2?family=Outfit:wght@400;600;700&display=swap');
+    
+    body {
+      font-family: 'Outfit', sans-serif;
+      width: 340px;
+      margin: 0;
+      padding: 16px;
+      background: #06070a;
+      color: #f8fafc;
+      overflow-x: hidden;
+      user-select: none;
+    }
+    
+    .header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+      padding-bottom: 12px;
+      margin-bottom: 16px;
+    }
+    
+    .brand {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+    
+    .brand-logo {
+      background: linear-gradient(135deg, #00f0ff, #8b5cf6);
+      width: 24px;
+      height: 24px;
+      border-radius: 6px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-weight: 800;
+      color: #06070a;
+      font-size: 14px;
+    }
+    
+    .brand-title {
+      font-weight: 700;
+      font-size: 15px;
+      background: linear-gradient(120deg, #ffffff, #94a3b8);
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+    }
+    
+    .connection-status {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      font-size: 11px;
+      color: #94a3b8;
+    }
+    
+    .status-dot {
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      background: #ef4444; /* red by default */
+      box-shadow: 0 0 8px rgba(239, 68, 68, 0.5);
+      transition: all 0.3s ease;
+    }
+    
+    .status-dot.connected {
+      background: #10b981;
+      box-shadow: 0 0 8px rgba(16, 185, 129, 0.5);
+    }
+    
+    .link-list {
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+      max-height: 240px;
+      overflow-y: auto;
+    }
+    
+    .link-item {
+      background: rgba(18, 22, 32, 0.6);
+      border: 1px solid rgba(255, 255, 255, 0.06);
+      border-radius: 8px;
+      padding: 10px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      transition: all 0.2s ease;
+    }
+    
+    .link-item:hover {
+      border-color: rgba(255, 255, 255, 0.12);
+      background: rgba(26, 32, 46, 0.7);
+    }
+    
+    .link-info {
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+      min-width: 0;
+      flex: 1;
+    }
+    
+    .link-name {
+      font-size: 12px;
+      font-weight: 600;
+      color: #f8fafc;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    
+    .link-type {
+      font-size: 10px;
+      color: #00f0ff;
+      text-transform: uppercase;
+      font-weight: 600;
+    }
+    
+    .btn-send {
+      background: linear-gradient(135deg, #00f0ff, #8b5cf6);
+      border: none;
+      color: #06070a;
+      border-radius: 6px;
+      padding: 6px 10px;
+      font-size: 11px;
+      font-weight: 700;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      gap: 4px;
+      transition: all 0.25s ease;
+    }
+    
+    .btn-send:hover {
+      filter: brightness(1.15);
+      box-shadow: 0 0 10px rgba(0, 240, 255, 0.45);
+    }
+    
+    .empty-state {
+      text-align: center;
+      padding: 30px 10px;
+      color: #94a3b8;
+      font-size: 12px;
+    }
+    
+    .btn-add-manually {
+      width: 100%;
+      background: rgba(255, 255, 255, 0.03);
+      border: 1px solid rgba(255, 255, 255, 0.08);
+      border-radius: 8px;
+      color: #f8fafc;
+      padding: 8px;
+      font-size: 12px;
+      font-weight: 600;
+      cursor: pointer;
+      margin-top: 14px;
+      transition: all 0.2s ease;
+    }
+    
+    .btn-add-manually:hover {
+      background: rgba(255, 255, 255, 0.06);
+      border-color: rgba(255, 255, 255, 0.15);
+    }
+  </style>
+</head>
+<body>
+  <div class="header">
+    <div class="brand">
+      <div class="brand-logo">↓</div>
+      <span class="brand-title">Impressive DM</span>
+    </div>
+    <div class="connection-status">
+      <span class="status-dot" id="status-dot"></span>
+      <span id="status-text">Checking app...</span>
+    </div>
+  </div>
+
+  <div style="font-size: 11px; text-transform: uppercase; color: #475569; font-weight: 700; margin-bottom: 10px; letter-spacing: 0.5px;">
+    Captured Media Links
+  </div>
+
+  <div class="link-list" id="link-list">
+    <!-- Links populated dynamically -->
+  </div>
+
+  <button class="btn-add-manually" id="btn-add-manually">Send Current Tab to App</button>
+  
+  <script src="popup.js"></script>
+</body>
+</html>
