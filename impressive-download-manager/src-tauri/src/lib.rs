@@ -1,7 +1,7 @@
 mod engine;
 
 use std::sync::Arc;
-use tauri::{State, Manager};
+use tauri::State;
 use engine::DownloadManager;
 
 #[tauri::command]
@@ -50,13 +50,14 @@ pub fn run() {
         .setup(move |app| {
             let handle = app.handle().clone();
             let manager = manager_for_setup;
-            // Bind the app handle so we can stream progress events to frontend windows
-            tokio::spawn(async move {
+            
+            // Spawn app handle binding on Tauri's async runtime
+            tauri::async_runtime::spawn(async move {
                 manager.set_app_handle(handle).await;
             });
 
-            // Start local capture server listening on port 9600 for browser integrations
-            tokio::spawn(async move {
+            // Spawn local capture server on Tauri's async runtime
+            tauri::async_runtime::spawn(async move {
                 let listener = match tokio::net::TcpListener::bind("127.0.0.1:9600").await {
                     Ok(l) => l,
                     Err(e) => {
@@ -68,7 +69,7 @@ pub fn run() {
                 loop {
                     if let Ok((mut stream, _)) = listener.accept().await {
                         let manager = manager_for_server.clone();
-                        tokio::spawn(async move {
+                        tauri::async_runtime::spawn(async move {
                             use tokio::io::{AsyncReadExt, AsyncWriteExt};
                             let mut buffer = vec![0; 4096];
                             if let Ok(n) = stream.read(&mut buffer).await {

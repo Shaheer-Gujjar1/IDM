@@ -128,7 +128,7 @@ impl DownloadManager {
 
         // Pre-allocate file space
         {
-            let mut file = OpenOptions::new()
+            let file = OpenOptions::new()
                 .write(true)
                 .create(true)
                 .truncate(true)
@@ -142,9 +142,6 @@ impl DownloadManager {
 
         let mut workers = vec![];
         let abort_tx = task.abort_tx.as_ref().unwrap();
-
-        let start_time = Instant::now();
-        let last_downloaded = Arc::new(AtomicU64::new(0));
 
         // Spawn speed & progress reporter loop
         let id_clone = task.id.clone();
