@@ -49,26 +49,24 @@ interface Category {
   icon: React.ReactNode;
 }
 
-interface InterceptedPayload {
-  url: string;
-  filename: string;
-}
-
 function App() {
+  // Query routing state
+  const [popupMode, setPopupMode] = useState<string | null>(null);
+  const [popupUrl, setPopupUrl] = useState("");
+  const [popupFilename, setPopupFilename] = useState("");
+  const [popupTaskId, setPopupTaskId] = useState<string | null>(null);
+  const [popupProgress, setPopupProgress] = useState<DownloadProgress | null>(null);
+
+  // Main Dashboard State
   const [activeCategory, setActiveCategory] = useState("all");
   const [searchQuery, setSearchQuery] = useState("");
   const [downloads, setDownloads] = useState<DownloadProgress[]>([]);
 
-  // Popup Modals Chain State
+  // Modal State (Manual Trigger)
   const [showAddModal, setShowAddModal] = useState(false);
   const [inputUrl, setInputUrl] = useState("");
   const [customFilename, setCustomFilename] = useState("");
   const [savePath, setSavePath] = useState("/home/shaheer/Downloads/");
-
-  // Task currently displaying inside active Progress (Popup 2) or Completion (Popup 3) dialogs
-  const [activePopupTaskId, setActivePopupTaskId] = useState<String | null>(null);
-  const [showCompleteModal, setShowCompleteModal] = useState(false);
-  const [completedTaskName, setCompletedTaskName] = useState("");
 
   // Drawer State
   const [selectedTask, setSelectedTask] = useState<DownloadProgress | null>(null);
@@ -133,29 +131,48 @@ function App() {
     }
   };
 
-  // Listen to Tauri events (intercept and progress)
+  // Initialization query-param routing
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    const mode = params.get("popup");
+    if (mode) {
+      setPopupMode(mode);
+      if (mode === "add") {
+        setPopupUrl(params.get("url") || "");
+        setPopupFilename(params.get("filename") || "");
+      } else if (mode === "progress") {
+        setPopupTaskId(params.get("id"));
+      } else if (mode === "complete") {
+        setPopupFilename(params.get("filename") || "");
+      }
+    }
+  }, []);
+
+  // Set up listeners for main window dashboard and standalone progress popups
   useEffect(() => {
     let unlistenProgress: (() => void) | undefined;
     let unlistenIntercept: (() => void) | undefined;
 
     async function setupListeners() {
-      // Listen to progress updates
+      // Live progress events
       unlistenProgress = await listen<DownloadProgress>("download-progress", (event) => {
+        // If we are in Popup 2 (standalone progress window), update its state
+        if (popupMode === "progress" && popupTaskId === event.payload.id) {
+          setPopupProgress(event.payload);
+          
+          // If task completed, trigger Popup 3 (Complete window) and close progress window
+          if (event.payload.status === "Completed") {
+            invoke("open_complete_window", { filename: event.payload.filename });
+            invoke("close_window");
+          }
+          return;
+        }
+
+        // Otherwise update dashboard downloads list
         setDownloads((prev) => {
           const index = prev.findIndex((d) => d.id === event.payload.id);
           const updated = [...prev];
-          
           if (index !== -1) {
-            const prevStatus = prev[index].status;
-            const nextStatus = event.payload.status;
-            
-            // Check if active popup task completed
-            if (activePopupTaskId === event.payload.id && prevStatus !== "Completed" && nextStatus === "Completed") {
-              setActivePopupTaskId(null); // Close Popup 2
-              setCompletedTaskName(event.payload.filename);
-              setShowCompleteModal(true); // Open Popup 3
-            }
-
             updated[index] = { ...prev[index], ...event.payload };
             return updated;
           } else {
@@ -164,13 +181,14 @@ function App() {
         });
       });
 
-      // Listen to automatic browser interceptions
-      unlistenIntercept = await listen<InterceptedPayload>("download-intercepted", (event) => {
-        // Trigger Popup 1 immediately
-        setInputUrl(event.payload.url);
-        setCustomFilename(event.payload.filename);
-        setShowAddModal(true);
-      });
+      // Browser automatic interception (only listened to on the main dashboard window)
+      if (!popupMode) {
+        unlistenIntercept = await listen<{ url: string; filename: string }>("download-intercepted", (event) => {
+          setInputUrl(event.payload.url);
+          setCustomFilename(event.payload.filename);
+          setShowAddModal(true);
+        });
+      }
     }
 
     setupListeners().catch(console.error);
@@ -179,9 +197,9 @@ function App() {
       if (unlistenProgress) unlistenProgress();
       if (unlistenIntercept) unlistenIntercept();
     };
-  }, [activePopupTaskId]);
+  }, [popupMode, popupTaskId]);
 
-  // Submit start download
+  // Submit start download from main window modal
   const handleStartDownload = async () => {
     if (!inputUrl) return;
     const finalFilename = customFilename || extractFilename(inputUrl);
@@ -194,7 +212,6 @@ function App() {
         savePath: finalSavePath,
       });
 
-      // Add task locally with queued status immediately
       const newTask: DownloadProgress = {
         id,
         filename: finalFilename,
@@ -208,70 +225,77 @@ function App() {
       };
 
       setDownloads((prev) => [newTask, ...prev]);
-      
-      // Transition popups: Hide Popup 1 (Add Modal), show Popup 2 (Progress Modal)
       setShowAddModal(false);
-      setActivePopupTaskId(id);
-
       setInputUrl("");
       setCustomFilename("");
+
+      // Open standalone progress window for this task
+      await invoke("open_progress_window", { id });
     } catch (e) {
       console.error("Failed to start download:", e);
     }
   };
 
-  // Action Triggers
+  // Submit start download from Popup 1 (Standalone Add window)
+  const handlePopupStartDownload = async () => {
+    if (!popupUrl) return;
+    const finalFilename = popupFilename || extractFilename(popupUrl);
+    const finalSavePath = `${savePath.endsWith("/") ? savePath : savePath + "/"}${finalFilename}`;
+
+    try {
+      const id = await invoke<string>("start_download", {
+        url: popupUrl,
+        filename: finalFilename,
+        savePath: finalSavePath,
+      });
+
+      // Open standalone Progress window (Popup 2), which closes this Add window
+      await invoke("open_progress_window", { id });
+    } catch (e) {
+      console.error("Failed to start popup download:", e);
+    }
+  };
+
+  // Controls bindings
   const handlePause = async (e: React.MouseEvent | null, id: String) => {
     if (e) e.stopPropagation();
-    if (id.startsWith("mock")) {
-      setDownloads((prev) =>
-        prev.map((d) => (d.id === id ? { ...d, status: "Paused", speed: 0, eta: "---" } : d))
-      );
-      return;
-    }
     try {
       await invoke("pause_download", { id });
-    } catch (e) {
-      console.error("Pause failed:", e);
+    } catch (err) {
+      console.error(err);
     }
   };
 
   const handleResume = async (e: React.MouseEvent | null, id: String) => {
     if (e) e.stopPropagation();
-    if (id.startsWith("mock")) {
-      setDownloads((prev) =>
-        prev.map((d) => (d.id === id ? { ...d, status: "Downloading", speed: 8524102, eta: "5s" } : d))
-      );
-      return;
-    }
     try {
       await invoke("resume_download", { id });
-    } catch (e) {
-      console.error("Resume failed:", e);
+    } catch (err) {
+      console.error(err);
     }
   };
 
   const handleCancel = async (e: React.MouseEvent | null, id: String) => {
     if (e) e.stopPropagation();
-    if (selectedTask?.id === id) {
-      setSelectedTask(null);
-    }
-    if (activePopupTaskId === id) {
-      setActivePopupTaskId(null);
-    }
-    if (id.startsWith("mock")) {
-      setDownloads((prev) => prev.filter((d) => d.id !== id));
-      return;
-    }
+    if (selectedTask?.id === id) setSelectedTask(null);
     try {
       await invoke("cancel_download", { id });
       setDownloads((prev) => prev.filter((d) => d.id !== id));
-    } catch (e) {
-      console.error("Cancel failed:", e);
+      
+      // If we are cancel-closing the standalone progress window, close this window
+      if (popupMode === "progress") {
+        await invoke("close_window");
+      }
+    } catch (err) {
+      console.error(err);
     }
   };
 
-  // Helper to format file sizes
+  const handleClosePopup = async () => {
+    await invoke("close_window");
+  };
+
+  // Helpers
   const formatBytes = (bytes: number): string => {
     if (bytes === 0) return "0 Bytes";
     const k = 1024;
@@ -280,20 +304,16 @@ function App() {
     return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + " " + sizes[i];
   };
 
-  // Helper to resolve icon by extension
   const getFileIcon = (filename: string) => {
     const ext = filename.split(".").pop()?.toLowerCase();
     if (!ext) return <File size={22} />;
-    
     if (["mp4", "mkv", "avi", "mov", "flv", "webm"].includes(ext)) return <Film size={22} />;
     if (["mp3", "wav", "aac", "flac", "m4a", "ogg"].includes(ext)) return <Music size={22} />;
     if (["pdf", "docx", "doc", "txt", "xlsx", "pptx", "epub"].includes(ext)) return <FileText size={22} />;
     if (["zip", "rar", "7z", "tar", "gz", "bz2"].includes(ext)) return <Archive size={22} />;
-    
     return <File size={22} />;
   };
 
-  // Categorize standard extensions
   const getFileCategory = (filename: string): string => {
     const ext = filename.split(".").pop()?.toLowerCase();
     if (!ext) return "other";
@@ -304,7 +324,6 @@ function App() {
     return "other";
   };
 
-  // Helper to resolve status string
   const getStatusText = (status: DownloadStatus): string => {
     if (typeof status === "string") return status;
     if (status && typeof status === "object" && "Failed" in status) {
@@ -313,27 +332,16 @@ function App() {
     return "Unknown";
   };
 
-  // Filtering Logic
   const filteredDownloads = downloads.filter((d) => {
-    // Search filter
-    if (searchQuery && !d.filename.toLowerCase().includes(searchQuery.toLowerCase())) {
-      return false;
-    }
-
-    // Category filter
+    if (searchQuery && !d.filename.toLowerCase().includes(searchQuery.toLowerCase())) return false;
     const statusText = getStatusText(d.status);
     if (activeCategory === "all") return true;
     if (activeCategory === "downloading") return statusText === "Downloading" || statusText === "Queued";
     if (activeCategory === "completed") return statusText === "Completed";
     if (activeCategory === "paused") return statusText === "Paused";
-    if (activeCategory === "trash") return false;
-
-    // File type filters
-    const cat = getFileCategory(d.filename);
-    return cat === activeCategory;
+    return getFileCategory(d.filename) === activeCategory;
   });
 
-  // Calculate dynamic menu counters
   const getCount = (catId: string): number => {
     return downloads.filter((d) => {
       const statusText = getStatusText(d.status);
@@ -341,13 +349,10 @@ function App() {
       if (catId === "downloading") return statusText === "Downloading" || statusText === "Queued";
       if (catId === "completed") return statusText === "Completed";
       if (catId === "paused") return statusText === "Paused";
-      if (catId === "trash") return 0;
-      
       return getFileCategory(d.filename) === catId;
     }).length;
   };
 
-  // Layout Categories
   const mainCategories: Category[] = [
     { id: "all", name: "All Downloads", icon: <Layers size={18} /> },
     { id: "downloading", name: "Downloading", icon: <Activity size={18} /> },
@@ -363,14 +368,124 @@ function App() {
     { id: "archives", name: "Archives", icon: <Archive size={16} /> },
   ];
 
-  // Calculate total speed of active downloads
   const totalSpeed = downloads
     .filter((d) => getStatusText(d.status) === "Downloading")
     .reduce((sum, d) => sum + d.speed, 0);
 
-  // Retrieve current active progress task details for Popup 2
-  const activePopupTask = downloads.find((d) => d.id === activePopupTaskId);
+  // STANDALONE POPUP RENDER logic
+  if (popupMode === "add") {
+    return (
+      <div className="modal-content" style={{ width: "100vw", height: "100vh", borderRadius: 0, border: "none", padding: "20px" }}>
+        <div className="modal-header">
+          <span className="modal-title">New Download Intercepted</span>
+        </div>
+        <div className="form-group">
+          <span className="form-label">Download URL</span>
+          <input type="text" className="form-input" value={popupUrl} onChange={(e) => setPopupUrl(e.target.value)} />
+        </div>
+        <div className="form-group">
+          <span className="form-label">Save Filename</span>
+          <input type="text" className="form-input" value={popupFilename} onChange={(e) => setPopupFilename(e.target.value)} />
+        </div>
+        <div className="form-group">
+          <span className="form-label">Save Location</span>
+          <input type="text" className="form-input" value={savePath} onChange={(e) => setSavePath(e.target.value)} />
+        </div>
+        <div className="modal-actions" style={{ marginTop: "12px" }}>
+          <button className="action-btn" onClick={handleClosePopup}>Cancel</button>
+          <button className="btn-add-download" style={{ padding: "8px 20px" }} onClick={handlePopupStartDownload} disabled={!popupUrl}>
+            <span>Download Now</span>
+          </button>
+        </div>
+      </div>
+    );
+  }
 
+  if (popupMode === "progress") {
+    const progressPercent = popupProgress && popupProgress.total_size > 0 
+      ? Math.min(100, Math.floor((popupProgress.downloaded / popupProgress.total_size) * 100))
+      : 0;
+
+    return (
+      <div className="modal-content" style={{ width: "100vw", height: "100vh", borderRadius: 0, border: "none", padding: "24px" }}>
+        <div className="modal-header">
+          <span className="modal-title" style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+            <Activity size={18} color="var(--accent-cyan)" />
+            {popupProgress ? getStatusText(popupProgress.status) : "Connecting..."}
+          </span>
+        </div>
+        {popupProgress ? (
+          <div style={{ display: "flex", flexDirection: "column", gap: "14px" }}>
+            <span className="file-name" style={{ fontSize: "0.95rem", fontWeight: 600, color: "var(--text-primary)" }}>
+              {popupProgress.filename}
+            </span>
+            <div className="progress-container" style={{ gap: "8px" }}>
+              <div className="progress-bar-track" style={{ height: "8px" }}>
+                <div 
+                  className={`progress-bar-fill ${getStatusText(popupProgress.status) === "Paused" ? "paused" : ""}`}
+                  style={{ width: `${progressPercent}%` }}
+                />
+              </div>
+              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "10px", fontSize: "0.85rem", color: "var(--text-secondary)" }}>
+                <div>Progress: <span style={{ color: "var(--text-primary)", fontWeight: 600 }}>{progressPercent}%</span></div>
+                <div style={{ textAlign: "right" }}>Speed: <span style={{ color: "var(--accent-cyan)", fontWeight: 600 }}>{formatBytes(popupProgress.speed)}/s</span></div>
+                <div>Downloaded: <span style={{ color: "var(--text-primary)", fontWeight: 600 }}>{formatBytes(popupProgress.downloaded)}</span> of {popupProgress.total_size > 0 ? formatBytes(popupProgress.total_size) : "Dynamic Size"}</div>
+                <div style={{ textAlign: "right" }}>ETA: <span style={{ color: "var(--text-primary)", fontWeight: 600 }}>{popupProgress.eta}</span></div>
+              </div>
+            </div>
+            <div className="modal-actions" style={{ borderTop: "1px solid var(--border-color)", paddingTop: "14px" }}>
+              {getStatusText(popupProgress.status) === "Downloading" ? (
+                <button className="action-btn" onClick={() => handlePause(null, popupProgress.id)}>
+                  <Pause size={14} />
+                  <span>Pause</span>
+                </button>
+              ) : (
+                <button className="action-btn" onClick={() => handleResume(null, popupProgress.id)}>
+                  <Play size={14} />
+                  <span>Resume</span>
+                </button>
+              )}
+              <button className="action-btn action-btn-danger" onClick={() => handleCancel(null, popupProgress.id)}>
+                <X size={14} />
+                <span>Cancel</span>
+              </button>
+            </div>
+          </div>
+        ) : (
+          <div style={{ padding: "20px 0", color: "var(--text-secondary)" }}>Connecting to engine...</div>
+        )}
+      </div>
+    );
+  }
+
+  if (popupMode === "complete") {
+    return (
+      <div className="modal-content" style={{ width: "100vw", height: "100vh", borderRadius: 0, border: "none", padding: "24px" }}>
+        <div className="modal-header">
+          <span className="modal-title" style={{ display: "flex", alignItems: "center", gap: "8px", color: "var(--accent-green)" }}>
+            <CheckCircle size={20} />
+            Download Complete!
+          </span>
+        </div>
+        <div style={{ display: "flex", flexDirection: "column", gap: "10px", margin: "8px 0" }}>
+          <span style={{ fontSize: "0.95rem", fontWeight: 600, color: "var(--text-primary)", wordBreak: "break-all" }}>
+            {popupFilename}
+          </span>
+          <p style={{ fontSize: "0.85rem", color: "var(--text-secondary)", margin: 0 }}>
+            The file was downloaded successfully and saved to your default destination directory.
+          </p>
+        </div>
+        <div className="modal-actions" style={{ borderTop: "1px solid var(--border-color)", paddingTop: "14px" }}>
+          <button className="action-btn" style={{ background: "rgba(16, 185, 129, 0.1)", borderColor: "rgba(16, 185, 129, 0.2)", color: "var(--accent-green)" }} onClick={handleClosePopup}>
+            <CheckCircle size={14} />
+            <span>OK / Close</span>
+          </button>
+        </div>
+      </div>
+    );
+  }
+
+  // DEFAULT MAIN DASHBOARD view
   return (
     <div className="app-shell">
       {/* Sidebar */}
@@ -464,7 +579,6 @@ function App() {
         <main className="content-area">
           {activeCategory === "settings" ? (
             <div className="settings-container">
-              {/* Settings blocks */}
               <div className="settings-card">
                 <div className="settings-section-header">
                   <Sliders size={18} />
@@ -684,7 +798,6 @@ function App() {
                         key={d.id.toString()}
                         onClick={() => setSelectedTask(d)}
                       >
-                        {/* Header */}
                         <div className="card-header">
                           <div className="file-icon-container">
                             {getFileIcon(d.filename)}
@@ -701,7 +814,6 @@ function App() {
                           </div>
                         </div>
 
-                        {/* Progress */}
                         <div className="progress-container">
                           <div className="progress-bar-track">
                             <div 
@@ -726,7 +838,6 @@ function App() {
                           </div>
                         </div>
 
-                        {/* Actions */}
                         <div className="card-actions">
                           {isDownloading && (
                             <button className="action-btn" onClick={(e) => handlePause(e, d.id)}>
@@ -755,7 +866,7 @@ function App() {
         </main>
       </div>
 
-      {/* Popup 1: Add New Intercepted Download Modal */}
+      {/* Main Window Modal: Add New Download (triggered manually) */}
       {showAddModal && (
         <div className="modal-backdrop" onClick={() => setShowAddModal(false)}>
           <div className="modal-content" onClick={(e) => e.stopPropagation()}>
@@ -816,104 +927,7 @@ function App() {
         </div>
       )}
 
-      {/* Popup 2: Live Download Progress Modal (Replaces Popup 1) */}
-      {activePopupTask && (
-        <div className="modal-backdrop">
-          <div className="modal-content" style={{ width: "550px" }}>
-            <div className="modal-header">
-              <span className="modal-title" style={{ display: "flex", alignItems: "center", gap: "8px" }}>
-                <Activity size={18} color="var(--accent-cyan)" />
-                Downloading File...
-              </span>
-            </div>
-
-            <div style={{ display: "flex", flexDirection: "column", gap: "14px" }}>
-              <span style={{ fontSize: "0.95rem", fontWeight: 600, color: "var(--text-primary)", wordBreak: "break-all" }}>
-                {activePopupTask.filename}
-              </span>
-              
-              <div className="progress-container" style={{ gap: "8px" }}>
-                <div className="progress-bar-track" style={{ height: "8px" }}>
-                  <div 
-                    className={`progress-bar-fill ${getStatusText(activePopupTask.status) === "Paused" ? "paused" : ""}`}
-                    style={{ width: `${activePopupTask.total_size > 0 ? Math.min(100, Math.floor((activePopupTask.downloaded / activePopupTask.total_size) * 100)) : 0}%` }}
-                  />
-                </div>
-                
-                <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "10px", fontSize: "0.85rem", color: "var(--text-secondary)" }}>
-                  <div>
-                    Progress: <span style={{ color: "var(--text-primary)", fontWeight: 600 }}>
-                      {activePopupTask.total_size > 0 ? Math.min(100, Math.floor((activePopupTask.downloaded / activePopupTask.total_size) * 100)) : 0}%
-                    </span>
-                  </div>
-                  <div style={{ textAlign: "right" }}>
-                    Speed: <span style={{ color: "var(--accent-cyan)", fontWeight: 600 }}>{formatBytes(activePopupTask.speed)}/s</span>
-                  </div>
-                  <div>
-                    Downloaded: <span style={{ color: "var(--text-primary)", fontWeight: 600 }}>{formatBytes(activePopupTask.downloaded)}</span> of {activePopupTask.total_size > 0 ? formatBytes(activePopupTask.total_size) : "Dynamic Size"}
-                  </div>
-                  <div style={{ textAlign: "right" }}>
-                    ETA: <span style={{ color: "var(--text-primary)", fontWeight: 600 }}>{activePopupTask.eta}</span>
-                  </div>
-                </div>
-              </div>
-            </div>
-
-            <div className="modal-actions" style={{ borderTop: "1px solid var(--border-color)", paddingTop: "14px" }}>
-              {getStatusText(activePopupTask.status) === "Downloading" ? (
-                <button className="action-btn" onClick={() => handlePause(null, activePopupTask.id)}>
-                  <Pause size={14} />
-                  <span>Pause</span>
-                </button>
-              ) : (
-                <button className="action-btn" onClick={() => handleResume(null, activePopupTask.id)}>
-                  <Play size={14} />
-                  <span>Resume</span>
-                </button>
-              )}
-              <button className="action-btn action-btn-danger" onClick={() => handleCancel(null, activePopupTask.id)}>
-                <X size={14} />
-                <span>Cancel</span>
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* Popup 3: Download Complete Modal (Replaces Popup 2) */}
-      {showCompleteModal && (
-        <div className="modal-backdrop" onClick={() => setShowCompleteModal(false)}>
-          <div className="modal-content" onClick={(e) => e.stopPropagation()}>
-            <div className="modal-header">
-              <span className="modal-title" style={{ display: "flex", alignItems: "center", gap: "8px", color: "var(--accent-green)" }}>
-                <CheckCircle size={20} />
-                Download Complete!
-              </span>
-              <button className="modal-close-btn" onClick={() => setShowCompleteModal(false)}>
-                <X size={18} />
-              </button>
-            </div>
-
-            <div style={{ display: "flex", flexDirection: "column", gap: "10px", margin: "8px 0" }}>
-              <span style={{ fontSize: "0.95rem", fontWeight: 600, color: "var(--text-primary)", wordBreak: "break-all" }}>
-                {completedTaskName}
-              </span>
-              <p style={{ fontSize: "0.85rem", color: "var(--text-secondary)", margin: 0 }}>
-                The file was downloaded successfully and saved to your default destination directory.
-              </p>
-            </div>
-
-            <div className="modal-actions" style={{ borderTop: "1px solid var(--border-color)", paddingTop: "14px" }}>
-              <button className="action-btn" style={{ background: "rgba(16, 185, 129, 0.1)", borderColor: "rgba(16, 185, 129, 0.2)", color: "var(--accent-green)" }} onClick={() => setShowCompleteModal(false)}>
-                <CheckCircle size={14} />
-                <span>OK / Close</span>
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* Slide-out Drawer: Properties */}
+      {/* Drawer: Properties */}
       {selectedTask && (
         <div className="properties-drawer">
           <div className="drawer-header">

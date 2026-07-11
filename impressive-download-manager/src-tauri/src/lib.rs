@@ -1,7 +1,7 @@
 mod engine;
 
 use std::sync::Arc;
-use tauri::State;
+use tauri::{State, Manager};
 use engine::DownloadManager;
 
 #[tauri::command]
@@ -38,6 +38,54 @@ async fn cancel_download(
     manager.cancel_download(&id).await
 }
 
+#[tauri::command]
+async fn open_progress_window(app_handle: tauri::AppHandle, id: String) -> Result<(), String> {
+    let progress_url = format!("/index.html?popup=progress&id={}", id);
+    
+    // Spawn the progress window
+    let _ = tauri::WebviewWindowBuilder::new(
+        &app_handle,
+        format!("popup-progress-{}", id),
+        tauri::WebviewUrl::App(progress_url.into()),
+    )
+    .title("Downloading...")
+    .inner_size(550.0, 240.0)
+    .resizable(false)
+    .build()
+    .map_err(|e| e.to_string())?;
+
+    // Close the original Add window if open
+    if let Some(add_win) = app_handle.get_webview_window("popup-add") {
+        let _ = add_win.close();
+    }
+    Ok(())
+}
+
+#[tauri::command]
+async fn open_complete_window(app_handle: tauri::AppHandle, filename: String) -> Result<(), String> {
+    let complete_url = format!("/index.html?popup=complete&filename={}", urlencoding::encode(&filename));
+    
+    // Spawn the complete window
+    let _ = tauri::WebviewWindowBuilder::new(
+        &app_handle,
+        format!("popup-complete-{}", uuid::Uuid::new_v4()),
+        tauri::WebviewUrl::App(complete_url.into()),
+    )
+    .title("Download Finished")
+    .inner_size(500.0, 200.0)
+    .resizable(false)
+    .build()
+    .map_err(|e| e.to_string())?;
+
+    Ok(())
+}
+
+#[tauri::command]
+async fn close_window(window: tauri::Window) -> Result<(), String> {
+    let _ = window.close();
+    Ok(())
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let download_manager = Arc::new(DownloadManager::new());
@@ -46,6 +94,15 @@ pub fn run() {
     tauri::Builder::default()
         .manage(download_manager)
         .plugin(tauri_plugin_opener::init())
+        .on_window_event(|window, event| {
+            // Keep background process alive by hiding the main window instead of exiting
+            if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+                if window.label() == "main" {
+                    let _ = window.hide();
+                    api.prevent_close();
+                }
+            }
+        })
         .setup(move |app| {
             let handle = app.handle().clone();
             let handle_for_server = app.handle().clone();
@@ -91,7 +148,7 @@ pub fn run() {
                                     if let Some(body_start) = req_str.find("\r\n\r\n") {
                                         let body = &req_str[body_start + 4..];
                                         
-                                        #[derive(serde::Deserialize, serde::Serialize, Clone)]
+                                        #[derive(serde::Deserialize, serde::Serialize, Clone, Debug)]
                                         struct DownloadPayload {
                                             url: String,
                                             filename: String,
@@ -99,12 +156,28 @@ pub fn run() {
 
                                         let body_clean = body.trim_end_matches('\0').trim();
                                         if let Ok(payload) = serde_json::from_str::<DownloadPayload>(body_clean) {
-                                            // Emit download-intercepted event to trigger Popup 1 (Add Modal) on frontend
-                                            use tauri::Emitter;
-                                            let _ = app_handle.emit("download-intercepted", payload);
+                                            // Spawn native popup-add window pre-filled with payload
+                                            let add_url = format!(
+                                                "/index.html?popup=add&url={}&filename={}",
+                                                urlencoding::encode(&payload.url),
+                                                urlencoding::encode(&payload.filename)
+                                            );
+                                            
+                                            let app_handle_clone = app_handle.clone();
+                                            let _ = tauri::WebviewWindowBuilder::new(
+                                                &app_handle_clone,
+                                                "popup-add",
+                                                tauri::WebviewUrl::App(add_url.into()),
+                                            )
+                                            .title("New Download")
+                                            .inner_size(500.0, 320.0)
+                                            .resizable(false)
+                                            .build();
                                             
                                             let response = "HTTP/1.1 200 OK\r\n\
                                                             Access-Control-Allow-Origin: *\r\n\
+                                                            Access-Control-Allow-Methods: POST, OPTIONS\r\n\
+                                                            Access-Control-Allow-Headers: Content-Type\r\n\
                                                             Content-Type: application/json\r\n\r\n\
                                                             {\"status\":\"ok\"}";
                                             let _ = stream.write_all(response.as_bytes()).await;
@@ -128,7 +201,10 @@ pub fn run() {
             start_download,
             pause_download,
             resume_download,
-            cancel_download
+            cancel_download,
+            open_progress_window,
+            open_complete_window,
+            close_window
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
