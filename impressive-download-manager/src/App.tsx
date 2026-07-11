@@ -19,7 +19,11 @@ import {
   Play,
   X,
   File,
-  CheckCircle
+  CheckCircle,
+  Network,
+  Globe,
+  Sliders,
+  Calendar
 } from "lucide-react";
 import { listen } from "@tauri-apps/api/event";
 import { invoke } from "@tauri-apps/api/core";
@@ -100,6 +104,32 @@ function App() {
 
   // Toast State
   const [toasts, setToasts] = useState<Toast[]>([]);
+
+  // Settings State
+  const [defaultSaveDir, setDefaultSaveDir] = useState("/home/shaheer/Downloads");
+  const [autostart, setAutostart] = useState(true);
+  const [minimizeToTray, setMinimizeToTray] = useState(true);
+  const [maxChunks, setMaxChunks] = useState(8);
+  const [speedLimitEnabled, setSpeedLimitEnabled] = useState(false);
+  const [speedLimitKb, setSpeedLimitKb] = useState(2048);
+  const [interceptDownloads, setInterceptDownloads] = useState(true);
+  const [integrationPort, setIntegrationPort] = useState(9600);
+  
+  // Scheduler State
+  const [schedulerEnabled, setSchedulerEnabled] = useState(false);
+  const [startTime, setStartTime] = useState("02:00");
+  const [endTime, setEndTime] = useState("06:00");
+  const [activeDays, setActiveDays] = useState<string[]>(["Mon", "Tue", "Wed", "Thu", "Fri"]);
+
+  const daysOfWeek = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
+
+  const toggleDay = (day: string) => {
+    if (activeDays.includes(day)) {
+      setActiveDays(activeDays.filter((d) => d !== day));
+    } else {
+      setActiveDays([...activeDays, day]);
+    }
+  };
 
   // Parse filename from URL
   const extractFilename = (url: string): string => {
@@ -435,7 +465,7 @@ function App() {
               <div className="stat-item">
                 <Gauge size={14} color="var(--accent-green)" />
                 <span>Limit:</span>
-                <span className="stat-value">Unlimited</span>
+                <span className="stat-value">{speedLimitEnabled ? `${speedLimitKb} KB/s` : "Unlimited"}</span>
               </div>
             </div>
 
@@ -449,9 +479,202 @@ function App() {
         {/* Content Area */}
         <main className="content-area">
           {activeCategory === "settings" ? (
-            <div className="welcome-box">
-              <h2 className="welcome-title">Settings Panel</h2>
-              <p className="welcome-desc">Configuration details will be set up in Phase 5.</p>
+            <div className="settings-container">
+              {/* General Settings */}
+              <div className="settings-card">
+                <div className="settings-section-header">
+                  <Sliders size={18} />
+                  <span className="settings-section-title">General Settings</span>
+                </div>
+                <div className="form-group">
+                  <span className="form-label">Default Downloads Directory</span>
+                  <input
+                    type="text"
+                    className="form-input"
+                    value={defaultSaveDir}
+                    onChange={(e) => setDefaultSaveDir(e.target.value)}
+                  />
+                </div>
+                <div className="settings-control-row">
+                  <div className="settings-info-col">
+                    <span className="settings-title">Launch on Startup</span>
+                    <span className="settings-desc">Automatically launch Impressive Download Manager when your computer starts.</span>
+                  </div>
+                  <label className="switch-container">
+                    <input 
+                      type="checkbox" 
+                      className="switch-input"
+                      checked={autostart}
+                      onChange={(e) => setAutostart(e.target.checked)}
+                    />
+                    <span className="switch-slider"></span>
+                  </label>
+                </div>
+                <div className="settings-control-row">
+                  <div className="settings-info-col">
+                    <span className="settings-title">Minimize to System Tray</span>
+                    <span className="settings-desc">Close button hides the window to system tray instead of exiting the process.</span>
+                  </div>
+                  <label className="switch-container">
+                    <input 
+                      type="checkbox" 
+                      className="switch-input"
+                      checked={minimizeToTray}
+                      onChange={(e) => setMinimizeToTray(e.target.checked)}
+                    />
+                    <span className="switch-slider"></span>
+                  </label>
+                </div>
+              </div>
+
+              {/* Network Settings */}
+              <div className="settings-card">
+                <div className="settings-section-header">
+                  <Network size={18} />
+                  <span className="settings-section-title">Network & Performance</span>
+                </div>
+                <div className="settings-control-row" style={{ alignItems: "flex-start", flexDirection: "column", gap: "10px" }}>
+                  <div className="settings-info-col">
+                    <span className="settings-title">Max Segment Connections ({maxChunks})</span>
+                    <span className="settings-desc">The maximum number of parallel range threads to split download files into in Rust.</span>
+                  </div>
+                  <input 
+                    type="range" 
+                    min="1" 
+                    max="32" 
+                    className="range-slider"
+                    value={maxChunks}
+                    onChange={(e) => setMaxChunks(parseInt(e.target.value))}
+                  />
+                </div>
+                <div className="settings-control-row">
+                  <div className="settings-info-col">
+                    <span className="settings-title">Apply Speed Limit</span>
+                    <span className="settings-desc">Prevent downloads from consuming the entire network bandwidth.</span>
+                  </div>
+                  <label className="switch-container">
+                    <input 
+                      type="checkbox" 
+                      className="switch-input"
+                      checked={speedLimitEnabled}
+                      onChange={(e) => setSpeedLimitEnabled(e.target.checked)}
+                    />
+                    <span className="switch-slider"></span>
+                  </label>
+                </div>
+                {speedLimitEnabled && (
+                  <div className="settings-control-row" style={{ alignItems: "flex-start", flexDirection: "column", gap: "10px" }}>
+                    <div className="settings-info-col">
+                      <span className="settings-title">Speed Limit Threshold ({formatBytes(speedLimitKb * 1024)}/s)</span>
+                    </div>
+                    <input 
+                      type="range" 
+                      min="128" 
+                      max="102400" 
+                      step="128"
+                      className="range-slider"
+                      value={speedLimitKb}
+                      onChange={(e) => setSpeedLimitKb(parseInt(e.target.value))}
+                    />
+                  </div>
+                )}
+              </div>
+
+              {/* Browser Integration */}
+              <div className="settings-card">
+                <div className="settings-section-header">
+                  <Globe size={18} />
+                  <span className="settings-section-title">Browser Integration</span>
+                </div>
+                <div className="settings-control-row">
+                  <div className="settings-info-col">
+                    <span className="settings-title">Intercept Browser Downloads</span>
+                    <span className="settings-desc">Enable connection socket to capture video links and documents from browser extensions.</span>
+                  </div>
+                  <label className="switch-container">
+                    <input 
+                      type="checkbox" 
+                      className="switch-input"
+                      checked={interceptDownloads}
+                      onChange={(e) => setInterceptDownloads(e.target.checked)}
+                    />
+                    <span className="switch-slider"></span>
+                  </label>
+                </div>
+                <div className="form-group">
+                  <span className="form-label">Native Messaging Bridge Port</span>
+                  <input
+                    type="number"
+                    className="form-input"
+                    value={integrationPort}
+                    onChange={(e) => setIntegrationPort(parseInt(e.target.value))}
+                  />
+                </div>
+              </div>
+
+              {/* Download Scheduler */}
+              <div className="settings-card">
+                <div className="settings-section-header">
+                  <Calendar size={18} />
+                  <span className="settings-section-title">Download Scheduler</span>
+                </div>
+                <div className="settings-control-row">
+                  <div className="settings-info-col">
+                    <span className="settings-title">Enable Scheduler</span>
+                    <span className="settings-desc">Schedule download files to trigger or pause within specific daily intervals.</span>
+                  </div>
+                  <label className="switch-container">
+                    <input 
+                      type="checkbox" 
+                      className="switch-input"
+                      checked={schedulerEnabled}
+                      onChange={(e) => setSchedulerEnabled(e.target.checked)}
+                    />
+                    <span className="switch-slider"></span>
+                  </label>
+                </div>
+                {schedulerEnabled && (
+                  <div className="settings-grid">
+                    <div className="form-group">
+                      <span className="form-label">Start Time</span>
+                      <input 
+                        type="time" 
+                        className="form-input" 
+                        value={startTime}
+                        onChange={(e) => setStartTime(e.target.value)}
+                      />
+                    </div>
+                    <div className="form-group">
+                      <span className="form-label">End Time</span>
+                      <input 
+                        type="time" 
+                        className="form-input" 
+                        value={endTime}
+                        onChange={(e) => setEndTime(e.target.value)}
+                      />
+                    </div>
+                    <div className="form-group settings-grid-full">
+                      <span className="form-label">Repeat Days</span>
+                      <div className="days-grid">
+                        {daysOfWeek.map((day) => (
+                          <div key={day} style={{ flex: 1 }}>
+                            <input 
+                              type="checkbox" 
+                              id={`day-${day}`}
+                              className="day-checkbox-input"
+                              checked={activeDays.includes(day)}
+                              onChange={() => toggleDay(day)}
+                            />
+                            <label htmlFor={`day-${day}`} className="day-checkbox-label">
+                              {day}
+                            </label>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  </div>
+                )}
+              </div>
             </div>
           ) : (
             <div>
