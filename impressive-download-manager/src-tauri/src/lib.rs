@@ -9,9 +9,11 @@ async fn start_download(
     url: String,
     filename: String,
     save_path: String,
+    cookie: Option<String>,
+    referrer: Option<String>,
     manager: State<'_, Arc<DownloadManager>>,
 ) -> Result<String, String> {
-    manager.start_download(url, filename, save_path).await
+    manager.start_download(url, filename, save_path, cookie.unwrap_or_default(), referrer.unwrap_or_default()).await
 }
 
 #[tauri::command]
@@ -208,6 +210,8 @@ pub fn run() {
                                         struct DownloadPayload {
                                             url: String,
                                             filename: String,
+                                            cookie: Option<String>,
+                                            referrer: Option<String>,
                                         }
 
                                         let body_clean = body.trim_end_matches('\0').trim();
@@ -242,9 +246,11 @@ pub fn run() {
 
                                             // Spawn native popup-add window pre-filled with payload
                                             let add_url = format!(
-                                                "/index.html?popup=add&url={}&filename={}",
+                                                "/index.html?popup=add&url={}&filename={}&cookie={}&referrer={}",
                                                 urlencoding::encode(&payload.url),
-                                                urlencoding::encode(&filename)
+                                                urlencoding::encode(&filename),
+                                                urlencoding::encode(&payload.cookie.unwrap_or_default()),
+                                                urlencoding::encode(&payload.referrer.unwrap_or_default())
                                             );
                                             
                                             let _ = tauri::WebviewWindowBuilder::new(

@@ -10,12 +10,21 @@ chrome.runtime.onInstalled.addListener(() => {
   });
 });
 
-// Intercept browser downloads automatically
+// Helper to extract cookie headers for a target URL
+async function getCookiesForUrl(url) {
+  try {
+    const cookies = await chrome.cookies.getAll({ url });
+    return cookies.map(c => `${c.name}=${c.value}`).join('; ');
+  } catch (err) {
+    console.warn("Failed to get cookies:", err);
+    return "";
+  }
+}
+
+// Intercept browser downloads automatically (Fallback)
 chrome.downloads.onCreated.addListener(async (downloadItem) => {
-  // Check if download URL is valid and not triggered by our own extension
   if (downloadItem.url && !downloadItem.byExtensionId) {
     try {
-      // Cancel and remove the default browser download
       await chrome.downloads.cancel(downloadItem.id);
       await chrome.downloads.erase({ id: downloadItem.id });
     } catch (e) {
@@ -26,7 +35,10 @@ chrome.downloads.onCreated.addListener(async (downloadItem) => {
       ? downloadItem.filename.split(/[\\/]/).pop() 
       : extractFilename(downloadItem.url);
     
-    await sendToDesktopApp(downloadItem.url, filename);
+    const cookies = await getCookiesForUrl(downloadItem.url);
+    const referrer = downloadItem.referrer || "";
+
+    await sendToDesktopApp(downloadItem.url, filename, cookies, referrer);
   }
 });
 
@@ -34,13 +46,24 @@ chrome.downloads.onCreated.addListener(async (downloadItem) => {
 chrome.contextMenus.onClicked.addListener(async (info, tab) => {
   if (info.menuItemId === "send-to-impressive-dm" && info.linkUrl) {
     const filename = extractFilename(info.linkUrl);
-    await sendToDesktopApp(info.linkUrl, filename);
+    const cookies = await getCookiesForUrl(info.linkUrl);
+    const referrer = tab?.url || "";
+    await sendToDesktopApp(info.linkUrl, filename, cookies, referrer);
   }
 });
 
-// Listen to media sniffing packets from content script
+// Listen to messages from content scripts (direct downloads + media sniffing)
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
-  if (message.type === 'MEDIA_DETECTED') {
+  if (message.type === 'DIRECT_DOWNLOAD') {
+    (async () => {
+      const url = message.url;
+      const filename = message.filename;
+      const cookies = await getCookiesForUrl(url);
+      const referrer = sender.tab?.url || "";
+
+      await sendToDesktopApp(url, filename, cookies, referrer);
+    })();
+  } else if (message.type === 'MEDIA_DETECTED') {
     (async () => {
       const tabId = sender.tab?.id;
       if (!tabId) return;
@@ -49,7 +72,6 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       const data = await chrome.storage.local.get(storeKey);
       const existing = data[storeKey] || [];
 
-      // Avoid duplicates
       const updated = [...existing];
       message.urls.forEach(url => {
         if (!updated.some(item => item.url === url)) {
@@ -63,7 +85,6 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 
       await chrome.storage.local.set({ [storeKey]: updated });
       
-      // Update browser action badge count
       if (updated.length > 0) {
         await chrome.action.setBadgeText({
           tabId: tabId,
@@ -80,7 +101,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 });
 
 // Helper to send payloads to our Tauri backend port 9600
-async function sendToDesktopApp(url, filename) {
+async function sendToDesktopApp(url, filename, cookie = "", referrer = "") {
   try {
     const response = await fetch(`http://127.0.0.1:${PORT}/download`, {
       method: 'POST',
@@ -88,7 +109,7 @@ async function sendToDesktopApp(url, filename) {
         'Content-Type': 'application/json'
       },
       mode: 'cors',
-      body: JSON.stringify({ url, filename })
+      body: JSON.stringify({ url, filename, cookie, referrer })
     });
     const result = await response.json();
     console.log("Desktop app response:", result);
@@ -113,9 +134,12 @@ function extractFilename(url) {
 // Export sending logic for popup
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (message.type === 'SEND_TO_DESKTOP') {
-    sendToDesktopApp(message.url, message.filename).then(success => {
+    (async () => {
+      const cookies = await getCookiesForUrl(message.url);
+      const referrer = "";
+      const success = await sendToDesktopApp(message.url, message.filename, cookies, referrer);
       sendResponse({ success });
-    });
+    })();
     return true;
   }
 });

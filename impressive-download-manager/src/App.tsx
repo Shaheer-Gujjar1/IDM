@@ -54,6 +54,8 @@ function App() {
   const [popupMode, setPopupMode] = useState<string | null>(null);
   const [popupUrl, setPopupUrl] = useState("");
   const [popupFilename, setPopupFilename] = useState("");
+  const [popupCookie, setPopupCookie] = useState("");
+  const [popupReferrer, setPopupReferrer] = useState("");
   const [popupTaskId, setPopupTaskId] = useState<string | null>(null);
   const [popupProgress, setPopupProgress] = useState<DownloadProgress | null>(null);
 
@@ -140,6 +142,8 @@ function App() {
       if (mode === "add") {
         setPopupUrl(params.get("url") || "");
         setPopupFilename(params.get("filename") || "");
+        setPopupCookie(params.get("cookie") || "");
+        setPopupReferrer(params.get("referrer") || "");
       } else if (mode === "progress") {
         const taskId = params.get("id");
         setPopupTaskId(taskId);
@@ -218,9 +222,11 @@ function App() {
 
       // Browser automatic interception (only listened to on the main dashboard window)
       if (!popupMode) {
-        unlistenIntercept = await listen<{ url: string; filename: string }>("download-intercepted", (event) => {
+        unlistenIntercept = await listen<{ url: string; filename: string; cookie?: string; referrer?: string }>("download-intercepted", (event) => {
           setInputUrl(event.payload.url);
           setCustomFilename(event.payload.filename);
+          setPopupCookie(event.payload.cookie || "");
+          setPopupReferrer(event.payload.referrer || "");
           setShowAddModal(true);
         });
       }
@@ -245,6 +251,8 @@ function App() {
         url: inputUrl,
         filename: finalFilename,
         savePath: finalSavePath,
+        cookie: popupCookie || "",
+        referrer: popupReferrer || ""
       });
 
       const newTask: DownloadProgress = {
@@ -282,6 +290,8 @@ function App() {
         url: popupUrl,
         filename: finalFilename,
         savePath: finalSavePath,
+        cookie: popupCookie || "",
+        referrer: popupReferrer || ""
       });
 
       // Open standalone Progress window (Popup 2), which closes this Add window

@@ -40,6 +40,8 @@ pub struct DownloadTask {
     pub url: String,
     pub filename: String,
     pub save_path: String,
+    pub cookie: String,
+    pub referrer: String,
     pub total_size: u64,
     pub downloaded: Arc<AtomicU64>,
     pub status: Arc<RwLock<DownloadStatus>>,
@@ -69,6 +71,8 @@ impl DownloadManager {
         url: String,
         filename: String,
         save_path: String,
+        cookie: String,
+        referrer: String,
     ) -> Result<String, String> {
         let id = uuid::Uuid::new_v4().to_string();
         
@@ -76,25 +80,36 @@ impl DownloadManager {
             .user_agent("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
             .build()
             .unwrap_or_default();
-        let res = client
-            .head(&url)
-            .send()
-            .await
-            .map_err(|e| format!("Network error: {}", e))?;
+        
+        let mut head_req = client.head(&url);
+        if !cookie.is_empty() {
+            head_req = head_req.header(reqwest::header::COOKIE, &cookie);
+        }
+        if !referrer.is_empty() {
+            head_req = head_req.header(reqwest::header::REFERER, &referrer);
+        }
 
-        let total_size = res
-            .headers()
-            .get(reqwest::header::CONTENT_LENGTH)
-            .and_then(|val| val.to_str().ok())
-            .and_then(|s| s.parse::<u64>().ok())
-            .unwrap_or(0);
+        let mut total_size = 0;
+        let mut accept_ranges = false;
 
-        let accept_ranges = res
-            .headers()
-            .get(reqwest::header::ACCEPT_RANGES)
-            .and_then(|val| val.to_str().ok())
-            .map(|s| s == "bytes")
-            .unwrap_or(false);
+        // Try HEAD request to resolve size/ranges, but fallback to 0/dynamic on fail
+        if let Ok(res) = head_req.send().await {
+            if res.status().is_success() {
+                total_size = res
+                    .headers()
+                    .get(reqwest::header::CONTENT_LENGTH)
+                    .and_then(|val| val.to_str().ok())
+                    .and_then(|s| s.parse::<u64>().ok())
+                    .unwrap_or(0);
+
+                accept_ranges = res
+                    .headers()
+                    .get(reqwest::header::ACCEPT_RANGES)
+                    .and_then(|val| val.to_str().ok())
+                    .map(|s| s == "bytes")
+                    .unwrap_or(false);
+            }
+        }
 
         let (abort_tx, _) = broadcast::channel(1);
         let task = Arc::new(DownloadTask {
@@ -102,6 +117,8 @@ impl DownloadManager {
             url: url.clone(),
             filename: filename.clone(),
             save_path: save_path.clone(),
+            cookie: cookie.clone(),
+            referrer: referrer.clone(),
             total_size,
             downloaded: Arc::new(AtomicU64::new(0)),
             status: Arc::new(RwLock::new(DownloadStatus::Queued)),
@@ -256,6 +273,12 @@ impl DownloadManager {
                     .build()
                     .unwrap_or_default();
                 let mut req = client.get(&url);
+                if !task_clone.cookie.is_empty() {
+                    req = req.header(reqwest::header::COOKIE, &task_clone.cookie);
+                }
+                if !task_clone.referrer.is_empty() {
+                    req = req.header(reqwest::header::REFERER, &task_clone.referrer);
+                }
                 if num_chunks > 1 && end_offset > 0 {
                     req = req.header(reqwest::header::RANGE, format!("bytes={}-{}", start_offset, end_offset));
                 }
@@ -401,6 +424,8 @@ impl DownloadManager {
                 url: task.url.clone(),
                 filename: task.filename.clone(),
                 save_path: task.save_path.clone(),
+                cookie: task.cookie.clone(),
+                referrer: task.referrer.clone(),
                 total_size: task.total_size,
                 downloaded: task.downloaded.clone(),
                 status: task.status.clone(),
