@@ -49,3 +49,30 @@ function sniffMedia() {
 window.addEventListener('DOMContentLoaded', sniffMedia);
 // Re-check periodically for dynamic media content
 setInterval(sniffMedia, 3000);
+
+// Intercept direct download link clicks to bypass browser picker dialogue
+document.addEventListener('click', (e) => {
+  const anchor = e.target.closest('a');
+  if (anchor && anchor.href && anchor.href.startsWith('http')) {
+    try {
+      const urlObj = new URL(anchor.href);
+      const ext = urlObj.pathname.split('.').pop()?.toLowerCase();
+      const downloadExtensions = [
+        'zip', 'rar', '7z', 'tar', 'gz', 'exe', 'msi', 'dmg', 
+        'pkg', 'iso', 'pdf', 'apk', 'crx', 'docx', 'xlsx', 'pptx'
+      ];
+      if (ext && downloadExtensions.includes(ext)) {
+        // Stop default click/download navigation
+        e.preventDefault();
+        e.stopPropagation();
+
+        chrome.runtime.sendMessage({
+          type: 'DIRECT_DOWNLOAD',
+          url: anchor.href,
+          filename: anchor.download || urlObj.pathname.split('/').pop() || 'download_file'
+        }).catch(() => {});
+      }
+    } catch (err) {}
+  }
+}, true); // Use capture phase
+

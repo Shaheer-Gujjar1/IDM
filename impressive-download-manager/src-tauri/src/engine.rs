@@ -72,7 +72,10 @@ impl DownloadManager {
     ) -> Result<String, String> {
         let id = uuid::Uuid::new_v4().to_string();
         
-        let client = reqwest::Client::new();
+        let client = reqwest::Client::builder()
+            .user_agent("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
+            .build()
+            .unwrap_or_default();
         let res = client
             .head(&url)
             .send()
@@ -248,7 +251,10 @@ impl DownloadManager {
                     return;
                 }
 
-                let client = reqwest::Client::new();
+                let client = reqwest::Client::builder()
+                    .user_agent("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
+                    .build()
+                    .unwrap_or_default();
                 let mut req = client.get(&url);
                 if num_chunks > 1 && end_offset > 0 {
                     req = req.header(reqwest::header::RANGE, format!("bytes={}-{}", start_offset, end_offset));
@@ -256,8 +262,16 @@ impl DownloadManager {
 
                 let res = match req.send().await {
                     Ok(r) => r,
-                    Err(_) => return,
+                    Err(e) => {
+                        eprintln!("[Rust Engine] Worker request failed: {:?}", e);
+                        return;
+                    }
                 };
+
+                if !res.status().is_success() {
+                    eprintln!("[Rust Engine] Worker HTTP request failed: {}", res.status());
+                    return;
+                }
 
                 let mut stream = res.bytes_stream();
                 let mut local_downloaded = chunk.downloaded;
