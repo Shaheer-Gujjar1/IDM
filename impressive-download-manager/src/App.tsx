@@ -131,7 +131,7 @@ function App() {
     }
   };
 
-  // Initialization query-param routing
+  // Initialization query-param routing & initial loading
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
     const mode = params.get("popup");
@@ -141,12 +141,47 @@ function App() {
         setPopupUrl(params.get("url") || "");
         setPopupFilename(params.get("filename") || "");
       } else if (mode === "progress") {
-        setPopupTaskId(params.get("id"));
+        const taskId = params.get("id");
+        setPopupTaskId(taskId);
+        
+        // Fetch progress state immediately from Rust backend to prevent Connecting... freeze
+        if (taskId) {
+          invoke<DownloadProgress | null>("get_download_progress", { id: taskId })
+            .then((prog) => {
+              if (prog) setPopupProgress(prog);
+            })
+            .catch(console.error);
+        }
       } else if (mode === "complete") {
         setPopupFilename(params.get("filename") || "");
       }
+    } else {
+      // Main dashboard: fetch all active/completed downloads from backend
+      invoke<DownloadProgress[]>("get_all_downloads")
+        .then((list) => {
+          if (list) setDownloads(list);
+        })
+        .catch(console.error);
     }
   }, []);
+
+  // Poll to keep main dashboard synced with background downloads
+  useEffect(() => {
+    if (popupMode) return;
+
+    const interval = setInterval(async () => {
+      try {
+        const list = await invoke<DownloadProgress[]>("get_all_downloads");
+        if (list) {
+          setDownloads(list);
+        }
+      } catch (e) {
+        console.error("Failed to sync downloads:", e);
+      }
+    }, 2000);
+
+    return () => clearInterval(interval);
+  }, [popupMode]);
 
   // Set up listeners for main window dashboard and standalone progress popups
   useEffect(() => {

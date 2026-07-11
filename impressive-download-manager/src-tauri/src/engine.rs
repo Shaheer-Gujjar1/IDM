@@ -424,4 +424,43 @@ impl DownloadManager {
             Err("Task not found".to_string())
         }
     }
+
+    pub async fn get_progress(&self, id: &str) -> Option<DownloadProgress> {
+        let tasks = self.tasks.read().await;
+        if let Some(task) = tasks.get(id) {
+            let current_bytes = task.downloaded.load(Ordering::Relaxed);
+            let status = task.status.read().await.clone();
+            
+            Some(DownloadProgress {
+                id: task.id.clone(),
+                filename: task.filename.clone(),
+                total_size: task.total_size,
+                downloaded: current_bytes,
+                speed: 0.0,
+                eta: "---".to_string(),
+                status,
+            })
+        } else {
+            None
+        }
+    }
+
+    pub async fn get_all_progress(&self) -> Vec<DownloadProgress> {
+        let tasks = self.tasks.read().await;
+        let mut list = vec![];
+        for task in tasks.values() {
+            let current_bytes = task.downloaded.load(Ordering::Relaxed);
+            let status = task.status.read().await.clone();
+            list.push(DownloadProgress {
+                id: task.id.clone(),
+                filename: task.filename.clone(),
+                total_size: task.total_size,
+                downloaded: current_bytes,
+                speed: 0.0,
+                eta: "---".to_string(),
+                status,
+            });
+        }
+        list
+    }
 }

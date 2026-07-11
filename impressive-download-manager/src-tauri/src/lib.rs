@@ -101,6 +101,21 @@ async fn close_window(window: tauri::Window) -> Result<(), String> {
     Ok(())
 }
 
+#[tauri::command]
+async fn get_download_progress(
+    id: String,
+    manager: State<'_, Arc<DownloadManager>>,
+) -> Result<Option<engine::DownloadProgress>, String> {
+    Ok(manager.get_progress(&id).await)
+}
+
+#[tauri::command]
+async fn get_all_downloads(
+    manager: State<'_, Arc<DownloadManager>>,
+) -> Result<Vec<engine::DownloadProgress>, String> {
+    Ok(manager.get_all_progress().await)
+}
+
 fn parse_content_disposition(value: &str) -> Option<String> {
     if let Some(pos) = value.find("filename=") {
         let mut filename = value[pos + 9..].trim().to_string();
@@ -273,7 +288,9 @@ pub fn run() {
             select_folder,
             open_progress_window,
             open_complete_window,
-            close_window
+            close_window,
+            get_download_progress,
+            get_all_downloads
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
