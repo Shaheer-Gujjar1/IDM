@@ -143,15 +143,19 @@ impl DownloadManager {
 
             // Initialize connection chunks
             let mut chunks = vec![];
-            let chunk_size = task.total_size / num_chunks;
-            for i in 0..num_chunks {
-                let start = i * chunk_size;
-                let end = if i == num_chunks - 1 {
-                    task.total_size - 1
-                } else {
-                    (i + 1) * chunk_size - 1
-                };
-                chunks.push(DownloadChunk { start, end, downloaded: 0 });
+            if task.total_size > 0 {
+                let chunk_size = task.total_size / num_chunks;
+                for i in 0..num_chunks {
+                    let start = i * chunk_size;
+                    let end = if i == num_chunks - 1 {
+                        task.total_size - 1
+                    } else {
+                        (i + 1) * chunk_size - 1
+                    };
+                    chunks.push(DownloadChunk { start, end, downloaded: 0 });
+                }
+            } else {
+                chunks.push(DownloadChunk { start: 0, end: 0, downloaded: 0 });
             }
             *task.chunks.lock().await = chunks;
         }
@@ -240,13 +244,13 @@ impl DownloadManager {
             let worker = tokio::spawn(async move {
                 let start_offset = chunk.start + chunk.downloaded;
                 let end_offset = chunk.end;
-                if start_offset >= end_offset {
+                if end_offset > 0 && start_offset >= end_offset {
                     return;
                 }
 
                 let client = reqwest::Client::new();
                 let mut req = client.get(&url);
-                if num_chunks > 1 {
+                if num_chunks > 1 && end_offset > 0 {
                     req = req.header(reqwest::header::RANGE, format!("bytes={}-{}", start_offset, end_offset));
                 }
 
