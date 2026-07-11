@@ -10,6 +10,26 @@ chrome.runtime.onInstalled.addListener(() => {
   });
 });
 
+// Intercept browser downloads automatically
+chrome.downloads.onCreated.addListener(async (downloadItem) => {
+  // Check if download URL is valid and not triggered by our own extension
+  if (downloadItem.url && !downloadItem.byExtensionId) {
+    try {
+      // Cancel and remove the default browser download
+      await chrome.downloads.cancel(downloadItem.id);
+      await chrome.downloads.erase({ id: downloadItem.id });
+    } catch (e) {
+      console.warn("Interception cancel failed:", e);
+    }
+
+    const filename = downloadItem.filename 
+      ? downloadItem.filename.split(/[\\/]/).pop() 
+      : extractFilename(downloadItem.url);
+    
+    await sendToDesktopApp(downloadItem.url, filename);
+  }
+});
+
 // Context Menu action listener
 chrome.contextMenus.onClicked.addListener(async (info, tab) => {
   if (info.menuItemId === "send-to-impressive-dm" && info.linkUrl) {
@@ -25,7 +45,6 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       const tabId = sender.tab?.id;
       if (!tabId) return;
 
-      // Fetch existing captured links for this tab
       const storeKey = `captured_tab_${tabId}`;
       const data = await chrome.storage.local.get(storeKey);
       const existing = data[storeKey] || [];

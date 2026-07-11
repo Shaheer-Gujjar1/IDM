@@ -42,13 +42,13 @@ async fn cancel_download(
 pub fn run() {
     let download_manager = Arc::new(DownloadManager::new());
     let manager_for_setup = download_manager.clone();
-    let manager_for_server = download_manager.clone();
 
     tauri::Builder::default()
         .manage(download_manager)
         .plugin(tauri_plugin_opener::init())
         .setup(move |app| {
             let handle = app.handle().clone();
+            let handle_for_server = app.handle().clone();
             let manager = manager_for_setup;
             
             // Spawn app handle binding on Tauri's async runtime
@@ -68,7 +68,7 @@ pub fn run() {
 
                 loop {
                     if let Ok((mut stream, _)) = listener.accept().await {
-                        let manager = manager_for_server.clone();
+                        let app_handle = handle_for_server.clone();
                         tauri::async_runtime::spawn(async move {
                             use tokio::io::{AsyncReadExt, AsyncWriteExt};
                             let mut buffer = vec![0; 4096];
@@ -91,7 +91,7 @@ pub fn run() {
                                     if let Some(body_start) = req_str.find("\r\n\r\n") {
                                         let body = &req_str[body_start + 4..];
                                         
-                                        #[derive(serde::Deserialize)]
+                                        #[derive(serde::Deserialize, serde::Serialize, Clone)]
                                         struct DownloadPayload {
                                             url: String,
                                             filename: String,
@@ -99,8 +99,9 @@ pub fn run() {
 
                                         let body_clean = body.trim_end_matches('\0').trim();
                                         if let Ok(payload) = serde_json::from_str::<DownloadPayload>(body_clean) {
-                                            let save_path = format!("/home/shaheer/Downloads/{}", payload.filename);
-                                            let _ = manager.start_download(payload.url, payload.filename, save_path).await;
+                                            // Emit download-intercepted event to trigger Popup 1 (Add Modal) on frontend
+                                            use tauri::Emitter;
+                                            let _ = app_handle.emit("download-intercepted", payload);
                                             
                                             let response = "HTTP/1.1 200 OK\r\n\
                                                             Access-Control-Allow-Origin: *\r\n\

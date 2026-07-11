@@ -49,61 +49,29 @@ interface Category {
   icon: React.ReactNode;
 }
 
-interface Toast {
-  id: string;
+interface InterceptedPayload {
+  url: string;
   filename: string;
 }
 
 function App() {
   const [activeCategory, setActiveCategory] = useState("all");
   const [searchQuery, setSearchQuery] = useState("");
-  const [downloads, setDownloads] = useState<DownloadProgress[]>([
-    {
-      id: "mock-1",
-      filename: "ubuntu-26.04-desktop-amd64.iso",
-      total_size: 4724464640,
-      downloaded: 2139062272,
-      speed: 12478054,
-      eta: "3m 27s",
-      status: "Downloading",
-      url: "https://releases.ubuntu.com/26.04/ubuntu-26.04-desktop-amd64.iso",
-      save_path: "/home/shaheer/Downloads/ubuntu-26.04-desktop-amd64.iso"
-    },
-    {
-      id: "mock-2",
-      filename: "Big_Buck_Bunny_1080p.mp4",
-      total_size: 276134980,
-      downloaded: 276134980,
-      speed: 0,
-      eta: "0s",
-      status: "Completed",
-      url: "http://commondatastorage.googleapis.com/gtv-videos-bucket/sample/BigBuckBunny.mp4",
-      save_path: "/home/shaheer/Downloads/Big_Buck_Bunny_1080p.mp4"
-    },
-    {
-      id: "mock-3",
-      filename: "rust-programming-guide.pdf",
-      total_size: 14570182,
-      downloaded: 4587520,
-      speed: 0,
-      eta: "---",
-      status: "Paused",
-      url: "https://doc.rust-lang.org/book/rust-programming-guide.pdf",
-      save_path: "/home/shaheer/Downloads/rust-programming-guide.pdf"
-    }
-  ]);
+  const [downloads, setDownloads] = useState<DownloadProgress[]>([]);
 
-  // Modal State
-  const [isAddModalOpen, setIsAddModalOpen] = useState(false);
+  // Popup Modals Chain State
+  const [showAddModal, setShowAddModal] = useState(false);
   const [inputUrl, setInputUrl] = useState("");
   const [customFilename, setCustomFilename] = useState("");
   const [savePath, setSavePath] = useState("/home/shaheer/Downloads/");
 
+  // Task currently displaying inside active Progress (Popup 2) or Completion (Popup 3) dialogs
+  const [activePopupTaskId, setActivePopupTaskId] = useState<String | null>(null);
+  const [showCompleteModal, setShowCompleteModal] = useState(false);
+  const [completedTaskName, setCompletedTaskName] = useState("");
+
   // Drawer State
   const [selectedTask, setSelectedTask] = useState<DownloadProgress | null>(null);
-
-  // Toast State
-  const [toasts, setToasts] = useState<Toast[]>([]);
 
   // Settings State
   const [defaultSaveDir, setDefaultSaveDir] = useState("/home/shaheer/Downloads");
@@ -143,18 +111,17 @@ function App() {
     }
   };
 
-  // Auto-detect Clipboard when modal opens
+  // Triggered manually
   const handleOpenAddModal = async () => {
-    setIsAddModalOpen(true);
+    setShowAddModal(true);
     try {
       const text = await navigator.clipboard.readText();
       if (text.startsWith("http://") || text.startsWith("https://")) {
         setInputUrl(text);
-        const name = extractFilename(text);
-        setCustomFilename(name);
+        setCustomFilename(extractFilename(text));
       }
     } catch (e) {
-      console.warn("Clipboard reading not allowed or failed:", e);
+      console.warn("Clipboard reading failed:", e);
     }
   };
 
@@ -166,46 +133,53 @@ function App() {
     }
   };
 
-  // Handle live progress updates from Tauri backend
+  // Listen to Tauri events (intercept and progress)
   useEffect(() => {
-    let unlisten: (() => void) | undefined;
+    let unlistenProgress: (() => void) | undefined;
+    let unlistenIntercept: (() => void) | undefined;
 
-    async function setupListener() {
-      unlisten = await listen<DownloadProgress>("download-progress", (event) => {
+    async function setupListeners() {
+      // Listen to progress updates
+      unlistenProgress = await listen<DownloadProgress>("download-progress", (event) => {
         setDownloads((prev) => {
           const index = prev.findIndex((d) => d.id === event.payload.id);
           const updated = [...prev];
           
           if (index !== -1) {
-            // Check if status transitioned to Completed
             const prevStatus = prev[index].status;
             const nextStatus = event.payload.status;
-            if (prevStatus !== "Completed" && nextStatus === "Completed") {
-              triggerToast(event.payload.filename);
+            
+            // Check if active popup task completed
+            if (activePopupTaskId === event.payload.id && prevStatus !== "Completed" && nextStatus === "Completed") {
+              setActivePopupTaskId(null); // Close Popup 2
+              setCompletedTaskName(event.payload.filename);
+              setShowCompleteModal(true); // Open Popup 3
             }
-            updated[index] = event.payload;
+
+            updated[index] = { ...prev[index], ...event.payload };
             return updated;
           } else {
             return [event.payload, ...prev];
           }
         });
       });
+
+      // Listen to automatic browser interceptions
+      unlistenIntercept = await listen<InterceptedPayload>("download-intercepted", (event) => {
+        // Trigger Popup 1 immediately
+        setInputUrl(event.payload.url);
+        setCustomFilename(event.payload.filename);
+        setShowAddModal(true);
+      });
     }
 
-    setupListener().catch(console.error);
+    setupListeners().catch(console.error);
 
     return () => {
-      if (unlisten) unlisten();
+      if (unlistenProgress) unlistenProgress();
+      if (unlistenIntercept) unlistenIntercept();
     };
-  }, []);
-
-  const triggerToast = (filename: string) => {
-    const id = Date.now().toString();
-    setToasts((prev) => [...prev, { id, filename }]);
-    setTimeout(() => {
-      setToasts((prev) => prev.filter((t) => t.id !== id));
-    }, 4000);
-  };
+  }, [activePopupTaskId]);
 
   // Submit start download
   const handleStartDownload = async () => {
@@ -234,7 +208,11 @@ function App() {
       };
 
       setDownloads((prev) => [newTask, ...prev]);
-      setIsAddModalOpen(false);
+      
+      // Transition popups: Hide Popup 1 (Add Modal), show Popup 2 (Progress Modal)
+      setShowAddModal(false);
+      setActivePopupTaskId(id);
+
       setInputUrl("");
       setCustomFilename("");
     } catch (e) {
@@ -243,8 +221,8 @@ function App() {
   };
 
   // Action Triggers
-  const handlePause = async (e: React.MouseEvent, id: String) => {
-    e.stopPropagation(); // prevent opening details drawer
+  const handlePause = async (e: React.MouseEvent | null, id: String) => {
+    if (e) e.stopPropagation();
     if (id.startsWith("mock")) {
       setDownloads((prev) =>
         prev.map((d) => (d.id === id ? { ...d, status: "Paused", speed: 0, eta: "---" } : d))
@@ -258,8 +236,8 @@ function App() {
     }
   };
 
-  const handleResume = async (e: React.MouseEvent, id: String) => {
-    e.stopPropagation(); // prevent opening details drawer
+  const handleResume = async (e: React.MouseEvent | null, id: String) => {
+    if (e) e.stopPropagation();
     if (id.startsWith("mock")) {
       setDownloads((prev) =>
         prev.map((d) => (d.id === id ? { ...d, status: "Downloading", speed: 8524102, eta: "5s" } : d))
@@ -273,10 +251,13 @@ function App() {
     }
   };
 
-  const handleCancel = async (e: React.MouseEvent, id: String) => {
-    e.stopPropagation(); // prevent opening details drawer
+  const handleCancel = async (e: React.MouseEvent | null, id: String) => {
+    if (e) e.stopPropagation();
     if (selectedTask?.id === id) {
       setSelectedTask(null);
+    }
+    if (activePopupTaskId === id) {
+      setActivePopupTaskId(null);
     }
     if (id.startsWith("mock")) {
       setDownloads((prev) => prev.filter((d) => d.id !== id));
@@ -387,6 +368,9 @@ function App() {
     .filter((d) => getStatusText(d.status) === "Downloading")
     .reduce((sum, d) => sum + d.speed, 0);
 
+  // Retrieve current active progress task details for Popup 2
+  const activePopupTask = downloads.find((d) => d.id === activePopupTaskId);
+
   return (
     <div className="app-shell">
       {/* Sidebar */}
@@ -480,7 +464,7 @@ function App() {
         <main className="content-area">
           {activeCategory === "settings" ? (
             <div className="settings-container">
-              {/* General Settings */}
+              {/* Settings blocks */}
               <div className="settings-card">
                 <div className="settings-section-header">
                   <Sliders size={18} />
@@ -527,7 +511,6 @@ function App() {
                 </div>
               </div>
 
-              {/* Network Settings */}
               <div className="settings-card">
                 <div className="settings-section-header">
                   <Network size={18} />
@@ -580,7 +563,6 @@ function App() {
                 )}
               </div>
 
-              {/* Browser Integration */}
               <div className="settings-card">
                 <div className="settings-section-header">
                   <Globe size={18} />
@@ -612,7 +594,6 @@ function App() {
                 </div>
               </div>
 
-              {/* Download Scheduler */}
               <div className="settings-card">
                 <div className="settings-section-header">
                   <Calendar size={18} />
@@ -774,13 +755,13 @@ function App() {
         </main>
       </div>
 
-      {/* Modal: Add New Download */}
-      {isAddModalOpen && (
-        <div className="modal-backdrop" onClick={() => setIsAddModalOpen(false)}>
+      {/* Popup 1: Add New Intercepted Download Modal */}
+      {showAddModal && (
+        <div className="modal-backdrop" onClick={() => setShowAddModal(false)}>
           <div className="modal-content" onClick={(e) => e.stopPropagation()}>
             <div className="modal-header">
               <span className="modal-title">New Download</span>
-              <button className="modal-close-btn" onClick={() => setIsAddModalOpen(false)}>
+              <button className="modal-close-btn" onClick={() => setShowAddModal(false)}>
                 <X size={18} />
               </button>
             </div>
@@ -819,7 +800,7 @@ function App() {
             </div>
 
             <div className="modal-actions">
-              <button className="action-btn" onClick={() => setIsAddModalOpen(false)}>
+              <button className="action-btn" onClick={() => setShowAddModal(false)}>
                 Cancel
               </button>
               <button 
@@ -828,7 +809,104 @@ function App() {
                 onClick={handleStartDownload}
                 disabled={!inputUrl}
               >
-                <span>Download</span>
+                <span>Download Now</span>
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Popup 2: Live Download Progress Modal (Replaces Popup 1) */}
+      {activePopupTask && (
+        <div className="modal-backdrop">
+          <div className="modal-content" style={{ width: "550px" }}>
+            <div className="modal-header">
+              <span className="modal-title" style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+                <Activity size={18} color="var(--accent-cyan)" />
+                Downloading File...
+              </span>
+            </div>
+
+            <div style={{ display: "flex", flexDirection: "column", gap: "14px" }}>
+              <span style={{ fontSize: "0.95rem", fontWeight: 600, color: "var(--text-primary)", wordBreak: "break-all" }}>
+                {activePopupTask.filename}
+              </span>
+              
+              <div className="progress-container" style={{ gap: "8px" }}>
+                <div className="progress-bar-track" style={{ height: "8px" }}>
+                  <div 
+                    className={`progress-bar-fill ${getStatusText(activePopupTask.status) === "Paused" ? "paused" : ""}`}
+                    style={{ width: `${activePopupTask.total_size > 0 ? Math.min(100, Math.floor((activePopupTask.downloaded / activePopupTask.total_size) * 100)) : 0}%` }}
+                  />
+                </div>
+                
+                <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "10px", fontSize: "0.85rem", color: "var(--text-secondary)" }}>
+                  <div>
+                    Progress: <span style={{ color: "var(--text-primary)", fontWeight: 600 }}>
+                      {activePopupTask.total_size > 0 ? Math.min(100, Math.floor((activePopupTask.downloaded / activePopupTask.total_size) * 100)) : 0}%
+                    </span>
+                  </div>
+                  <div style={{ textAlign: "right" }}>
+                    Speed: <span style={{ color: "var(--accent-cyan)", fontWeight: 600 }}>{formatBytes(activePopupTask.speed)}/s</span>
+                  </div>
+                  <div>
+                    Downloaded: <span style={{ color: "var(--text-primary)", fontWeight: 600 }}>{formatBytes(activePopupTask.downloaded)}</span> of {activePopupTask.total_size > 0 ? formatBytes(activePopupTask.total_size) : "Dynamic Size"}
+                  </div>
+                  <div style={{ textAlign: "right" }}>
+                    ETA: <span style={{ color: "var(--text-primary)", fontWeight: 600 }}>{activePopupTask.eta}</span>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <div className="modal-actions" style={{ borderTop: "1px solid var(--border-color)", paddingTop: "14px" }}>
+              {getStatusText(activePopupTask.status) === "Downloading" ? (
+                <button className="action-btn" onClick={() => handlePause(null, activePopupTask.id)}>
+                  <Pause size={14} />
+                  <span>Pause</span>
+                </button>
+              ) : (
+                <button className="action-btn" onClick={() => handleResume(null, activePopupTask.id)}>
+                  <Play size={14} />
+                  <span>Resume</span>
+                </button>
+              )}
+              <button className="action-btn action-btn-danger" onClick={() => handleCancel(null, activePopupTask.id)}>
+                <X size={14} />
+                <span>Cancel</span>
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Popup 3: Download Complete Modal (Replaces Popup 2) */}
+      {showCompleteModal && (
+        <div className="modal-backdrop" onClick={() => setShowCompleteModal(false)}>
+          <div className="modal-content" onClick={(e) => e.stopPropagation()}>
+            <div className="modal-header">
+              <span className="modal-title" style={{ display: "flex", alignItems: "center", gap: "8px", color: "var(--accent-green)" }}>
+                <CheckCircle size={20} />
+                Download Complete!
+              </span>
+              <button className="modal-close-btn" onClick={() => setShowCompleteModal(false)}>
+                <X size={18} />
+              </button>
+            </div>
+
+            <div style={{ display: "flex", flexDirection: "column", gap: "10px", margin: "8px 0" }}>
+              <span style={{ fontSize: "0.95rem", fontWeight: 600, color: "var(--text-primary)", wordBreak: "break-all" }}>
+                {completedTaskName}
+              </span>
+              <p style={{ fontSize: "0.85rem", color: "var(--text-secondary)", margin: 0 }}>
+                The file was downloaded successfully and saved to your default destination directory.
+              </p>
+            </div>
+
+            <div className="modal-actions" style={{ borderTop: "1px solid var(--border-color)", paddingTop: "14px" }}>
+              <button className="action-btn" style={{ background: "rgba(16, 185, 129, 0.1)", borderColor: "rgba(16, 185, 129, 0.2)", color: "var(--accent-green)" }} onClick={() => setShowCompleteModal(false)}>
+                <CheckCircle size={14} />
+                <span>OK / Close</span>
               </button>
             </div>
           </div>
@@ -882,7 +960,6 @@ function App() {
                   const isCompleted = status === "Completed";
                   const isDownloading = status === "Downloading";
                   
-                  // Mock segment visual statuses
                   let blockClass = "";
                   if (isCompleted) blockClass = "completed";
                   else if (isDownloading) {
@@ -913,21 +990,6 @@ function App() {
           </div>
         </div>
       )}
-
-      {/* Toast Notification Container */}
-      <div className="toast-container">
-        {toasts.map((t) => (
-          <div className="toast-item" key={t.id}>
-            <CheckCircle color="var(--accent-green)" size={20} />
-            <div style={{ display: "flex", flexDirection: "column", gap: "2px", minWidth: 0 }}>
-              <span style={{ fontSize: "0.85rem", fontWeight: 600, color: "var(--text-primary)" }}>Download Finished</span>
-              <span style={{ fontSize: "0.78rem", color: "var(--text-secondary)", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
-                {t.filename}
-              </span>
-            </div>
-          </div>
-        ))}
-      </div>
     </div>
   );
 }

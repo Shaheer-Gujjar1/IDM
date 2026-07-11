@@ -17,6 +17,13 @@ pub enum DownloadStatus {
     Failed(String),
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DownloadChunk {
+    pub start: u64,
+    pub end: u64,
+    pub downloaded: u64,
+}
+
 #[derive(Debug, Clone, Serialize)]
 pub struct DownloadProgress {
     pub id: String,
@@ -37,6 +44,7 @@ pub struct DownloadTask {
     pub downloaded: Arc<AtomicU64>,
     pub status: Arc<RwLock<DownloadStatus>>,
     pub abort_tx: Option<broadcast::Sender<()>>,
+    pub chunks: Mutex<Vec<DownloadChunk>>,
 }
 
 pub struct DownloadManager {
@@ -64,7 +72,6 @@ impl DownloadManager {
     ) -> Result<String, String> {
         let id = uuid::Uuid::new_v4().to_string();
         
-        // Initial request to check headers, sizes, range support
         let client = reqwest::Client::new();
         let res = client
             .head(&url)
@@ -96,11 +103,11 @@ impl DownloadManager {
             downloaded: Arc::new(AtomicU64::new(0)),
             status: Arc::new(RwLock::new(DownloadStatus::Queued)),
             abort_tx: Some(abort_tx),
+            chunks: Mutex::new(vec![]),
         });
 
         self.tasks.write().await.insert(id.clone(), task.clone());
 
-        // Spawn actual downloader task in the background
         let manager_clone = self.clone();
         tokio::spawn(async move {
             if let Err(e) = manager_clone.run_task(task, accept_ranges).await {
@@ -114,20 +121,15 @@ impl DownloadManager {
     async fn run_task(&self, task: Arc<DownloadTask>, accept_ranges: bool) -> Result<(), String> {
         *task.status.write().await = DownloadStatus::Downloading;
 
+        let is_new = task.downloaded.load(Ordering::Relaxed) == 0;
         let num_chunks = if accept_ranges && task.total_size > 0 { 8 } else { 1 };
-        let chunk_size = if num_chunks > 1 {
-            task.total_size / num_chunks
-        } else {
-            task.total_size
-        };
 
-        // Create directory if not exists
         if let Some(parent) = std::path::Path::new(&task.save_path).parent() {
             let _ = tokio::fs::create_dir_all(parent).await;
         }
 
-        // Pre-allocate file space
-        {
+        // Pre-allocate file space only if this is a brand new download
+        if is_new {
             let file = OpenOptions::new()
                 .write(true)
                 .create(true)
@@ -138,12 +140,26 @@ impl DownloadManager {
             if task.total_size > 0 {
                 let _ = file.set_len(task.total_size).await;
             }
+
+            // Initialize connection chunks
+            let mut chunks = vec![];
+            let chunk_size = task.total_size / num_chunks;
+            for i in 0..num_chunks {
+                let start = i * chunk_size;
+                let end = if i == num_chunks - 1 {
+                    task.total_size - 1
+                } else {
+                    (i + 1) * chunk_size - 1
+                };
+                chunks.push(DownloadChunk { start, end, downloaded: 0 });
+            }
+            *task.chunks.lock().await = chunks;
         }
 
-        let mut workers = vec![];
         let abort_tx = task.abort_tx.as_ref().unwrap();
+        let mut workers = vec![];
+        let chunks_list = task.chunks.lock().await.clone();
 
-        // Spawn speed & progress reporter loop
         let id_clone = task.id.clone();
         let filename_clone = task.filename.clone();
         let total_size = task.total_size;
@@ -152,9 +168,10 @@ impl DownloadManager {
         let mut abort_rx = abort_tx.subscribe();
         let app_handle_opt = self.app_handle.lock().await.clone();
 
+        // Speed & Progress reporting loop
         tokio::spawn(async move {
             let mut interval = tokio::time::interval(Duration::from_millis(800));
-            let mut last_bytes = 0;
+            let mut last_bytes = downloaded_counter.load(Ordering::Relaxed);
             let mut last_check = Instant::now();
 
             loop {
@@ -213,38 +230,34 @@ impl DownloadManager {
         });
 
         // Spawn segment download workers
-        for i in 0..num_chunks {
-            let start = i * chunk_size;
-            let end = if i == num_chunks - 1 {
-                task.total_size - 1
-            } else {
-                (i + 1) * chunk_size - 1
-            };
-
+        for (idx, chunk) in chunks_list.into_iter().enumerate() {
             let url = task.url.clone();
             let save_path = task.save_path.clone();
             let downloaded = task.downloaded.clone();
+            let task_clone = task.clone();
             let mut task_abort_rx = abort_tx.subscribe();
 
             let worker = tokio::spawn(async move {
+                let start_offset = chunk.start + chunk.downloaded;
+                let end_offset = chunk.end;
+                if start_offset >= end_offset {
+                    return;
+                }
+
                 let client = reqwest::Client::new();
                 let mut req = client.get(&url);
                 if num_chunks > 1 {
-                    req = req.header(reqwest::header::RANGE, format!("bytes={}-{}", start, end));
+                    req = req.header(reqwest::header::RANGE, format!("bytes={}-{}", start_offset, end_offset));
                 }
 
                 let res = match req.send().await {
                     Ok(r) => r,
-                    Err(e) => {
-                        eprintln!("Worker segment failed to connect: {}", e);
-                        return;
-                    }
+                    Err(_) => return,
                 };
 
                 let mut stream = res.bytes_stream();
-                let mut write_pos = start;
+                let mut local_downloaded = chunk.downloaded;
 
-                // Open independent file descriptor for this segment
                 let mut file = match OpenOptions::new().write(true).open(&save_path).await {
                     Ok(f) => f,
                     Err(_) => return,
@@ -255,17 +268,18 @@ impl DownloadManager {
                         _ = task_abort_rx.recv() => {
                             break;
                         }
-                        chunk = stream.next() => {
-                            match chunk {
+                        bytes_chunk = stream.next() => {
+                            match bytes_chunk {
                                 Some(Ok(bytes)) => {
-                                    if let Err(_) = file.seek(std::io::SeekFrom::Start(write_pos)).await {
+                                    let write_pos = chunk.start + local_downloaded;
+                                    if file.seek(std::io::SeekFrom::Start(write_pos)).await.is_err() {
                                         break;
                                     }
-                                    if let Err(_) = file.write_all(&bytes).await {
+                                    if file.write_all(&bytes).await.is_err() {
                                         break;
                                     }
                                     let len = bytes.len() as u64;
-                                    write_pos += len;
+                                    local_downloaded += len;
                                     downloaded.fetch_add(len, Ordering::Relaxed);
                                 }
                                 _ => break,
@@ -273,12 +287,18 @@ impl DownloadManager {
                         }
                     }
                 }
+
+                // Update segment offset state when aborted or finished
+                let mut chunks_lock = task_clone.chunks.lock().await;
+                if idx < chunks_lock.len() {
+                    chunks_lock[idx].downloaded = local_downloaded;
+                }
             });
 
             workers.push(worker);
         }
 
-        // Wait for all workers to finish
+        // Wait for workers to exit
         for worker in workers {
             let _ = worker.await;
         }
@@ -293,13 +313,11 @@ impl DownloadManager {
             if task.total_size > 0 && downloaded_bytes >= task.total_size {
                 *task.status.write().await = DownloadStatus::Completed;
             } else if task.total_size == 0 && downloaded_bytes > 0 {
-                // If total size was dynamic/unknown, mark complete on EOF
                 *task.status.write().await = DownloadStatus::Completed;
             } else {
                 *task.status.write().await = DownloadStatus::Failed("Download incomplete".to_string());
             }
 
-            // Fire a final progress report to update the UI state
             let final_status = task.status.read().await.clone();
             let progress = DownloadProgress {
                 id: task.id.clone(),
@@ -326,6 +344,22 @@ impl DownloadManager {
             if let Some(ref tx) = task.abort_tx {
                 let _ = tx.send(());
             }
+
+            // Emit a progress update event immediately showing it was paused
+            let progress = DownloadProgress {
+                id: task.id.clone(),
+                filename: task.filename.clone(),
+                total_size: task.total_size,
+                downloaded: task.downloaded.load(Ordering::Relaxed),
+                speed: 0.0,
+                eta: "---".to_string(),
+                status: DownloadStatus::Paused,
+            };
+            if let Some(ref handle) = self.app_handle.lock().await.clone() {
+                use tauri::Emitter;
+                let _ = handle.emit("download-progress", progress);
+            }
+
             Ok(())
         } else {
             Err("Task not found".to_string())
@@ -343,7 +377,6 @@ impl DownloadManager {
                 *status = DownloadStatus::Queued;
             }
 
-            // Set up a new abort broadcast channel
             let (abort_tx, _) = broadcast::channel(1);
             let updated_task = Arc::new(DownloadTask {
                 id: task.id.clone(),
@@ -354,6 +387,7 @@ impl DownloadManager {
                 downloaded: task.downloaded.clone(),
                 status: task.status.clone(),
                 abort_tx: Some(abort_tx),
+                chunks: Mutex::new(task.chunks.lock().await.clone()),
             });
 
             tasks.insert(id.to_string(), updated_task.clone());
@@ -363,12 +397,7 @@ impl DownloadManager {
                 app_handle: Mutex::new(self.app_handle.lock().await.clone()),
             });
 
-            // Spawn resume background loop
             tokio::spawn(async move {
-                // Since this is resume, we start segment workers at where they left off.
-                // For simplicity, we can download the remaining parts. In a real scenario,
-                // chunk resume reads the written segments to find missing bytes.
-                // Let's implement dynamic recovery based on remaining parts:
                 if let Err(e) = manager_clone.run_task(updated_task, true).await {
                     eprintln!("Resume failed: {}", e);
                 }
@@ -386,7 +415,6 @@ impl DownloadManager {
             if let Some(ref tx) = task.abort_tx {
                 let _ = tx.send(());
             }
-            // Remove the temporary file
             let path = task.save_path.clone();
             tokio::spawn(async move {
                 let _ = tokio::fs::remove_file(path).await;
