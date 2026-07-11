@@ -1,1 +1,37 @@
+# Legacy Codebase
 xdm-java/
+
+# Node.js
+**/node_modules/
+**/dist/
+**/dist-ssr/
+**/*.local
+.eslintcache
+
+# Logs
+**/logs/
+**/*.log
+**/npm-debug.log*
+**/yarn-debug.log*
+**/yarn-error.log*
+**/pnpm-debug.log*
+**/lerna-debug.log*
+
+# Rust / Cargo
+**/target/
+**/*.rs.bk
+
+# Tauri / Build outputs
+**/src-tauri/target/
+**/src-tauri/gen/
+
+# Editor directories and files
+.vscode/
+!.vscode/extensions.json
+.idea/
+.DS_Store
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?
