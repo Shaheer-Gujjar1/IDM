@@ -753,10 +753,8 @@ function App() {
       {/* Sidebar */}
       <aside className="sidebar">
         <div className="brand">
-          <div className="brand-icon">
-            <Download size={18} color="#06070a" strokeWidth={3} />
-          </div>
-          <span className="brand-name">Impressive DM</span>
+          <img src="/logo.png" className="brand-logo-img" alt="Logo" />
+          <img src="/Title.png" className="brand-title-img" alt="IDM" />
         </div>
 
         <nav className="sidebar-menu">
@@ -848,7 +846,7 @@ function App() {
                 <div className="form-group">
                   <span className="form-label">Theme Mode</span>
                   <select
-                    className="form-input"
+                    className="form-input theme-select"
                     value={themeMode}
                     onChange={(e) => setThemeMode(e.target.value as any)}
                   >

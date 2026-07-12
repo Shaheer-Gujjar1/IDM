@@ -104,24 +104,16 @@ html, body {
   padding: 0 8px;
 }
 
-.brand-icon {
-  background: linear-gradient(135deg, var(--accent-cyan), var(--accent-purple));
+.brand-logo-img {
   width: 32px;
   height: 32px;
-  border-radius: 8px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  box-shadow: 0 0 16px rgba(0, 240, 255, 0.3);
+  object-fit: contain;
 }
 
-.brand-name {
-  font-size: 1.1rem;
-  font-weight: 700;
-  letter-spacing: 0.5px;
-  background: linear-gradient(120deg, #ffffff, #94a3b8);
-  -webkit-background-clip: text;
-  -webkit-text-fill-color: transparent;
+.brand-title-img {
+  height: 24px;
+  max-width: 140px;
+  object-fit: contain;
 }
 
 .sidebar-menu {
@@ -676,6 +668,12 @@ select.form-input {
 select.form-input option {
   background: #0d0f14;
   color: #f8fafc;
+}
+
+select.form-input.theme-select,
+html[data-theme="light"] select.form-input.theme-select {
+  background-image: none !important;
+  padding-right: 12px !important;
 }
 
 .modal-actions {
@@ -1288,78 +1286,143 @@ select.form-input option {
 /* ─── Light Mode Theme Style System overrides ────────────────────────────── */
 html[data-theme="light"], [data-theme="light"] {
   --bg-primary: #f8fafc;
-  --bg-secondary: #ffffff;
-  --bg-card: rgba(255, 255, 255, 0.85);
-  --bg-card-hover: rgba(255, 255, 255, 0.98);
-  --border-color: rgba(148, 163, 184, 0.15);
-  --border-hover: rgba(148, 163, 184, 0.25);
+  --bg-secondary: #f1f5f9;
+  --bg-card: #ffffff;
+  --bg-card-hover: #ffffff;
+  --border-color: #e2e8f0;
+  --border-hover: #cbd5e1;
   
   --text-primary: #0f172a;
   --text-secondary: #475569;
   --text-muted: #94a3b8;
 
-  --accent-cyan: #0ea5e9;
-  --accent-cyan-glow: rgba(14, 165, 233, 0.1);
-  --accent-green: #10b981;
-  --accent-green-glow: rgba(16, 185, 129, 0.1);
-  --accent-orange: #f97316;
-  --accent-orange-glow: rgba(249, 115, 22, 0.1);
-  --accent-red: #ef4444;
-  --accent-red-glow: rgba(239, 68, 68, 0.1);
-  --accent-purple: #8b5cf6;
+  --accent-cyan: #0284c7;
+  --accent-cyan-glow: rgba(2, 132, 199, 0.08);
+  --accent-green: #0d9488;
+  --accent-green-glow: rgba(13, 148, 136, 0.08);
+  --accent-orange: #ea580c;
+  --accent-orange-glow: rgba(234, 88, 12, 0.08);
+  --accent-red: #e11d48;
+  --accent-red-glow: rgba(225, 29, 72, 0.08);
+  --accent-purple: #7c3aed;
+}
+
+/* Light Theme Layout Shell Overrides */
+html[data-theme="light"] .app-shell {
+  background: radial-gradient(circle at 50% 0%, #e0f2fe 0%, #f8fafc 100%) !important;
 }
 
 html[data-theme="light"] .sidebar {
-  background: rgba(241, 245, 249, 0.8) !important;
-  border-right-color: rgba(148, 163, 184, 0.15) !important;
+  background: #f1f5f9 !important;
+  border-right-color: #e2e8f0 !important;
 }
 
 html[data-theme="light"] .topbar {
-  background: rgba(255, 255, 255, 0.6) !important;
-  border-bottom-color: rgba(148, 163, 184, 0.15) !important;
+  background: rgba(255, 255, 255, 0.8) !important;
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  border-bottom-color: #e2e8f0 !important;
 }
 
+/* Elevation, Modals & Drawers */
 html[data-theme="light"] .modal-content,
 html[data-theme="light"] .standalone-popup,
-html[data-theme="light"] .download-modal,
-html[data-theme="light"] .properties-drawer {
-  background: rgba(255, 255, 255, 0.95);
-  border-color: rgba(148, 163, 184, 0.2);
-  box-shadow: 0 10px 40px rgba(15, 23, 42, 0.08);
+html[data-theme="light"] .download-modal {
+  background: #ffffff !important;
+  border-color: #e2e8f0 !important;
+  box-shadow: 0 20px 25px -5px rgba(0, 0, 0, 0.1), 0 10px 10px -5px rgba(0, 0, 0, 0.04) !important;
   color: var(--text-primary);
 }
 
 html[data-theme="light"] .properties-drawer {
-  background: rgba(255, 255, 255, 0.98) !important;
-  border-left-color: rgba(148, 163, 184, 0.2);
+  background: #ffffff !important;
+  border-left-color: #e2e8f0 !important;
+  box-shadow: -10px 0 25px -5px rgba(0, 0, 0, 0.08) !important;
 }
 
+/* Form inputs & interactive controls */
 html[data-theme="light"] .form-input,
 html[data-theme="light"] .search-input,
 html[data-theme="light"] .file-display-box {
   background: #ffffff !important;
-  border-color: rgba(148, 163, 184, 0.25) !important;
+  border-color: #cbd5e1 !important;
   color: var(--text-primary) !important;
 }
 
 html[data-theme="light"] .form-input:focus,
 html[data-theme="light"] .search-input:focus {
   border-color: var(--accent-cyan) !important;
-  box-shadow: 0 0 0 2px var(--accent-cyan-glow) !important;
+  box-shadow: 0 0 0 3px rgba(2, 132, 199, 0.15) !important;
 }
 
+/* Buttons */
 html[data-theme="light"] .action-btn {
-  background: rgba(15, 23, 42, 0.03);
-  border-color: rgba(148, 163, 184, 0.2);
+  background: #ffffff !important;
+  border-color: #cbd5e1 !important;
+  color: var(--text-secondary) !important;
 }
 
 html[data-theme="light"] .action-btn:hover {
-  background: rgba(15, 23, 42, 0.07);
-  border-color: rgba(148, 163, 184, 0.35);
+  background: #f8fafc !important;
+  border-color: #94a3b8 !important;
+  color: var(--text-primary) !important;
+  box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.05) !important;
+}
+
+html[data-theme="light"] .btn-add-download {
+  color: #ffffff !important;
+  box-shadow: 0 4px 10px rgba(124, 58, 237, 0.25) !important;
+}
+
+html[data-theme="light"] .btn-add-download:hover {
+  box-shadow: 0 6px 14px rgba(124, 58, 237, 0.35) !important;
+}
+
+/* Cards & List Elements */
+html[data-theme="light"] .download-card {
+  background: #ffffff !important;
+  border-color: #e2e8f0 !important;
+  box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.03), 0 2px 4px -1px rgba(0, 0, 0, 0.02) !important;
+}
+
+html[data-theme="light"] .download-card:hover {
+  border-color: #cbd5e1 !important;
+  box-shadow: 0 10px 15px -3px rgba(0, 0, 0, 0.05), 0 4px 6px -2px rgba(0, 0, 0, 0.03) !important;
+}
+
+html[data-theme="light"] .file-icon-container {
+  background: #f1f5f9 !important;
+  border-color: #e2e8f0 !important;
+}
+
+/* Custom Checkbox overrides */
+html[data-theme="light"] .custom-checkbox-checkmark {
+  background-color: #ffffff !important;
+  border-color: #cbd5e1 !important;
+}
+
+html[data-theme="light"] .custom-checkbox-container:hover input ~ .custom-checkbox-checkmark {
+  border-color: var(--accent-red) !important;
+  background-color: rgba(225, 29, 72, 0.04) !important;
+}
+
+html[data-theme="light"] .custom-checkbox-container input:checked ~ .custom-checkbox-checkmark {
+  background-color: var(--accent-red) !important;
+  border-color: var(--accent-red) !important;
+  box-shadow: 0 0 8px rgba(225, 29, 72, 0.2) !important;
+}
+
+/* Scrollbars overrides */
+html[data-theme="light"] ::-webkit-scrollbar-thumb {
+  background: rgba(15, 23, 42, 0.12) !important;
+}
+
+html[data-theme="light"] ::-webkit-scrollbar-thumb:hover {
+  background: rgba(15, 23, 42, 0.22) !important;
 }
 
 html[data-theme="light"] .sidebar-credit-footer {
-  border-top-color: rgba(148, 163, 184, 0.15);
+  border-top-color: #e2e8f0 !important;
 }
 
 html[data-theme="light"] select.form-input {
@@ -1372,7 +1435,7 @@ html[data-theme="light"] select.form-input option {
 }
 
 html[data-theme="light"] .popup-progress-footer {
-  background: rgba(15, 23, 42, 0.02);
-  border-top-color: rgba(148, 163, 184, 0.2);
+  background: #f8fafc !important;
+  border-top-color: #e2e8f0 !important;
 }
 
