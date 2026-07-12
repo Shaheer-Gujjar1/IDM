@@ -580,29 +580,36 @@ function App() {
   // STANDALONE POPUP RENDER logic
   if (popupMode === "add") {
     return (
-      <div className="standalone-popup">
-        <div className="modal-header">
-          <span className="modal-title">New Download Captured</span>
+      <div className="modal-content-v2" style={{ height: "100vh", animation: "none", boxShadow: "none", border: "none", padding: "16px" }}>
+        <div className="modal-header-v2" style={{ marginBottom: "12px", paddingBottom: "8px" }}>
+          <span className="modal-title-v2" style={{ fontSize: "1.2rem" }}>New Download Captured</span>
+          <button className="modal-close-btn-v2" onClick={handleClosePopup}>
+            <X size={18} />
+          </button>
         </div>
-        <div className="form-group">
-          <span className="form-label">Source URL</span>
-          <input type="text" className="form-input" value={popupUrl} onChange={(e) => setPopupUrl(e.target.value)} />
-        </div>
-        <div className="form-group">
-          <span className="form-label">Save As Filename</span>
-          <input type="text" className="form-input" value={popupFilename} onChange={(e) => setPopupFilename(e.target.value)} />
-        </div>
-        <div className="form-group">
-          <span className="form-label">Save Folder Path</span>
-          <div style={{ display: "flex", gap: "8px" }}>
-            <input type="text" className="form-input" value={savePath} onChange={(e) => setSavePath(e.target.value)} />
-            <button className="action-btn" style={{ padding: "0 14px", height: "40px" }} onClick={handlePickFolder}>Browse</button>
+        
+        <div className="modal-body-v2" style={{ flex: 1, display: "flex", flexDirection: "column", gap: "10px", padding: 0 }}>
+          <div className="form-group-v2">
+            <span className="form-label-v2" style={{ fontSize: "0.75rem", marginBottom: "4px" }}>Source URL</span>
+            <input type="text" className="spotlight-input" style={{ padding: "8px 12px", fontSize: "0.85rem" }} value={popupUrl} onChange={(e) => setPopupUrl(e.target.value)} />
+          </div>
+          <div className="form-group-v2">
+            <span className="form-label-v2" style={{ fontSize: "0.75rem", marginBottom: "4px" }}>Save As Filename</span>
+            <input type="text" className="spotlight-input" style={{ padding: "8px 12px", fontSize: "0.85rem" }} value={popupFilename} onChange={(e) => setPopupFilename(e.target.value)} />
+          </div>
+          <div className="form-group-v2">
+            <span className="form-label-v2" style={{ fontSize: "0.75rem", marginBottom: "4px" }}>Save Folder Path</span>
+            <div style={{ display: "flex", gap: "8px" }}>
+              <input type="text" className="spotlight-input" style={{ padding: "8px 12px", fontSize: "0.85rem", flex: 1 }} value={savePath} onChange={(e) => setSavePath(e.target.value)} />
+              <button className="hover-action-btn" style={{ width: "auto", padding: "0 12px", fontSize: "0.8rem", height: "34px" }} onClick={handlePickFolder}>Browse</button>
+            </div>
           </div>
         </div>
-        <div className="modal-actions">
-          <button className="action-btn" onClick={handleClosePopup}>Cancel</button>
-          <button className="btn-add-download" style={{ padding: "8px 20px" }} onClick={handlePopupStartDownload} disabled={!popupUrl}>
-            <span>Start Download</span>
+
+        <div className="modal-actions-v2" style={{ marginTop: "12px", paddingTop: "8px" }}>
+          <button className="hover-action-btn" style={{ width: "auto", padding: "0 16px", height: "38px", fontSize: "0.9rem" }} onClick={handleClosePopup}>Cancel</button>
+          <button className="accent-pill" style={{ padding: "8px 24px", borderRadius: "100px", fontWeight: 700, fontSize: "0.9rem", height: "38px" }} onClick={handlePopupStartDownload} disabled={!popupUrl}>
+            Start Download
           </button>
         </div>
       </div>
@@ -617,69 +624,64 @@ function App() {
       popupProgress.status === "Paused" ||
       JSON.stringify(popupProgress.status) === JSON.stringify("Paused")
     );
+    const isCompleted = popupProgress?.status === "Completed";
 
     return (
-      <div className="standalone-popup standalone-popup--progress">
-        <div className="popup-progress-header">
-          <Activity size={16} color="var(--accent-cyan)" />
-          <span>{popupProgress ? getStatusText(popupProgress.status) : "Connecting..."}</span>
+      <div className="modal-content-v2" style={{ height: "100vh", animation: "none", boxShadow: "none", border: "none", alignItems: "center", justifyContent: "center", position: "relative" }}>
+        
+        <div className="liquid-progress-container" style={{ width: "100px", height: "100px", marginBottom: "16px" }}>
+          <div 
+            className={`liquid-fill ${isPaused ? "paused" : ""} ${isCompleted ? "completed" : ""}`} 
+            style={{ transform: `translateY(${100 - progressPercent}%)` }} 
+          />
+          <div style={{ position: "absolute", inset: 0, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", zIndex: 10 }}>
+            <span style={{ fontSize: "1.8rem", fontWeight: 800, color: "#fff", textShadow: "0 1px 3px rgba(0,0,0,0.9), 0 0 2px rgba(0,0,0,0.9)", lineHeight: 1 }}>{progressPercent}%</span>
+            <span style={{ fontSize: "0.7rem", color: "rgba(255,255,255,0.9)", fontWeight: 600, marginTop: "2px", textShadow: "0 1px 3px rgba(0,0,0,0.9), 0 0 2px rgba(0,0,0,0.9)" }}>{popupProgress ? getStatusText(popupProgress.status) : "Connecting"}</span>
+          </div>
         </div>
 
-        <div className="popup-progress-body">
-          {popupProgress ? (
-            <>
-              <div className="file-display-box" title={popupProgress.filename}>
-                {popupProgress.filename}
+        <div style={{ textAlign: "center", width: "90%" }}>
+          <div className="file-display-box" style={{ background: "rgba(255,255,255,0.05)", border: "none", fontSize: "0.85rem", padding: "8px 12px", marginBottom: "12px", borderRadius: "8px", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }} title={popupProgress?.filename}>
+            {popupProgress?.filename || "Loading..."}
+          </div>
+          
+          {popupProgress && (
+            <div style={{ display: "flex", justifyContent: "space-between", background: "rgba(0,0,0,0.2)", borderRadius: "12px", padding: "10px", border: "1px solid rgba(255,255,255,0.03)" }}>
+              <div style={{ display: "flex", flexDirection: "column", flex: 1 }}>
+                <span style={{ fontSize: "0.65rem", color: "var(--text-secondary)", textTransform: "uppercase", letterSpacing: "0.5px" }}>Downloaded</span>
+                <span style={{ fontSize: "0.85rem", fontWeight: 700 }}>
+                  {formatBytes(popupProgress.downloaded)} 
+                  <span style={{ fontSize: "0.65rem", color: "var(--text-secondary)", fontWeight: 500, marginLeft: "4px" }}>
+                    / {popupProgress.total_size > 0 ? formatBytes(popupProgress.total_size) : "???"}
+                  </span>
+                </span>
               </div>
-
-              <div className="popup-progress-bar-wrap">
-                <div className="progress-bar-track">
-                  <div 
-                    className={`progress-bar-fill ${isPaused ? "paused" : ""}`}
-                    style={{ width: `${progressPercent}%`, transition: "width 0.4s ease" }}
-                  />
-                </div>
-                <div className="popup-progress-pct">{progressPercent}%</div>
+              <div style={{ display: "flex", flexDirection: "column", flex: 1 }}>
+                <span style={{ fontSize: "0.65rem", color: "var(--text-secondary)", textTransform: "uppercase", letterSpacing: "0.5px" }}>Speed</span>
+                <span className="accent-cyan" style={{ fontSize: "0.85rem", fontWeight: 700 }}>{formatBytes(popupProgress.speed)}/s</span>
               </div>
-
-              <div style={{ display: "flex", justifyContent: "space-between", fontSize: "0.78rem", color: "var(--text-secondary)", marginTop: "-6px", padding: "0 2px" }}>
-                <span>{formatBytes(popupProgress.downloaded)} of {popupProgress.total_size > 0 ? formatBytes(popupProgress.total_size) : "Dynamic Size"}</span>
-                <span className={isPaused ? "accent-orange" : "accent-cyan"}>{getStatusText(popupProgress.status)}</span>
+              <div style={{ display: "flex", flexDirection: "column", flex: 1 }}>
+                <span style={{ fontSize: "0.65rem", color: "var(--text-secondary)", textTransform: "uppercase", letterSpacing: "0.5px" }}>ETA</span>
+                <span style={{ fontSize: "0.85rem", fontWeight: 700 }}>{popupProgress.eta}</span>
               </div>
-
-              <div className="popup-progress-stats">
-                <div className="popup-stat">
-                  <span className="popup-stat-label">Speed</span>
-                  <span className="popup-stat-value accent-cyan">{formatBytes(popupProgress.speed)}/s</span>
-                </div>
-                <div className="popup-stat">
-                  <span className="popup-stat-label">ETA</span>
-                  <span className="popup-stat-value">{popupProgress.eta}</span>
-                </div>
-              </div>
-            </>
-          ) : (
-            <div className="popup-connecting">Connecting to backend...</div>
+            </div>
           )}
         </div>
 
-        <div className="popup-progress-footer">
+        <div style={{ position: "absolute", bottom: "16px", left: "16px", right: "16px", display: "flex", gap: "8px", justifyContent: "center" }}>
           {popupProgress && (
             <>
               {isPaused ? (
-                <button className="action-btn" onClick={() => handleResume(null, popupProgress.id)}>
-                  <Play size={14} />
-                  <span>Resume</span>
+                <button className="hover-action-btn" style={{ flex: 1, padding: "14px 0", borderRadius: "16px" }} onClick={() => handleResume(null, popupProgress.id)}>
+                  <Play size={18} style={{ marginRight: "8px" }} /> Resume
                 </button>
               ) : (
-                <button className="action-btn" onClick={() => handlePause(null, popupProgress.id)}>
-                  <Pause size={14} />
-                  <span>Pause</span>
+                <button className="hover-action-btn" style={{ flex: 1, padding: "14px 0", borderRadius: "16px" }} onClick={() => handlePause(null, popupProgress.id)}>
+                  <Pause size={18} style={{ marginRight: "8px" }} /> Pause
                 </button>
               )}
-              <button className="action-btn action-btn-danger" onClick={() => handleCancel(null, popupProgress.id)}>
-                <X size={14} />
-                <span>Cancel</span>
+              <button className="hover-action-btn" style={{ flex: 1, padding: "14px 0", borderRadius: "16px", color: "var(--accent-red)" }} onClick={() => handleCancel(null, popupProgress.id)}>
+                <X size={18} style={{ marginRight: "8px" }} /> Cancel
               </button>
             </>
           )}
@@ -691,70 +693,51 @@ function App() {
   if (popupMode === "refresh") {
     const pId = new URLSearchParams(window.location.search).get("id") || "";
     return (
-      <div className="standalone-popup">
-        <div className="modal-header">
-          <span className="modal-title" style={{ display: "flex", alignItems: "center", gap: "8px", color: "var(--accent-orange)" }}>
-            <RefreshCw size={18} className="spin-slow" />
-            Refreshing Link...
-          </span>
+      <div className="modal-content-v2" style={{ height: "100vh", animation: "none", boxShadow: "none", border: "none", alignItems: "center", justifyContent: "center", position: "relative" }}>
+        <RefreshCw size={56} className="spin-slow" color="var(--accent-orange)" style={{ marginBottom: "24px" }} />
+        <div style={{ color: "var(--accent-orange)", fontSize: "1.6rem", fontWeight: 800, marginBottom: "12px" }}>
+          Waiting for Capture
         </div>
-        <div style={{ display: "flex", flexDirection: "column", gap: "12px", height: "100%", justifyContent: "center", alignItems: "center", textAlign: "center", padding: "10px 20px" }}>
-          <div style={{ color: "var(--accent-orange)", fontSize: "1.1rem", fontWeight: 700, marginBottom: "4px" }}>
-            Waiting for Capture
-          </div>
-          <p style={{ fontSize: "0.82rem", color: "var(--text-secondary)", margin: 0, lineHeight: 1.5 }}>
-            We opened your web browser to the download page.
-          </p>
-          <p style={{ fontSize: "0.82rem", color: "var(--text-secondary)", margin: 0, lineHeight: 1.5 }}>
-            Simply click the download button in your browser now. We will capture the updated address and resume downloading from your saved progress!
-          </p>
-          <div className="modal-actions" style={{ width: "100%", marginTop: "16px" }}>
-            <button className="action-btn action-btn-danger" style={{ width: "100%" }} onClick={() => handleCancel(null, pId)}>
-              <X size={14} />
-              <span>Cancel Refresh</span>
-            </button>
-          </div>
-        </div>
+        <p style={{ fontSize: "1rem", color: "var(--text-secondary)", textAlign: "center", width: "85%", lineHeight: 1.6 }}>
+          We opened your web browser to the download page. Simply click the download button in your browser now. We will capture the updated address and resume automatically!
+        </p>
+        <button className="hover-action-btn" style={{ position: "absolute", bottom: "24px", width: "calc(100% - 48px)", padding: "16px", borderRadius: "16px", color: "var(--accent-red)", fontWeight: 700, fontSize: "1rem" }} onClick={() => handleCancel(null, pId)}>
+          Cancel Refresh
+        </button>
       </div>
     );
   }
 
   if (popupMode === "complete") {
     return (
-      <div className="standalone-popup">
-        <div className="modal-header">
-          <span className="modal-title" style={{ display: "flex", alignItems: "center", gap: "8px", color: "var(--accent-green)" }}>
-            <CheckCircle size={20} />
-            Download Complete!
-          </span>
+      <div className="modal-content-v2" style={{ height: "100vh", animation: "none", boxShadow: "none", border: "none", alignItems: "center", justifyContent: "center", position: "relative" }}>
+        <div style={{ width: "96px", height: "96px", borderRadius: "50%", background: "rgba(16, 185, 129, 0.1)", display: "flex", alignItems: "center", justifyContent: "center", marginBottom: "24px", boxShadow: "0 0 40px rgba(16, 185, 129, 0.2)" }}>
+          <CheckCircle size={48} color="var(--accent-green)" />
         </div>
-        <div style={{ display: "flex", flexDirection: "column", gap: "10px", height: "100%" }}>
-          <div className="file-display-box" style={{ background: "rgba(16, 185, 129, 0.03)", borderColor: "rgba(16, 185, 129, 0.15)" }}>
-            {popupFilename}
-          </div>
-          <p style={{ fontSize: "0.8rem", color: "var(--text-secondary)", margin: "4px 0 0 0" }}>
-            The file was downloaded successfully and saved to your destination directory.
-          </p>
-          <div className="modal-actions" style={{ gap: "10px" }}>
-            {popupSavePath && (
-              <button
-                className="action-btn"
-                style={{ flex: 1, justifyContent: "center", background: "rgba(16, 185, 129, 0.1)", borderColor: "rgba(16, 185, 129, 0.25)", color: "var(--accent-green)", padding: "9px 16px" }}
-                onClick={() => handleOpenFileDir(null, popupSavePath)}
-              >
-                <FolderOpen size={15} />
-                <span>Open Folder</span>
-              </button>
-            )}
+        <div style={{ fontSize: "1.8rem", fontWeight: 800, color: "var(--text-primary)", marginBottom: "16px", letterSpacing: "-0.5px" }}>
+          Download Complete!
+        </div>
+        <div className="file-display-box" style={{ background: "rgba(255,255,255,0.03)", border: "1px solid rgba(255,255,255,0.06)", fontSize: "1.05rem", padding: "16px 24px", width: "85%", textAlign: "center", marginBottom: "40px", borderRadius: "16px" }}>
+          {popupFilename}
+        </div>
+        
+        <div style={{ position: "absolute", bottom: "24px", left: "24px", right: "24px", display: "flex", gap: "16px" }}>
+          {popupSavePath && (
             <button
-              className="action-btn"
-              style={{ flex: 1, justifyContent: "center", padding: "9px 16px" }}
-              onClick={handleClosePopup}
+              className="hover-action-btn"
+              style={{ flex: 1, padding: "16px", borderRadius: "16px", color: "var(--accent-green)", fontWeight: 700, fontSize: "1rem", background: "rgba(16, 185, 129, 0.05)", border: "1px solid rgba(16, 185, 129, 0.15)" }}
+              onClick={() => handleOpenFileDir(null, popupSavePath)}
             >
-              <CheckCircle size={15} />
-              <span>Dismiss</span>
+              Open Folder
             </button>
-          </div>
+          )}
+          <button
+            className="hover-action-btn"
+            style={{ flex: 1, padding: "16px", borderRadius: "16px", fontWeight: 700, fontSize: "1rem" }}
+            onClick={handleClosePopup}
+          >
+            Close
+          </button>
         </div>
       </div>
     );
@@ -1427,16 +1410,7 @@ function App() {
                 Cancel
               </button>
               <button 
-                className="accent-pill" 
-                style={{ 
-                  padding: "12px 32px", 
-                  borderRadius: "100px", 
-                  fontWeight: 700, 
-                  fontSize: "1rem", 
-                  background: "linear-gradient(135deg, #ef4444, #b91c1c)", 
-                  boxShadow: "0 4px 16px rgba(239, 68, 68, 0.4)",
-                  color: "#fff"
-                }} 
+                className="accent-pill danger-pill" 
                 onClick={confirmRemoveTask}
               >
                 Confirm Delete
