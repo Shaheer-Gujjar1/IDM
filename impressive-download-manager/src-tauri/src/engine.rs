@@ -2,10 +2,10 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
+use std::io::{Write, Seek};
 use serde::{Serialize, Deserialize};
 use tokio::sync::{Mutex, RwLock, broadcast};
 use tokio::fs::OpenOptions;
-use tokio::io::{AsyncWriteExt, AsyncSeekExt};
 use futures_util::StreamExt;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -28,6 +28,7 @@ pub struct DownloadChunk {
 pub struct DownloadProgress {
     pub id: String,
     pub filename: String,
+    pub save_path: String,
     pub total_size: u64,
     pub downloaded: u64,
     pub speed: f64, // bytes/sec
@@ -423,15 +424,38 @@ impl DownloadManager {
                 let mut stream = res.bytes_stream();
                 let mut local_downloaded = chunk.downloaded;
 
-                let mut file = match OpenOptions::new().write(true).open(&save_path).await {
+                // --- Blocking writer thread ---
+                // Open a *std* file handle so the writer thread never touches async I/O
+                let std_file = match std::fs::OpenOptions::new().write(true).open(&save_path) {
                     Ok(f) => f,
                     Err(_) => return,
                 };
 
-                let mut buffer = Vec::with_capacity(128 * 1024);
+                // Channel: async reader → blocking writer
+                // Up to 64 chunks of 128 KB = 8 MB in flight before back-pressure
+                let (tx, rx) = std::sync::mpsc::sync_channel::<(u64, Vec<u8>)>(64);
+                let downloaded_for_writer = downloaded.clone();
+
+                // Spawn a blocking OS thread that does all disk I/O
+                let writer_handle = tokio::task::spawn_blocking(move || {
+                    let mut f = std_file;
+                    for (write_pos, buf) in rx {
+                        if f.seek(std::io::SeekFrom::Start(write_pos)).is_ok() {
+                            if f.write_all(&buf).is_ok() {
+                                downloaded_for_writer.fetch_add(buf.len() as u64, Ordering::Relaxed);
+                            }
+                        }
+                    }
+                    // Ensure everything is flushed to OS buffers
+                    let _ = f.flush();
+                });
+
+                // --- Async network reader --- reads at full line speed, no disk awaits ---
+                let mut net_buffer = Vec::with_capacity(256 * 1024);
 
                 loop {
                     tokio::select! {
+                        biased; // Check abort first, always
                         _ = task_abort_rx.recv() => {
                             break;
                         }
@@ -440,7 +464,7 @@ impl DownloadManager {
                                 Some(Ok(bytes)) => {
                                     let mut bytes_to_add = bytes.as_ref();
                                     if num_chunks > 1 && end_offset > 0 {
-                                        let current_pos = chunk.start + local_downloaded;
+                                        let current_pos = chunk.start + local_downloaded + net_buffer.len() as u64;
                                         if current_pos >= end_offset + 1 {
                                             break;
                                         }
@@ -450,25 +474,25 @@ impl DownloadManager {
                                         }
                                     }
 
-                                    buffer.extend_from_slice(bytes_to_add);
+                                    net_buffer.extend_from_slice(bytes_to_add);
 
-                                    let is_done_chunk = num_chunks > 1 && end_offset > 0 && 
-                                        (chunk.start + local_downloaded + buffer.len() as u64 >= end_offset + 1);
-
-                                    if buffer.len() >= 128 * 1024 || is_done_chunk {
+                                    // Flush to writer thread every 256 KB
+                                    if net_buffer.len() >= 256 * 1024 {
                                         let write_pos = chunk.start + local_downloaded;
-                                        if file.seek(std::io::SeekFrom::Start(write_pos)).await.is_ok() {
-                                            if file.write_all(&buffer).await.is_ok() {
-                                                let len = buffer.len() as u64;
-                                                local_downloaded += len;
-                                                downloaded.fetch_add(len, Ordering::Relaxed);
-                                            }
+                                        let flushed = std::mem::replace(&mut net_buffer, Vec::with_capacity(256 * 1024));
+                                        local_downloaded += flushed.len() as u64;
+                                        // If channel is full this will block briefly, which is fine
+                                        if tx.send((write_pos, flushed)).is_err() {
+                                            break; // writer died
                                         }
-                                        buffer.clear();
                                     }
 
-                                    if is_done_chunk {
-                                        break;
+                                    // Segment boundary reached
+                                    if num_chunks > 1 && end_offset > 0 {
+                                        let current_pos = chunk.start + local_downloaded + net_buffer.len() as u64;
+                                        if current_pos >= end_offset + 1 {
+                                            break;
+                                        }
                                     }
                                 }
                                 _ => break,
@@ -477,16 +501,16 @@ impl DownloadManager {
                     }
                 }
 
-                if !buffer.is_empty() {
+                // Flush any remaining bytes
+                if !net_buffer.is_empty() {
                     let write_pos = chunk.start + local_downloaded;
-                    if file.seek(std::io::SeekFrom::Start(write_pos)).await.is_ok() {
-                        if file.write_all(&buffer).await.is_ok() {
-                            let len = buffer.len() as u64;
-                            local_downloaded += len;
-                            downloaded.fetch_add(len, Ordering::Relaxed);
-                        }
-                    }
+                    local_downloaded += net_buffer.len() as u64;
+                    let _ = tx.send((write_pos, net_buffer));
                 }
+
+                // Drop tx so the writer thread knows we're done, then wait for it
+                drop(tx);
+                let _ = writer_handle.await;
 
                 // Update segment offset state when aborted or finished
                 let mut chunks_lock = task_clone.chunks.lock().await;
@@ -740,6 +764,7 @@ impl DownloadManager {
             Some(DownloadProgress {
                 id: task.id.clone(),
                 filename: task.filename.clone(),
+                save_path: task.save_path.clone(),
                 total_size: task.total_size,
                 downloaded: current_bytes,
                 speed,
@@ -762,6 +787,7 @@ impl DownloadManager {
             list.push(DownloadProgress {
                 id: task.id.clone(),
                 filename: task.filename.clone(),
+                save_path: task.save_path.clone(),
                 total_size: task.total_size,
                 downloaded: current_bytes,
                 speed,

@@ -56,6 +56,7 @@ function App() {
   const [popupMode, setPopupMode] = useState<string | null>(null);
   const [popupUrl, setPopupUrl] = useState("");
   const [popupFilename, setPopupFilename] = useState("");
+  const [popupSavePath, setPopupSavePath] = useState("");
   const [popupCookie, setPopupCookie] = useState("");
   const [popupReferrer, setPopupReferrer] = useState("");
   const [popupTaskId, setPopupTaskId] = useState<string | null>(null);
@@ -139,17 +140,23 @@ function App() {
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
     const mode = params.get("popup");
+    const url = params.get("url") || "";
+    const filename = params.get("filename") || "";
+    const savePath = params.get("save_path") || "";
+    const cookie = params.get("cookie") || "";
+    const referrer = params.get("referrer") || "";
+    const taskId = params.get("id") || null;
+
     if (mode) {
       setPopupMode(mode);
-      if (mode === "add") {
-        setPopupUrl(params.get("url") || "");
-        setPopupFilename(params.get("filename") || "");
-        setPopupCookie(params.get("cookie") || "");
-        setPopupReferrer(params.get("referrer") || "");
-      } else if (mode === "progress") {
-        const taskId = params.get("id");
-        setPopupTaskId(taskId);
-        
+      setPopupUrl(url);
+      setPopupFilename(decodeURIComponent(filename));
+      setPopupSavePath(decodeURIComponent(savePath));
+      setPopupCookie(cookie);
+      setPopupReferrer(referrer);
+      setPopupTaskId(taskId);
+      
+      if (mode === "progress") {
         // Fetch progress state immediately from Rust backend to prevent Connecting... freeze
         if (taskId) {
           invoke<DownloadProgress | null>("get_download_progress", { id: taskId })
@@ -203,7 +210,7 @@ function App() {
             // Trigger popup 3 and close this window when completed
             if (prog.status === "Completed") {
               stopped = true;
-              await invoke("open_complete_window", { filename: prog.filename });
+              await invoke("open_complete_window", { filename: prog.filename, savePath: prog.save_path || "" });
               await invoke("close_window");
               return;
             }
@@ -649,9 +656,23 @@ function App() {
           <p style={{ fontSize: "0.8rem", color: "var(--text-secondary)", margin: "4px 0 0 0" }}>
             The file was downloaded successfully and saved to your destination directory.
           </p>
-          <div className="modal-actions">
-            <button className="action-btn" style={{ background: "rgba(16, 185, 129, 0.1)", borderColor: "rgba(16, 185, 129, 0.2)", color: "var(--accent-green)" }} onClick={handleClosePopup}>
-              <CheckCircle size={14} />
+          <div className="modal-actions" style={{ gap: "10px" }}>
+            {popupSavePath && (
+              <button
+                className="action-btn"
+                style={{ flex: 1, justifyContent: "center", background: "rgba(16, 185, 129, 0.1)", borderColor: "rgba(16, 185, 129, 0.25)", color: "var(--accent-green)", padding: "9px 16px" }}
+                onClick={() => handleOpenFileDir(null, popupSavePath)}
+              >
+                <FolderOpen size={15} />
+                <span>Open Folder</span>
+              </button>
+            )}
+            <button
+              className="action-btn"
+              style={{ flex: 1, justifyContent: "center", padding: "9px 16px" }}
+              onClick={handleClosePopup}
+            >
+              <CheckCircle size={15} />
               <span>Dismiss</span>
             </button>
           </div>

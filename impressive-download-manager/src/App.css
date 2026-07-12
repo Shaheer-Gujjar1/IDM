@@ -327,7 +327,6 @@ html, body {
   transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
   box-shadow: 0 4px 20px rgba(0, 0, 0, 0.15);
   position: relative;
-  overflow: hidden;
   cursor: pointer;
 }
 
@@ -469,6 +468,8 @@ html, body {
   gap: 10px;
   border-top: 1px solid var(--border-color);
   padding-top: 12px;
+  position: relative;
+  z-index: 2;
 }
 
 .action-btn {
@@ -483,19 +484,25 @@ html, body {
   align-items: center;
   gap: 6px;
   cursor: pointer;
+  pointer-events: auto;
+  position: relative;
+  z-index: 2;
   transition: all 0.2s ease;
 }
 
 .action-btn:hover {
-  background: rgba(255, 255, 255, 0.07);
+  background: rgba(255, 255, 255, 0.12);
   color: var(--text-primary);
-  border-color: rgba(255, 255, 255, 0.15);
+  border-color: rgba(255, 255, 255, 0.25);
+  transform: translateY(-1px);
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.2);
 }
 
 .action-btn-danger:hover {
   background: var(--accent-red-glow);
   color: var(--accent-red);
   border-color: rgba(239, 68, 68, 0.2);
+  transform: translateY(-1px);
 }
 
 /* Empty States */

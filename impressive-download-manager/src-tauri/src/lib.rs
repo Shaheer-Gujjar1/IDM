@@ -116,28 +116,9 @@ async fn refresh_download_link(
 
 #[tauri::command]
 async fn open_file_dir(path: String) -> Result<(), String> {
-    let path_buf = std::path::PathBuf::from(path);
-    if let Some(parent) = path_buf.parent() {
-        #[cfg(target_os = "linux")]
-        {
-            let _ = std::process::Command::new("xdg-open")
-                .arg(parent)
-                .spawn();
-        }
-        #[cfg(target_os = "windows")]
-        {
-            let _ = std::process::Command::new("explorer")
-                .arg(parent)
-                .spawn();
-        }
-        #[cfg(target_os = "macos")]
-        {
-            let _ = std::process::Command::new("open")
-                .arg(parent)
-                .spawn();
-        }
-    }
-    Ok(())
+    // reveal_item_in_dir opens the folder AND highlights the specific file
+    tauri_plugin_opener::reveal_item_in_dir(&path)
+        .map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -178,9 +159,13 @@ async fn open_progress_window(app_handle: tauri::AppHandle, id: String) -> Resul
 }
 
 #[tauri::command]
-async fn open_complete_window(app_handle: tauri::AppHandle, filename: String) -> Result<(), String> {
-    let complete_url = format!("/index.html?popup=complete&filename={}", urlencoding::encode(&filename));
-    
+async fn open_complete_window(app_handle: tauri::AppHandle, filename: String, save_path: String) -> Result<(), String> {
+    let complete_url = format!(
+        "/index.html?popup=complete&filename={}&save_path={}",
+        urlencoding::encode(&filename),
+        urlencoding::encode(&save_path),
+    );
+
     // Spawn the complete window
     let _ = tauri::WebviewWindowBuilder::new(
         &app_handle,
@@ -188,7 +173,7 @@ async fn open_complete_window(app_handle: tauri::AppHandle, filename: String) ->
         tauri::WebviewUrl::App(complete_url.into()),
     )
     .title("Download Finished")
-    .inner_size(500.0, 240.0)
+    .inner_size(500.0, 260.0)
     .center()
     .resizable(false)
     .build()
