@@ -47,6 +47,8 @@ pub struct DownloadTask {
     pub status: Arc<RwLock<DownloadStatus>>,
     pub abort_tx: Option<broadcast::Sender<()>>,
     pub chunks: Mutex<Vec<DownloadChunk>>,
+    pub speed: Arc<RwLock<f64>>,
+    pub eta: Arc<RwLock<String>>,
 }
 
 pub struct DownloadManager {
@@ -124,6 +126,8 @@ impl DownloadManager {
             status: Arc::new(RwLock::new(DownloadStatus::Queued)),
             abort_tx: Some(abort_tx),
             chunks: Mutex::new(vec![]),
+            speed: Arc::new(RwLock::new(0.0)),
+            eta: Arc::new(RwLock::new("---".to_string())),
         });
 
         self.tasks.write().await.insert(id.clone(), task.clone());
@@ -191,6 +195,8 @@ impl DownloadManager {
         let status_ref = task.status.clone();
         let mut abort_rx = abort_tx.subscribe();
         let app_handle_opt = self.app_handle.lock().await.clone();
+        let task_speed = task.speed.clone();
+        let task_eta = task.eta.clone();
 
         // Speed & Progress reporting loop
         tokio::spawn(async move {
@@ -226,6 +232,8 @@ impl DownloadManager {
                         };
 
                         let status = status_ref.read().await.clone();
+                        *task_speed.write().await = speed;
+                        *task_eta.write().await = eta.clone();
 
                         let progress = DownloadProgress {
                             id: id_clone.clone(),
@@ -431,6 +439,8 @@ impl DownloadManager {
                 status: task.status.clone(),
                 abort_tx: Some(abort_tx),
                 chunks: Mutex::new(task.chunks.lock().await.clone()),
+                speed: task.speed.clone(),
+                eta: task.eta.clone(),
             });
 
             tasks.insert(id.to_string(), updated_task.clone());
@@ -472,6 +482,8 @@ impl DownloadManager {
         let tasks = self.tasks.read().await;
         if let Some(task) = tasks.get(id) {
             let current_bytes = task.downloaded.load(Ordering::Relaxed);
+            let speed = *task.speed.read().await;
+            let eta = task.eta.read().await.clone();
             let status = task.status.read().await.clone();
             
             Some(DownloadProgress {
@@ -479,8 +491,8 @@ impl DownloadManager {
                 filename: task.filename.clone(),
                 total_size: task.total_size,
                 downloaded: current_bytes,
-                speed: 0.0,
-                eta: "---".to_string(),
+                speed,
+                eta,
                 status,
             })
         } else {
@@ -494,13 +506,15 @@ impl DownloadManager {
         for task in tasks.values() {
             let current_bytes = task.downloaded.load(Ordering::Relaxed);
             let status = task.status.read().await.clone();
+            let speed = *task.speed.read().await;
+            let eta = task.eta.read().await.clone();
             list.push(DownloadProgress {
                 id: task.id.clone(),
                 filename: task.filename.clone(),
                 total_size: task.total_size,
                 downloaded: current_bytes,
-                speed: 0.0,
-                eta: "---".to_string(),
+                speed,
+                eta,
                 status,
             });
         }

@@ -518,11 +518,12 @@ function App() {
                 <div className="popup-progress-pct">{progressPercent}%</div>
               </div>
 
+              <div style={{ display: "flex", justifyContent: "space-between", fontSize: "0.78rem", color: "var(--text-secondary)", marginTop: "-6px", padding: "0 2px" }}>
+                <span>{formatBytes(popupProgress.downloaded)} of {popupProgress.total_size > 0 ? formatBytes(popupProgress.total_size) : "Dynamic Size"}</span>
+                <span className={isPaused ? "accent-orange" : "accent-cyan"}>{getStatusText(popupProgress.status)}</span>
+              </div>
+
               <div className="popup-progress-stats">
-                <div className="popup-stat">
-                  <span className="popup-stat-label">Downloaded</span>
-                  <span className="popup-stat-value">{formatBytes(popupProgress.downloaded)} / {popupProgress.total_size > 0 ? formatBytes(popupProgress.total_size) : "~"}</span>
-                </div>
                 <div className="popup-stat">
                   <span className="popup-stat-label">Speed</span>
                   <span className="popup-stat-value accent-cyan">{formatBytes(popupProgress.speed)}/s</span>
@@ -530,12 +531,6 @@ function App() {
                 <div className="popup-stat">
                   <span className="popup-stat-label">ETA</span>
                   <span className="popup-stat-value">{popupProgress.eta}</span>
-                </div>
-                <div className="popup-stat">
-                  <span className="popup-stat-label">Status</span>
-                  <span className={`popup-stat-value ${isPaused ? "accent-orange" : "accent-cyan"}`}>
-                    {getStatusText(popupProgress.status)}
-                  </span>
                 </div>
               </div>
             </>

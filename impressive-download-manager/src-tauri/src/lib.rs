@@ -64,7 +64,7 @@ async fn open_progress_window(app_handle: tauri::AppHandle, id: String) -> Resul
         tauri::WebviewUrl::App(progress_url.into()),
     )
     .title("Downloading...")
-    .inner_size(520.0, 300.0)
+    .inner_size(520.0, 340.0)
     .center()
     .resizable(false)
     .build()
@@ -142,7 +142,7 @@ async fn resume_and_open_progress(
             tauri::WebviewUrl::App(progress_url.into()),
         )
         .title("Downloading...")
-        .inner_size(520.0, 360.0)
+        .inner_size(520.0, 340.0)
         .center()
         .resizable(false)
         .build()

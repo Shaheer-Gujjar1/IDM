@@ -1068,8 +1068,8 @@ html, body {
   overflow: hidden;
   display: flex;
   flex-direction: column;
-  gap: 14px;
-  padding: 16px 20px;
+  gap: 12px;
+  padding: 14px 20px;
 }
 .popup-progress-bar-wrap {
   display: flex;
@@ -1099,7 +1099,7 @@ html, body {
   background: rgba(255, 255, 255, 0.02);
   border: 1px solid rgba(255, 255, 255, 0.04);
   border-radius: 8px;
-  padding: 9px 12px;
+  padding: 8px 12px;
   display: flex;
   flex-direction: column;
   gap: 3px;
