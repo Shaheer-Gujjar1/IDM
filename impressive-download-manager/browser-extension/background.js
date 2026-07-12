@@ -36,6 +36,17 @@ chrome.downloads.onDeterminingFilename.addListener((downloadItem, suggest) => {
     return;
   }
 
+  // Whitelist image downloads (MIME type or file extension)
+  const filenameStr = downloadItem.filename || "";
+  const mime = downloadItem.mime || "";
+  const isImage = mime.startsWith("image/") || 
+                  /\.(png|jpe?g|gif|webp|svg|bmp|ico|tiff?)(?:\?.*)?$/i.test(url) ||
+                  /\.(png|jpe?g|gif|webp|svg|bmp|ico|tiff?)$/i.test(filenameStr);
+  if (isImage) {
+    suggest();
+    return;
+  }
+
   // Ignore historical/restored downloads loaded by Chrome at startup
   if (downloadItem.startTime) {
     const downloadTime = new Date(downloadItem.startTime).getTime();
@@ -94,6 +105,13 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       const referrer = sender.tab?.url || "";
 
       if (url.includes("web.whatsapp.com") || referrer.includes("web.whatsapp.com")) {
+        return;
+      }
+
+      // Whitelist image files
+      const isImage = /\.(png|jpe?g|gif|webp|svg|bmp|ico|tiff?)(?:\?.*)?$/i.test(url) ||
+                      /\.(png|jpe?g|gif|webp|svg|bmp|ico|tiff?)$/i.test(filename);
+      if (isImage) {
         return;
       }
 

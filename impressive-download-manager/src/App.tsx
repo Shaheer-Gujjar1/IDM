@@ -96,6 +96,43 @@ function App() {
   const [endTime, setEndTime] = useState("06:00");
   const [activeDays, setActiveDays] = useState<string[]>(["Mon", "Tue", "Wed", "Thu", "Fri"]);
 
+  // Theme Mode Settings State
+  const [themeMode, setThemeMode] = useState<"dark" | "light" | "system">(() => {
+    return (localStorage.getItem("theme_mode") as any) || "dark";
+  });
+
+  useEffect(() => {
+    localStorage.setItem("theme_mode", themeMode);
+    
+    const applyTheme = () => {
+      if (themeMode === "system") {
+        const isDark = window.matchMedia("(prefers-color-scheme: dark)").matches;
+        document.documentElement.setAttribute("data-theme", isDark ? "dark" : "light");
+      } else {
+        document.documentElement.setAttribute("data-theme", themeMode);
+      }
+    };
+
+    applyTheme();
+
+    if (themeMode === "system") {
+      const mediaQuery = window.matchMedia("(prefers-color-scheme: dark)");
+      const handler = () => applyTheme();
+      mediaQuery.addEventListener("change", handler);
+      return () => mediaQuery.removeEventListener("change", handler);
+    }
+  }, [themeMode]);
+
+  useEffect(() => {
+    const handleStorageChange = (e: StorageEvent) => {
+      if (e.key === "theme_mode") {
+        setThemeMode((e.newValue as any) || "dark");
+      }
+    };
+    window.addEventListener("storage", handleStorageChange);
+    return () => window.removeEventListener("storage", handleStorageChange);
+  }, []);
+
   const daysOfWeek = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
 
   const toggleDay = (day: string) => {
@@ -441,25 +478,7 @@ function App() {
     }
   };
 
-  const handleRestore = async (e: React.MouseEvent | null, id: string) => {
-    if (e) e.stopPropagation();
-    try {
-      await invoke("restore_task", { id });
-      // Fetch updated status by polling or just let the progress listener sync it, 
-      // but to be snappy we can update status to Paused or Completed locally
-      setDownloads((prev) => 
-        prev.map((d) => {
-          if (d.id === id) {
-            const isCompleted = d.total_size > 0 && d.downloaded >= d.total_size;
-            return { ...d, status: isCompleted ? "Completed" : "Paused" };
-          }
-          return d;
-        })
-      );
-    } catch (err) {
-      console.error(err);
-    }
-  };
+
 
 
   const handleClosePopup = async () => {
@@ -826,6 +845,18 @@ function App() {
                     onChange={(e) => setDefaultSaveDir(e.target.value)}
                   />
                 </div>
+                <div className="form-group">
+                  <span className="form-label">Theme Mode</span>
+                  <select
+                    className="form-input"
+                    value={themeMode}
+                    onChange={(e) => setThemeMode(e.target.value as any)}
+                  >
+                    <option value="dark">Dark Theme</option>
+                    <option value="light">Light Theme</option>
+                    <option value="system">Follow System Theme</option>
+                  </select>
+                </div>
                 <div className="settings-control-row">
                   <div className="settings-info-col">
                     <span className="settings-title">Launch on Startup</span>
@@ -1078,10 +1109,10 @@ function App() {
                               <button 
                                 className="action-btn" 
                                 style={{ color: "var(--accent-green)", borderColor: "rgba(16, 185, 129, 0.2)", background: "rgba(16, 185, 129, 0.05)" }}
-                                onClick={(e) => handleRestore(e, d.id)}
+                                onClick={(e) => handleRedownload(e, d.id)}
                               >
-                                <RefreshCw size={14} />
-                                <span>Restore</span>
+                                <Play size={14} />
+                                <span>Re-download</span>
                               </button>
                               <button className="action-btn action-btn-danger" onClick={(e) => promptRemoveTask(e, d)}>
                                 <Trash2 size={14} />
@@ -1296,10 +1327,10 @@ function App() {
                   <button 
                     className="action-btn" 
                     style={{ flex: 1, color: "var(--accent-green)", borderColor: "rgba(16, 185, 129, 0.2)", background: "rgba(16, 185, 129, 0.05)" }}
-                    onClick={(e) => handleRestore(e, selectedTask.id)}
+                    onClick={(e) => handleRedownload(e, selectedTask.id)}
                   >
-                    <RefreshCw size={14} />
-                    <span>Restore</span>
+                    <Play size={14} />
+                    <span>Re-download</span>
                   </button>
                   <button className="action-btn action-btn-danger" style={{ flex: 1 }} onClick={(e) => promptRemoveTask(e, selectedTask)}>
                     <Trash2 size={14} />
@@ -1379,14 +1410,14 @@ function App() {
               </p>
 
               {getStatusText(taskToRemove.status) === "Completed" && (
-                <label style={{ display: "flex", alignItems: "center", gap: "10px", cursor: "pointer", userSelect: "none", fontSize: "0.85rem", color: "var(--text-secondary)" }}>
+                <label className="custom-checkbox-container">
                   <input 
                     type="checkbox" 
                     checked={deleteFileFromDisk} 
                     onChange={(e) => setDeleteFileFromDisk(e.target.checked)}
-                    style={{ accentColor: "var(--accent-red)", width: "16px", height: "16px" }}
                   />
-                  <span>Delete downloaded file from disk</span>
+                  <span className="custom-checkbox-checkmark"></span>
+                  <span className="custom-checkbox-label">Delete downloaded file from disk</span>
                 </label>
               )}
 
