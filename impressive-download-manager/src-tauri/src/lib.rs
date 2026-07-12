@@ -49,6 +49,23 @@ async fn delete_task(
 }
 
 #[tauri::command]
+async fn trash_task(
+    id: String,
+    delete_file: bool,
+    manager: State<'_, Arc<DownloadManager>>,
+) -> Result<(), String> {
+    manager.trash_task(&id, delete_file).await
+}
+
+#[tauri::command]
+async fn restore_task(
+    id: String,
+    manager: State<'_, Arc<DownloadManager>>,
+) -> Result<(), String> {
+    manager.restore_task(&id).await
+}
+
+#[tauri::command]
 async fn redownload_task(
     id: String,
     manager: State<'_, Arc<DownloadManager>>,
@@ -572,6 +589,8 @@ pub fn run() {
             resume_and_open_progress,
             cancel_download,
             delete_task,
+            trash_task,
+            restore_task,
             redownload_task,
             refresh_download_link,
             open_file_dir,

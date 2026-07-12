@@ -27,9 +27,10 @@ import {
 } from "lucide-react";
 import { listen } from "@tauri-apps/api/event";
 import { invoke } from "@tauri-apps/api/core";
+import { getCurrentWindow } from "@tauri-apps/api/window";
 import "./App.css";
 
-type DownloadStatus = "Queued" | "Downloading" | "Paused" | "Completed" | { Failed: string };
+type DownloadStatus = "Queued" | "Downloading" | "Paused" | "Completed" | { Failed: string } | "Trash";
 
 interface DownloadProgress {
   id: string;
@@ -84,6 +85,11 @@ function App() {
   const [interceptDownloads, setInterceptDownloads] = useState(true);
   const [integrationPort, setIntegrationPort] = useState(9600);
   
+  // Remove Task Modal States
+  const [showRemoveConfirm, setShowRemoveConfirm] = useState(false);
+  const [taskToRemove, setTaskToRemove] = useState<DownloadProgress | null>(null);
+  const [deleteFileFromDisk, setDeleteFileFromDisk] = useState(false);
+
   // Scheduler State
   const [schedulerEnabled, setSchedulerEnabled] = useState(false);
   const [startTime, setStartTime] = useState("02:00");
@@ -388,7 +394,7 @@ function App() {
       
       // If we are cancel-closing the standalone progress or refresh window, close this window
       if (popupMode === "progress" || popupMode === "refresh") {
-        await invoke("close_window");
+        await getCurrentWindow().close();
       }
     } catch (err) {
       console.error(err);
@@ -404,19 +410,60 @@ function App() {
     }
   };
 
-  const handleDeleteTask = async (e: React.MouseEvent | null, id: string) => {
+  const promptRemoveTask = (e: React.MouseEvent | null, task: DownloadProgress) => {
     if (e) e.stopPropagation();
-    if (selectedTask?.id === id) setSelectedTask(null);
+    setTaskToRemove(task);
+    setDeleteFileFromDisk(false);
+    setShowRemoveConfirm(true);
+  };
+
+  const confirmRemoveTask = async () => {
+    if (!taskToRemove) return;
+    const id = taskToRemove.id;
+    const isAlreadyTrash = getStatusText(taskToRemove.status) === "Trash";
+    
     try {
-      await invoke("delete_task", { id });
-      setDownloads((prev) => prev.filter((d) => d.id !== id));
+      if (isAlreadyTrash) {
+        await invoke("delete_task", { id });
+        setDownloads((prev) => prev.filter((d) => d.id !== id));
+      } else {
+        await invoke("trash_task", { id, deleteFile: deleteFileFromDisk });
+        setDownloads((prev) => 
+          prev.map((d) => d.id === id ? { ...d, status: "Trash" } : d)
+        );
+      }
+      if (selectedTask?.id === id) setSelectedTask(null);
+    } catch (err) {
+      console.error(err);
+    } finally {
+      setShowRemoveConfirm(false);
+      setTaskToRemove(null);
+    }
+  };
+
+  const handleRestore = async (e: React.MouseEvent | null, id: string) => {
+    if (e) e.stopPropagation();
+    try {
+      await invoke("restore_task", { id });
+      // Fetch updated status by polling or just let the progress listener sync it, 
+      // but to be snappy we can update status to Paused or Completed locally
+      setDownloads((prev) => 
+        prev.map((d) => {
+          if (d.id === id) {
+            const isCompleted = d.total_size > 0 && d.downloaded >= d.total_size;
+            return { ...d, status: isCompleted ? "Completed" : "Paused" };
+          }
+          return d;
+        })
+      );
     } catch (err) {
       console.error(err);
     }
   };
 
+
   const handleClosePopup = async () => {
-    await invoke("close_window");
+    await getCurrentWindow().close();
   };
 
   // Helpers
@@ -459,6 +506,9 @@ function App() {
   const filteredDownloads = downloads.filter((d) => {
     if (searchQuery && !d.filename.toLowerCase().includes(searchQuery.toLowerCase())) return false;
     const statusText = getStatusText(d.status);
+    if (activeCategory === "trash") return statusText === "Trash";
+    if (statusText === "Trash") return false; // Exclude from all other categories
+    
     if (activeCategory === "all") return true;
     if (activeCategory === "downloading") return statusText === "Downloading" || statusText === "Queued";
     if (activeCategory === "completed") return statusText === "Completed";
@@ -469,6 +519,9 @@ function App() {
   const getCount = (catId: string): number => {
     return downloads.filter((d) => {
       const statusText = getStatusText(d.status);
+      if (catId === "trash") return statusText === "Trash";
+      if (statusText === "Trash") return false; // Exclude from all other category counts
+      
       if (catId === "all") return true;
       if (catId === "downloading") return statusText === "Downloading" || statusText === "Queued";
       if (catId === "completed") return statusText === "Completed";
@@ -967,6 +1020,7 @@ function App() {
                     const isPaused = statusText === "Paused";
                     const isCompleted = statusText === "Completed";
                     const isFailed = statusText.startsWith("Failed");
+                    const isTrash = statusText === "Trash";
                     
                     const progressPercent = d.total_size > 0 
                       ? Math.min(100, Math.floor((d.downloaded / d.total_size) * 100))
@@ -1019,54 +1073,73 @@ function App() {
                         </div>
 
                         <div className="card-actions">
-                          {isDownloading && (
-                            <button className="action-btn" onClick={(e) => handlePause(e, d.id)}>
-                              <Pause size={14} />
-                              <span>Pause</span>
-                            </button>
+                          {isTrash ? (
+                            <>
+                              <button 
+                                className="action-btn" 
+                                style={{ color: "var(--accent-green)", borderColor: "rgba(16, 185, 129, 0.2)", background: "rgba(16, 185, 129, 0.05)" }}
+                                onClick={(e) => handleRestore(e, d.id)}
+                              >
+                                <RefreshCw size={14} />
+                                <span>Restore</span>
+                              </button>
+                              <button className="action-btn action-btn-danger" onClick={(e) => promptRemoveTask(e, d)}>
+                                <Trash2 size={14} />
+                                <span>Delete Permanently</span>
+                              </button>
+                            </>
+                          ) : (
+                            <>
+                              {isDownloading && (
+                                <button className="action-btn" onClick={(e) => handlePause(e, d.id)}>
+                                  <Pause size={14} />
+                                  <span>Pause</span>
+                                </button>
+                              )}
+                              {isPaused && (
+                                <button className="action-btn" onClick={(e) => handleResume(e, d.id)}>
+                                  <Play size={14} />
+                                  <span>Resume</span>
+                                </button>
+                              )}
+                              {(isFailed || isPaused) && (
+                                <button 
+                                  className="action-btn" 
+                                  style={{ color: "var(--accent-orange)", borderColor: "rgba(245, 158, 11, 0.2)", background: "rgba(245, 158, 11, 0.05)" }} 
+                                  onClick={(e) => handleRefreshLink(e, d.id)}
+                                >
+                                  <RefreshCw size={14} />
+                                  <span>Refresh Link</span>
+                                </button>
+                              )}
+                              {isFailed && (
+                                <button className="action-btn" onClick={(e) => handleRedownload(e, d.id)}>
+                                  <Play size={14} />
+                                  <span>Re-download</span>
+                                </button>
+                              )}
+                              {isCompleted && (
+                                <button 
+                                  className="action-btn" 
+                                  style={{ color: "var(--accent-green)", borderColor: "rgba(16, 185, 129, 0.2)", background: "rgba(16, 185, 129, 0.05)" }}
+                                  onClick={(e) => handleOpenFileDir(e, d.save_path || "")}
+                                >
+                                  <FolderOpen size={14} />
+                                  <span>Open Folder</span>
+                                </button>
+                              )}
+                              {isCompleted && (
+                                <button className="action-btn" onClick={(e) => handleRedownload(e, d.id)}>
+                                  <Play size={14} />
+                                  <span>Re-download</span>
+                                </button>
+                              )}
+                              <button className="action-btn action-btn-danger" onClick={(e) => promptRemoveTask(e, d)}>
+                                <X size={14} />
+                                <span>Remove</span>
+                              </button>
+                            </>
                           )}
-                          {isPaused && (
-                            <button className="action-btn" onClick={(e) => handleResume(e, d.id)}>
-                              <Play size={14} />
-                              <span>Resume</span>
-                            </button>
-                          )}
-                          {(isFailed || isPaused) && (
-                            <button 
-                              className="action-btn" 
-                              style={{ color: "var(--accent-orange)", borderColor: "rgba(245, 158, 11, 0.2)", background: "rgba(245, 158, 11, 0.05)" }} 
-                              onClick={(e) => handleRefreshLink(e, d.id)}
-                            >
-                              <RefreshCw size={14} />
-                              <span>Refresh Link</span>
-                            </button>
-                          )}
-                          {isFailed && (
-                            <button className="action-btn" onClick={(e) => handleRedownload(e, d.id)}>
-                              <Play size={14} />
-                              <span>Re-download</span>
-                            </button>
-                          )}
-                          {isCompleted && (
-                            <button 
-                              className="action-btn" 
-                              style={{ color: "var(--accent-green)", borderColor: "rgba(16, 185, 129, 0.2)", background: "rgba(16, 185, 129, 0.05)" }}
-                              onClick={(e) => handleOpenFileDir(e, d.save_path || "")}
-                            >
-                              <FolderOpen size={14} />
-                              <span>Open Folder</span>
-                            </button>
-                          )}
-                          {isCompleted && (
-                            <button className="action-btn" onClick={(e) => handleRedownload(e, d.id)}>
-                              <Play size={14} />
-                              <span>Re-download</span>
-                            </button>
-                          )}
-                          <button className="action-btn action-btn-danger" onClick={(e) => handleDeleteTask(e, d.id)}>
-                            <X size={14} />
-                            <span>Remove</span>
-                          </button>
                         </div>
                       </div>
                     );
@@ -1218,48 +1291,117 @@ function App() {
             </div>
 
             <div className="drawer-section" style={{ marginTop: "auto", borderTop: "1px solid rgba(255, 255, 255, 0.06)", paddingTop: "16px", display: "flex", gap: "10px", flexWrap: "wrap" }}>
-              {getStatusText(selectedTask.status) === "Downloading" && (
-                <button className="action-btn" style={{ flex: 1 }} onClick={(e) => handlePause(e, selectedTask.id)}>
-                  <Pause size={14} />
-                  <span>Pause</span>
-                </button>
+              {getStatusText(selectedTask.status) === "Trash" ? (
+                <>
+                  <button 
+                    className="action-btn" 
+                    style={{ flex: 1, color: "var(--accent-green)", borderColor: "rgba(16, 185, 129, 0.2)", background: "rgba(16, 185, 129, 0.05)" }}
+                    onClick={(e) => handleRestore(e, selectedTask.id)}
+                  >
+                    <RefreshCw size={14} />
+                    <span>Restore</span>
+                  </button>
+                  <button className="action-btn action-btn-danger" style={{ flex: 1 }} onClick={(e) => promptRemoveTask(e, selectedTask)}>
+                    <Trash2 size={14} />
+                    <span>Delete Permanently</span>
+                  </button>
+                </>
+              ) : (
+                <>
+                  {getStatusText(selectedTask.status) === "Downloading" && (
+                    <button className="action-btn" style={{ flex: 1 }} onClick={(e) => handlePause(e, selectedTask.id)}>
+                      <Pause size={14} />
+                      <span>Pause</span>
+                    </button>
+                  )}
+                  {getStatusText(selectedTask.status) === "Paused" && (
+                    <button className="action-btn" style={{ flex: 1 }} onClick={(e) => handleResume(e, selectedTask.id)}>
+                      <Play size={14} />
+                      <span>Resume</span>
+                    </button>
+                  )}
+                  {(getStatusText(selectedTask.status).startsWith("Failed") || getStatusText(selectedTask.status) === "Paused") && (
+                    <button 
+                      className="action-btn" 
+                      style={{ flex: 1, color: "var(--accent-orange)", borderColor: "rgba(245, 158, 11, 0.2)", background: "rgba(245, 158, 11, 0.05)" }} 
+                      onClick={(e) => handleRefreshLink(e, selectedTask.id)}
+                    >
+                      <RefreshCw size={14} />
+                      <span>Refresh Link</span>
+                    </button>
+                  )}
+                  {getStatusText(selectedTask.status) === "Completed" && (
+                    <button 
+                      className="action-btn" 
+                      style={{ flex: 1, color: "var(--accent-green)", borderColor: "rgba(16, 185, 129, 0.2)", background: "rgba(16, 185, 129, 0.05)" }}
+                      onClick={(e) => handleOpenFileDir(e, selectedTask.save_path || "")}
+                    >
+                      <FolderOpen size={14} />
+                      <span>Open Folder</span>
+                    </button>
+                  )}
+                  {getStatusText(selectedTask.status) === "Completed" && (
+                    <button className="action-btn" style={{ flex: 1 }} onClick={(e) => handleRedownload(e, selectedTask.id)}>
+                      <Play size={14} />
+                      <span>Re-download</span>
+                    </button>
+                  )}
+                  <button className="action-btn action-btn-danger" style={{ flex: 1 }} onClick={(e) => promptRemoveTask(e, selectedTask)}>
+                    <X size={14} />
+                    <span>Delete</span>
+                  </button>
+                </>
               )}
-              {getStatusText(selectedTask.status) === "Paused" && (
-                <button className="action-btn" style={{ flex: 1 }} onClick={(e) => handleResume(e, selectedTask.id)}>
-                  <Play size={14} />
-                  <span>Resume</span>
-                </button>
-              )}
-              {(getStatusText(selectedTask.status).startsWith("Failed") || getStatusText(selectedTask.status) === "Paused") && (
-                <button 
-                  className="action-btn" 
-                  style={{ flex: 1, color: "var(--accent-orange)", borderColor: "rgba(245, 158, 11, 0.2)", background: "rgba(245, 158, 11, 0.05)" }} 
-                  onClick={(e) => handleRefreshLink(e, selectedTask.id)}
-                >
-                  <RefreshCw size={14} />
-                  <span>Refresh Link</span>
-                </button>
-              )}
-              {getStatusText(selectedTask.status) === "Completed" && (
-                <button 
-                  className="action-btn" 
-                  style={{ flex: 1, color: "var(--accent-green)", borderColor: "rgba(16, 185, 129, 0.2)", background: "rgba(16, 185, 129, 0.05)" }}
-                  onClick={(e) => handleOpenFileDir(e, selectedTask.save_path || "")}
-                >
-                  <FolderOpen size={14} />
-                  <span>Open Folder</span>
-                </button>
-              )}
-              {getStatusText(selectedTask.status) === "Completed" && (
-                <button className="action-btn" style={{ flex: 1 }} onClick={(e) => handleRedownload(e, selectedTask.id)}>
-                  <Play size={14} />
-                  <span>Re-download</span>
-                </button>
-              )}
-              <button className="action-btn action-btn-danger" style={{ flex: 1 }} onClick={(e) => handleDeleteTask(e, selectedTask.id)}>
-                <X size={14} />
-                <span>Delete</span>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {showRemoveConfirm && taskToRemove && (
+        <div className="modal-backdrop">
+          <div className="download-modal" style={{ maxWidth: "420px" }}>
+            <div className="modal-header">
+              <span className="modal-title" style={{ color: "var(--accent-red)", display: "flex", alignItems: "center", gap: "8px" }}>
+                <Trash2 size={20} />
+                {getStatusText(taskToRemove.status) === "Trash" ? "Permanent Delete" : "Move to Trash"}
+              </span>
+              <button className="modal-close-btn" onClick={() => { setShowRemoveConfirm(false); setTaskToRemove(null); }}>
+                <X size={18} />
               </button>
+            </div>
+            
+            <div style={{ display: "flex", flexDirection: "column", gap: "16px", marginTop: "8px" }}>
+              <p style={{ fontSize: "0.85rem", color: "var(--text-primary)", lineHeight: "1.5", margin: 0 }}>
+                {getStatusText(taskToRemove.status) === "Trash" 
+                  ? `Are you sure you want to permanently delete "${taskToRemove.filename}"? This action cannot be undone.`
+                  : `Are you sure you want to move "${taskToRemove.filename}" to Trash?`
+                }
+              </p>
+
+              {getStatusText(taskToRemove.status) === "Completed" && (
+                <label style={{ display: "flex", alignItems: "center", gap: "10px", cursor: "pointer", userSelect: "none", fontSize: "0.85rem", color: "var(--text-secondary)" }}>
+                  <input 
+                    type="checkbox" 
+                    checked={deleteFileFromDisk} 
+                    onChange={(e) => setDeleteFileFromDisk(e.target.checked)}
+                    style={{ accentColor: "var(--accent-red)", width: "16px", height: "16px" }}
+                  />
+                  <span>Delete downloaded file from disk</span>
+                </label>
+              )}
+
+              <div className="modal-actions" style={{ marginTop: "8px" }}>
+                <button className="action-btn" style={{ flex: 1, justifyContent: "center" }} onClick={() => { setShowRemoveConfirm(false); setTaskToRemove(null); }}>
+                  <span>Cancel</span>
+                </button>
+                <button 
+                  className="btn-add-download" 
+                  style={{ flex: 1, background: "var(--accent-red)", border: "none", boxShadow: "0 0 16px rgba(239, 68, 68, 0.2)", padding: "10px 16px" }} 
+                  onClick={confirmRemoveTask}
+                >
+                  <span>Confirm</span>
+                </button>
+              </div>
             </div>
           </div>
         </div>

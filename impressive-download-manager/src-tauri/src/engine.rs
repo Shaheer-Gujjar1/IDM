@@ -744,15 +744,18 @@ impl DownloadManager {
     pub async fn restore_task(&self, id: &str) -> Result<(), String> {
         let tasks = self.tasks.read().await;
         if let Some(task) = tasks.get(id) {
-            let mut status = task.status.write().await;
-            if *status == DownloadStatus::Trash {
-                let downloaded = task.downloaded.load(Ordering::Relaxed);
-                if task.total_size > 0 && downloaded >= task.total_size {
-                    *status = DownloadStatus::Completed;
-                } else {
-                    *status = DownloadStatus::Paused;
+            let final_status = {
+                let mut status = task.status.write().await;
+                if *status == DownloadStatus::Trash {
+                    let downloaded = task.downloaded.load(Ordering::Relaxed);
+                    if task.total_size > 0 && downloaded >= task.total_size {
+                        *status = DownloadStatus::Completed;
+                    } else {
+                        *status = DownloadStatus::Paused;
+                    }
                 }
-            }
+                status.clone()
+            };
             
             let progress = DownloadProgress {
                 id: task.id.clone(),
@@ -762,7 +765,7 @@ impl DownloadManager {
                 downloaded: task.downloaded.load(Ordering::Relaxed),
                 speed: 0.0,
                 eta: "---".to_string(),
-                status: status.clone(),
+                status: final_status,
             };
             if let Some(ref handle) = self.app_handle.lock().await.clone() {
                 use tauri::Emitter;
