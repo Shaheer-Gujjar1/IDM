@@ -23,6 +23,20 @@ async function getCookiesForUrl(url) {
 
 // Intercept browser downloads automatically (Fallback)
 chrome.downloads.onCreated.addListener(async (downloadItem) => {
+  // Only capture active downloads
+  if (downloadItem.state && downloadItem.state !== "in_progress") {
+    return;
+  }
+
+  // Ignore historical/restored downloads loaded by Chrome at startup
+  if (downloadItem.startTime) {
+    const downloadTime = new Date(downloadItem.startTime).getTime();
+    const now = Date.now();
+    if (now - downloadTime > 10000) {
+      return;
+    }
+  }
+
   if (downloadItem.url && !downloadItem.byExtensionId) {
     try {
       await chrome.downloads.cancel(downloadItem.id);
@@ -100,8 +114,25 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   return true;
 });
 
+const recentInterceptions = new Map();
+
 // Helper to send payloads to our Tauri backend port 9600
 async function sendToDesktopApp(url, filename, cookie = "", referrer = "") {
+  const now = Date.now();
+  const lastIntercept = recentInterceptions.get(url);
+  if (lastIntercept && (now - lastIntercept) < 6000) {
+    console.log("De-duplicated download popup trigger for URL:", url);
+    return false;
+  }
+  recentInterceptions.set(url, now);
+
+  // Periodic cleanup
+  for (const [key, time] of recentInterceptions.entries()) {
+    if (now - time > 15000) {
+      recentInterceptions.delete(key);
+    }
+  }
+
   try {
     const response = await fetch(`http://127.0.0.1:${PORT}/download`, {
       method: 'POST',

@@ -118,6 +118,39 @@ async fn get_all_downloads(
     Ok(manager.get_all_progress().await)
 }
 
+/// Resume a paused download AND immediately open/focus its progress popup window
+#[allow(dead_code)]
+#[tauri::command]
+async fn resume_and_open_progress(
+    id: String,
+    app_handle: tauri::AppHandle,
+    manager: State<'_, Arc<DownloadManager>>,
+) -> Result<(), String> {
+    manager.resume_download(&id).await?;
+
+    let progress_url = format!("/index.html?popup=progress&id={}", id);
+    let window_label = format!("popup-progress-{}", id);
+
+    // If the window already exists, just focus it; otherwise create it
+    if let Some(win) = app_handle.get_webview_window(&window_label) {
+        let _ = win.show();
+        let _ = win.set_focus();
+    } else {
+        let _ = tauri::WebviewWindowBuilder::new(
+            &app_handle,
+            &window_label,
+            tauri::WebviewUrl::App(progress_url.into()),
+        )
+        .title("Downloading...")
+        .inner_size(520.0, 360.0)
+        .center()
+        .resizable(false)
+        .build()
+        .map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
 fn parse_content_disposition(value: &str) -> Option<String> {
     if let Some(pos) = value.find("filename=") {
         let mut filename = value[pos + 9..].trim().to_string();
@@ -153,11 +186,21 @@ pub fn run() {
         .manage(download_manager)
         .plugin(tauri_plugin_opener::init())
         .on_window_event(|window, event| {
-            // Keep background process alive by hiding the main window instead of exiting
             if let tauri::WindowEvent::CloseRequested { api, .. } = event {
-                if window.label() == "main" {
+                let label = window.label().to_string();
+                if label == "main" {
+                    // Keep daemon alive — hide instead of exit
                     let _ = window.hide();
                     api.prevent_close();
+                } else if label.starts_with("popup-progress-") {
+                    // Auto-pause the download when the progress popup is closed
+                    let task_id = label.trim_start_matches("popup-progress-").to_string();
+                    let app = window.app_handle().clone();
+                    tauri::async_runtime::spawn(async move {
+                        if let Some(mgr) = app.try_state::<std::sync::Arc<DownloadManager>>() {
+                            let _ = mgr.pause_download(&task_id).await;
+                        }
+                    });
                 }
             }
         })
@@ -291,6 +334,7 @@ pub fn run() {
             start_download,
             pause_download,
             resume_download,
+            resume_and_open_progress,
             cancel_download,
             select_folder,
             open_progress_window,

@@ -32,7 +32,7 @@ import "./App.css";
 type DownloadStatus = "Queued" | "Downloading" | "Paused" | "Completed" | { Failed: string };
 
 interface DownloadProgress {
-  id: String;
+  id: string;
   filename: string;
   total_size: number;
   downloaded: number;
@@ -176,9 +176,7 @@ function App() {
     const interval = setInterval(async () => {
       try {
         const list = await invoke<DownloadProgress[]>("get_all_downloads");
-        if (list) {
-          setDownloads(list);
-        }
+        if (list) setDownloads(list);
       } catch (e) {
         console.error("Failed to sync downloads:", e);
       }
@@ -187,27 +185,49 @@ function App() {
     return () => clearInterval(interval);
   }, [popupMode]);
 
-  // Set up listeners for main window dashboard and standalone progress popups
+  // Dedicated polling loop for the progress popup window (bypasses all event/closure issues)
+  useEffect(() => {
+    if (popupMode !== "progress" || !popupTaskId) return;
+
+    const id = popupTaskId;
+    let stopped = false;
+
+    const poll = async () => {
+      while (!stopped) {
+        try {
+          const prog = await invoke<DownloadProgress | null>("get_download_progress", { id });
+          if (prog) {
+            setPopupProgress(prog);
+            // Trigger popup 3 and close this window when completed
+            if (prog.status === "Completed") {
+              stopped = true;
+              await invoke("open_complete_window", { filename: prog.filename });
+              await invoke("close_window");
+              return;
+            }
+          }
+        } catch (e) {
+          console.error("Progress poll error:", e);
+        }
+        await new Promise<void>((res) => setTimeout(res, 500));
+      }
+    };
+
+    poll();
+    return () => { stopped = true; };
+  }, [popupMode, popupTaskId]);
+
+  // Event listener: only handles main-dashboard updates + browser intercept
   useEffect(() => {
     let unlistenProgress: (() => void) | undefined;
     let unlistenIntercept: (() => void) | undefined;
 
     async function setupListeners() {
-      // Live progress events
+      // Live progress events — only used by the main dashboard now
+      // (progress popup uses its own polling loop instead)
       unlistenProgress = await listen<DownloadProgress>("download-progress", (event) => {
-        // If we are in Popup 2 (standalone progress window), update its state
-        if (popupMode === "progress" && popupTaskId === event.payload.id) {
-          setPopupProgress(event.payload);
-          
-          // If task completed, trigger Popup 3 (Complete window) and close progress window
-          if (event.payload.status === "Completed") {
-            invoke("open_complete_window", { filename: event.payload.filename });
-            invoke("close_window");
-          }
-          return;
-        }
+        if (popupMode === "progress") return; // Popup handles itself via poll
 
-        // Otherwise update dashboard downloads list
         setDownloads((prev) => {
           const index = prev.findIndex((d) => d.id === event.payload.id);
           const updated = [...prev];
@@ -220,7 +240,7 @@ function App() {
         });
       });
 
-      // Browser automatic interception (only listened to on the main dashboard window)
+      // Browser automatic interception — only on main dashboard window
       if (!popupMode) {
         unlistenIntercept = await listen<{ url: string; filename: string; cookie?: string; referrer?: string }>("download-intercepted", (event) => {
           setInputUrl(event.payload.url);
@@ -238,7 +258,7 @@ function App() {
       if (unlistenProgress) unlistenProgress();
       if (unlistenIntercept) unlistenIntercept();
     };
-  }, [popupMode, popupTaskId]);
+  }, [popupMode]);
 
   // Submit start download from main window modal
   const handleStartDownload = async () => {
@@ -321,10 +341,16 @@ function App() {
     }
   };
 
-  const handleResume = async (e: React.MouseEvent | null, id: String) => {
+  const handleResume = async (e: React.MouseEvent | null, id: string) => {
     if (e) e.stopPropagation();
     try {
-      await invoke("resume_download", { id });
+      if (popupMode === "progress") {
+        // Inside a progress popup: just resume, the 500ms poll will update UI
+        await invoke("resume_download", { id });
+      } else {
+        // In main dashboard: resume AND open/focus the progress popup
+        await invoke("resume_and_open_progress", { id });
+      }
     } catch (err) {
       console.error(err);
     }
@@ -463,55 +489,82 @@ function App() {
     const progressPercent = popupProgress && popupProgress.total_size > 0 
       ? Math.min(100, Math.floor((popupProgress.downloaded / popupProgress.total_size) * 100))
       : 0;
+    const isPaused = popupProgress && (
+      popupProgress.status === "Paused" ||
+      JSON.stringify(popupProgress.status) === JSON.stringify("Paused")
+    );
 
     return (
-      <div className="standalone-popup">
-        <div className="modal-header">
-          <span className="modal-title" style={{ display: "flex", alignItems: "center", gap: "8px" }}>
-            <Activity size={18} color="var(--accent-cyan)" />
-            {popupProgress ? getStatusText(popupProgress.status) : "Connecting..."}
-          </span>
+      <div className="standalone-popup standalone-popup--progress">
+        <div className="popup-progress-header">
+          <Activity size={16} color="var(--accent-cyan)" />
+          <span>{popupProgress ? getStatusText(popupProgress.status) : "Connecting..."}</span>
         </div>
-        {popupProgress ? (
-          <div style={{ display: "flex", flexDirection: "column", gap: "12px", height: "100%" }}>
-            <div className="file-display-box" title={popupProgress.filename}>
-              {popupProgress.filename}
-            </div>
-            <div className="progress-container">
-              <div className="progress-bar-track" style={{ height: "6px" }}>
-                <div 
-                  className={`progress-bar-fill ${getStatusText(popupProgress.status) === "Paused" ? "paused" : ""}`}
-                  style={{ width: `${progressPercent}%` }}
-                />
+
+        <div className="popup-progress-body">
+          {popupProgress ? (
+            <>
+              <div className="file-display-box" title={popupProgress.filename}>
+                {popupProgress.filename}
               </div>
-              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "8px", marginTop: "12px", fontSize: "0.78rem", color: "var(--text-secondary)" }}>
-                <div>Progress: <span style={{ color: "var(--text-primary)", fontWeight: 600 }}>{progressPercent}%</span></div>
-                <div style={{ textAlign: "right" }}>Speed: <span style={{ color: "var(--accent-cyan)", fontWeight: 600 }}>{formatBytes(popupProgress.speed)}/s</span></div>
-                <div>Downloaded: <span style={{ color: "var(--text-primary)", fontWeight: 600 }}>{formatBytes(popupProgress.downloaded)}</span> of {popupProgress.total_size > 0 ? formatBytes(popupProgress.total_size) : "Dynamic Size"}</div>
-                <div style={{ textAlign: "right" }}>ETA: <span style={{ color: "var(--text-primary)", fontWeight: 600 }}>{popupProgress.eta}</span></div>
+
+              <div className="popup-progress-bar-wrap">
+                <div className="progress-bar-track">
+                  <div 
+                    className={`progress-bar-fill ${isPaused ? "paused" : ""}`}
+                    style={{ width: `${progressPercent}%`, transition: "width 0.4s ease" }}
+                  />
+                </div>
+                <div className="popup-progress-pct">{progressPercent}%</div>
               </div>
-            </div>
-            <div className="modal-actions">
-              {getStatusText(popupProgress.status) === "Downloading" ? (
-                <button className="action-btn" onClick={() => handlePause(null, popupProgress.id)}>
-                  <Pause size={14} />
-                  <span>Pause</span>
-                </button>
-              ) : (
+
+              <div className="popup-progress-stats">
+                <div className="popup-stat">
+                  <span className="popup-stat-label">Downloaded</span>
+                  <span className="popup-stat-value">{formatBytes(popupProgress.downloaded)} / {popupProgress.total_size > 0 ? formatBytes(popupProgress.total_size) : "~"}</span>
+                </div>
+                <div className="popup-stat">
+                  <span className="popup-stat-label">Speed</span>
+                  <span className="popup-stat-value accent-cyan">{formatBytes(popupProgress.speed)}/s</span>
+                </div>
+                <div className="popup-stat">
+                  <span className="popup-stat-label">ETA</span>
+                  <span className="popup-stat-value">{popupProgress.eta}</span>
+                </div>
+                <div className="popup-stat">
+                  <span className="popup-stat-label">Status</span>
+                  <span className={`popup-stat-value ${isPaused ? "accent-orange" : "accent-cyan"}`}>
+                    {getStatusText(popupProgress.status)}
+                  </span>
+                </div>
+              </div>
+            </>
+          ) : (
+            <div className="popup-connecting">Connecting to backend...</div>
+          )}
+        </div>
+
+        <div className="popup-progress-footer">
+          {popupProgress && (
+            <>
+              {isPaused ? (
                 <button className="action-btn" onClick={() => handleResume(null, popupProgress.id)}>
                   <Play size={14} />
                   <span>Resume</span>
+                </button>
+              ) : (
+                <button className="action-btn" onClick={() => handlePause(null, popupProgress.id)}>
+                  <Pause size={14} />
+                  <span>Pause</span>
                 </button>
               )}
               <button className="action-btn action-btn-danger" onClick={() => handleCancel(null, popupProgress.id)}>
                 <X size={14} />
                 <span>Cancel</span>
               </button>
-            </div>
-          </div>
-        ) : (
-          <div style={{ padding: "20px 0", color: "var(--text-secondary)", fontSize: "0.85rem" }}>Connecting to backend...</div>
-        )}
+            </>
+          )}
+        </div>
       </div>
     );
   }

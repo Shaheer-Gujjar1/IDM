@@ -946,32 +946,34 @@ html, body {
 }
 
 /* Standalone Window Layouts */
+/* ─── Standalone Popup Windows ───────────────────────────────────────────── */
 .standalone-popup {
   width: 100vw;
   height: 100vh;
   display: flex;
   flex-direction: column;
-  background: radial-gradient(circle at 50% 0%, rgba(26, 31, 46, 0.98), rgba(12, 14, 18, 0.99));
-  padding: 16px 20px;
+  background: radial-gradient(ellipse at 50% 0%, rgba(26, 31, 46, 0.98), rgba(10, 12, 16, 0.99));
+  padding: 20px;
   color: var(--text-primary);
   box-sizing: border-box;
   overflow: hidden;
   user-select: none;
-  font-family: 'Inter', system-ui, -apple-system, sans-serif;
+  font-family: 'Outfit', system-ui, -apple-system, sans-serif;
   border: 1px solid rgba(255, 255, 255, 0.05);
 }
 
+/* ─── Shared header ──────────────────────────────────────────────────────── */
 .standalone-popup .modal-header {
-  margin-bottom: 12px;
+  flex-shrink: 0;
+  margin-bottom: 14px;
   border-bottom: 1px solid rgba(255, 255, 255, 0.06);
-  padding-bottom: 8px;
+  padding-bottom: 10px;
   display: flex;
   justify-content: space-between;
   align-items: center;
 }
-
 .standalone-popup .modal-title {
-  font-size: 1.05rem;
+  font-size: 1rem;
   font-weight: 700;
   letter-spacing: -0.01em;
   background: linear-gradient(135deg, #ffffff 0%, var(--text-secondary) 100%);
@@ -979,59 +981,157 @@ html, body {
   -webkit-text-fill-color: transparent;
 }
 
+/* ─── Shared form fields ─────────────────────────────────────────────────── */
 .standalone-popup .form-group {
+  display: flex;
+  flex-direction: column;
   gap: 4px;
   margin-bottom: 10px;
 }
-
 .standalone-popup .form-label {
-  font-size: 0.78rem;
+  font-size: 0.72rem;
   font-weight: 600;
   text-transform: uppercase;
   letter-spacing: 0.5px;
   color: var(--text-muted);
 }
-
 .standalone-popup .form-input {
-  background: rgba(255, 255, 255, 0.01);
+  background: rgba(255, 255, 255, 0.02);
   border: 1px solid rgba(255, 255, 255, 0.08);
   border-radius: 8px;
-  padding: 10px 12px;
-  font-size: 0.85rem;
-  transition: all 0.25s cubic-bezier(0.4, 0, 0.2, 1);
+  padding: 9px 12px;
+  font-size: 0.83rem;
+  color: var(--text-primary);
+  transition: all 0.2s ease;
+  width: 100%;
 }
-
 .standalone-popup .form-input:focus {
+  outline: none;
   border-color: var(--accent-cyan);
-  background: rgba(255, 255, 255, 0.02);
-  box-shadow: 0 0 10px rgba(0, 240, 255, 0.15);
+  background: rgba(0, 240, 255, 0.03);
+  box-shadow: 0 0 0 3px rgba(0, 240, 255, 0.08);
 }
 
+/* ─── Shared action buttons footer ──────────────────────────────────────── */
 .standalone-popup .modal-actions {
+  flex-shrink: 0;
   margin-top: auto;
-  padding-top: 12px;
+  padding-top: 14px;
   border-top: 1px solid rgba(255, 255, 255, 0.06);
   display: flex;
   justify-content: flex-end;
-  gap: 12px;
+  gap: 10px;
 }
 
-.standalone-popup .progress-container {
-  background: rgba(255, 255, 255, 0.01);
-  border: 1px solid rgba(255, 255, 255, 0.04);
-  border-radius: 12px;
-  padding: 14px;
-  margin-top: 4px;
-}
-
+/* ─── Shared widgets ─────────────────────────────────────────────────────── */
 .standalone-popup .file-display-box {
   background: rgba(255, 255, 255, 0.02);
-  border: 1px solid rgba(255, 255, 255, 0.05);
+  border: 1px solid rgba(255, 255, 255, 0.06);
   border-radius: 8px;
-  padding: 10px;
+  padding: 10px 12px;
   font-size: 0.82rem;
   color: var(--text-primary);
   line-height: 1.4;
   word-break: break-all;
 }
+.standalone-popup .progress-container {
+  background: rgba(255, 255, 255, 0.01);
+  border: 1px solid rgba(255, 255, 255, 0.04);
+  border-radius: 12px;
+  padding: 14px;
+}
 
+/* ─── Progress popup three-section layout ─────────────────────────────────── */
+.standalone-popup--progress {
+  padding: 0;
+}
+.popup-progress-header {
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 14px 20px 12px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+  font-size: 0.95rem;
+  font-weight: 700;
+  background: linear-gradient(135deg, #ffffff 0%, var(--text-secondary) 100%);
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+}
+.popup-progress-header svg {
+  flex-shrink: 0;
+  /* SVG colour is set inline, not -webkit-text-fill */
+  -webkit-text-fill-color: initial;
+}
+.popup-progress-body {
+  flex: 1;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  padding: 16px 20px;
+}
+.popup-progress-bar-wrap {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+.popup-progress-bar-wrap .progress-bar-track {
+  flex: 1;
+  height: 7px;
+  background: rgba(255, 255, 255, 0.06);
+  border-radius: 4px;
+  overflow: hidden;
+}
+.popup-progress-pct {
+  font-size: 0.82rem;
+  font-weight: 700;
+  color: var(--text-primary);
+  min-width: 36px;
+  text-align: right;
+}
+.popup-progress-stats {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
+}
+.popup-stat {
+  background: rgba(255, 255, 255, 0.02);
+  border: 1px solid rgba(255, 255, 255, 0.04);
+  border-radius: 8px;
+  padding: 9px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+.popup-stat-label {
+  font-size: 0.68rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  color: var(--text-muted);
+}
+.popup-stat-value {
+  font-size: 0.82rem;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+.popup-stat-value.accent-cyan  { color: var(--accent-cyan); }
+.popup-stat-value.accent-orange { color: var(--accent-orange); }
+.popup-connecting {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 0.85rem;
+  color: var(--text-secondary);
+}
+.popup-progress-footer {
+  flex-shrink: 0;
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
+  padding: 12px 20px;
+  border-top: 1px solid rgba(255, 255, 255, 0.06);
+  background: rgba(0, 0, 0, 0.15);
+}

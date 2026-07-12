@@ -59,7 +59,7 @@ document.addEventListener('click', (e) => {
       const ext = urlObj.pathname.split('.').pop()?.toLowerCase();
       const downloadExtensions = [
         'zip', 'rar', '7z', 'tar', 'gz', 'exe', 'msi', 'dmg', 
-        'pkg', 'iso', 'pdf', 'apk', 'crx', 'docx', 'xlsx', 'pptx'
+        'pkg', 'iso', 'apk', 'crx', 'docx', 'xlsx', 'pptx'
       ];
       if (ext && downloadExtensions.includes(ext)) {
         // Stop default click/download navigation
