@@ -236,7 +236,7 @@ async fn open_complete_window(app_handle: tauri::AppHandle, filename: String, sa
         tauri::WebviewUrl::App(complete_url.into()),
     )
     .title("Download Finished")
-    .inner_size(500.0, 260.0)
+    .inner_size(520.0, 360.0)
     .center()
     .resizable(false)
     .build()

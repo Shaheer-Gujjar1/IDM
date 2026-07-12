@@ -401,14 +401,53 @@ impl DownloadManager {
             }
         });
 
+        // --- Shared Blocking Writer Thread ---
+        // Prevents Ext4/NTFS inode lock contention from multiple threads writing to the same file.
+        let std_file = match std::fs::OpenOptions::new().write(true).open(&task.save_path) {
+            Ok(f) => f,
+            Err(e) => return Err(format!("Could not open file for writing: {}", e)),
+        };
+
+        // Channel: async readers → single blocking writer (up to 128 chunks = 64 MB buffered)
+        let (tx, rx) = std::sync::mpsc::sync_channel::<(u64, Vec<u8>)>(128);
+        let downloaded_for_writer = task.downloaded.clone();
+        let writer_total_size = task.total_size;
+
+        let writer_handle = tokio::task::spawn_blocking(move || {
+            let mut f = std_file;
+            for (write_pos, buf) in rx {
+                // Hard cap: never write beyond total file size
+                if writer_total_size > 0 {
+                    let already = downloaded_for_writer.load(Ordering::Relaxed);
+                    if already >= writer_total_size {
+                        continue; // skip, but don't break because other workers might be draining
+                    }
+                    let allowed = (writer_total_size - already).min(buf.len() as u64) as usize;
+                    let safe_buf = &buf[..allowed];
+                    if f.seek(std::io::SeekFrom::Start(write_pos)).is_ok() {
+                        if f.write_all(safe_buf).is_ok() {
+                            downloaded_for_writer.fetch_add(allowed as u64, Ordering::Relaxed);
+                        }
+                    }
+                } else {
+                    if f.seek(std::io::SeekFrom::Start(write_pos)).is_ok() {
+                        if f.write_all(&buf).is_ok() {
+                            downloaded_for_writer.fetch_add(buf.len() as u64, Ordering::Relaxed);
+                        }
+                    }
+                }
+            }
+            // Ensure everything is flushed to OS buffers
+            let _ = f.flush();
+        });
+
         // Spawn segment download workers
         for (idx, chunk) in chunks_list.into_iter().enumerate() {
             let url = task.url.clone();
-            let save_path = task.save_path.clone();
-            let downloaded = task.downloaded.clone();
             let task_clone = task.clone();
             let mut task_abort_rx = abort_tx.subscribe();
             let client = self.client.clone();
+            let tx_clone = tx.clone();
 
             let worker = tokio::spawn(async move {
                 let start_offset = chunk.start + chunk.downloaded;
@@ -445,50 +484,7 @@ impl DownloadManager {
                 let mut local_downloaded = chunk.downloaded;
                 let mut last_saved_downloaded = chunk.downloaded;
 
-                // --- Blocking writer thread ---
-                // Open a *std* file handle so the writer thread never touches async I/O
-                let std_file = match std::fs::OpenOptions::new().write(true).open(&save_path) {
-                    Ok(f) => f,
-                    Err(_) => return,
-                };
-
-                // Channel: async reader → blocking writer
-                // Up to 64 chunks of 512 KB = 32 MB in flight before back-pressure
-                let (tx, rx) = std::sync::mpsc::sync_channel::<(u64, Vec<u8>)>(64);
-                let downloaded_for_writer = downloaded.clone();
-
-                // Spawn a blocking OS thread that does all disk I/O
-                // total_size cap prevents counter overflow if server ignores range headers
-                let writer_total_size = total_size;
-                let writer_handle = tokio::task::spawn_blocking(move || {
-                    let mut f = std_file;
-                    for (write_pos, buf) in rx {
-                        // Hard cap: never write beyond total file size
-                        if writer_total_size > 0 {
-                            let already = downloaded_for_writer.load(Ordering::Relaxed);
-                            if already >= writer_total_size {
-                                break; // done, discard remaining
-                            }
-                            let allowed = (writer_total_size - already).min(buf.len() as u64) as usize;
-                            let safe_buf = &buf[..allowed];
-                            if f.seek(std::io::SeekFrom::Start(write_pos)).is_ok() {
-                                if f.write_all(safe_buf).is_ok() {
-                                    downloaded_for_writer.fetch_add(allowed as u64, Ordering::Relaxed);
-                                }
-                            }
-                        } else {
-                            if f.seek(std::io::SeekFrom::Start(write_pos)).is_ok() {
-                                if f.write_all(&buf).is_ok() {
-                                    downloaded_for_writer.fetch_add(buf.len() as u64, Ordering::Relaxed);
-                                }
-                            }
-                        }
-                    }
-                    // Ensure everything is flushed to OS buffers
-                    let _ = f.flush();
-                });
-
-                // --- Async network reader --- reads at full line speed, no disk awaits ---
+                // --- Async network reader --- reads at full line speed, sends to shared writer ---
                 let mut net_buffer = Vec::with_capacity(512 * 1024);
 
                 loop {
@@ -530,7 +526,7 @@ impl DownloadManager {
                                         }
 
                                         // If channel is full this will block briefly, which is fine
-                                        if tx.send((write_pos, flushed)).is_err() {
+                                        if tx_clone.send((write_pos, flushed)).is_err() {
                                             break; // writer died
                                         }
                                     }
@@ -553,12 +549,11 @@ impl DownloadManager {
                 if !net_buffer.is_empty() {
                     let write_pos = chunk.start + local_downloaded;
                     local_downloaded += net_buffer.len() as u64;
-                    let _ = tx.send((write_pos, net_buffer));
+                    let _ = tx_clone.send((write_pos, net_buffer));
                 }
 
-                // Drop tx so the writer thread knows we're done, then wait for it
-                drop(tx);
-                let _ = writer_handle.await;
+                // Drop local clone of tx so writer knows this worker is done
+                drop(tx_clone);
 
                 // Update segment offset state when aborted or finished
                 let mut chunks_lock = task_clone.chunks.lock().unwrap();
@@ -570,10 +565,16 @@ impl DownloadManager {
             workers.push(worker);
         }
 
+        // Drop the main tx so the writer thread rx channel will close once all worker tx_clones drop
+        drop(tx);
+
         // Wait for workers to exit
         for worker in workers {
             let _ = worker.await;
         }
+
+        // Wait for the single writer thread to finish flushing to disk
+        let _ = writer_handle.await;
 
         let is_aborted = {
             let s = task.status.read().await;
