@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import { 
   Download, 
   Search, 
@@ -95,6 +95,19 @@ function App() {
   const [startTime, setStartTime] = useState("02:00");
   const [endTime, setEndTime] = useState("06:00");
   const [activeDays, setActiveDays] = useState<string[]>(["Mon", "Tue", "Wed", "Thu", "Fri"]);
+
+  const [isThemeDropdownOpen, setIsThemeDropdownOpen] = useState(false);
+  const themeDropdownRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    const handleOutsideClick = (e: MouseEvent) => {
+      if (themeDropdownRef.current && !themeDropdownRef.current.contains(e.target as Node)) {
+        setIsThemeDropdownOpen(false);
+      }
+    };
+    document.addEventListener("mousedown", handleOutsideClick);
+    return () => document.removeEventListener("mousedown", handleOutsideClick);
+  }, []);
 
   // Theme Mode Settings State
   const [themeMode, setThemeMode] = useState<"dark" | "light" | "system">(() => {
@@ -843,17 +856,50 @@ function App() {
                     onChange={(e) => setDefaultSaveDir(e.target.value)}
                   />
                 </div>
-                <div className="form-group">
+                <div className="form-group" style={{ position: "relative" }}>
                   <span className="form-label">Theme Mode</span>
-                  <select
-                    className="form-input theme-select"
-                    value={themeMode}
-                    onChange={(e) => setThemeMode(e.target.value as any)}
-                  >
-                    <option value="dark">Dark Theme</option>
-                    <option value="light">Light Theme</option>
-                    <option value="system">Follow System Theme</option>
-                  </select>
+                  <div className="custom-dropdown-container" ref={themeDropdownRef}>
+                    <button 
+                      type="button" 
+                      className="form-input custom-dropdown-trigger" 
+                      onClick={() => setIsThemeDropdownOpen(!isThemeDropdownOpen)}
+                    >
+                      {themeMode === "dark" && "Dark Theme"}
+                      {themeMode === "light" && "Light Theme"}
+                      {themeMode === "system" && "Follow System Theme"}
+                    </button>
+                    {isThemeDropdownOpen && (
+                      <div className="custom-dropdown-menu">
+                        <div 
+                          className={`custom-dropdown-item ${themeMode === "dark" ? "selected" : ""}`}
+                          onClick={() => {
+                            setThemeMode("dark");
+                            setIsThemeDropdownOpen(false);
+                          }}
+                        >
+                          Dark Theme
+                        </div>
+                        <div 
+                          className={`custom-dropdown-item ${themeMode === "light" ? "selected" : ""}`}
+                          onClick={() => {
+                            setThemeMode("light");
+                            setIsThemeDropdownOpen(false);
+                          }}
+                        >
+                          Light Theme
+                        </div>
+                        <div 
+                          className={`custom-dropdown-item ${themeMode === "system" ? "selected" : ""}`}
+                          onClick={() => {
+                            setThemeMode("system");
+                            setIsThemeDropdownOpen(false);
+                          }}
+                        >
+                          Follow System Theme
+                        </div>
+                      </div>
+                    )}
+                  </div>
                 </div>
                 <div className="settings-control-row">
                   <div className="settings-info-col">
