@@ -762,84 +762,70 @@ function App() {
 
   // DEFAULT MAIN DASHBOARD view
   return (
-    <div className="app-shell">
-      {/* Sidebar */}
-      <aside className="sidebar">
-        <div className="brand">
-          <img src="/logo.png" className="brand-logo-img" alt="Logo" />
-          <img src="/Title.png" className="brand-title-img" alt="IDM" />
+    <div className="app-shell v2-shell">
+      {/* Sidebar V2 */}
+      <aside className="sidebar-v2">
+        <div className="brand-v2">
+          <img src="/logo.png" className="brand-logo-img-v2" alt="Logo" />
         </div>
 
-        <nav className="sidebar-menu">
+        <nav className="sidebar-menu-v2">
           {mainCategories.map((cat) => (
             <div
               key={cat.id}
-              className={`menu-item ${activeCategory === cat.id ? "active" : ""}`}
+              className={`menu-pill ${activeCategory === cat.id ? "active" : ""}`}
               onClick={() => setActiveCategory(cat.id)}
+              data-title={cat.name}
             >
               {cat.icon}
-              <span>{cat.name}</span>
-              <span className="menu-item-count">{getCount(cat.id)}</span>
             </div>
           ))}
 
-          <div style={{ height: "20px" }} />
-          <div style={{ padding: "0 14px", fontSize: "0.75rem", textTransform: "uppercase", letterSpacing: "1px", color: "var(--text-muted)", fontWeight: 600, marginBottom: "8px" }}>
-            File Types
-          </div>
+          <div className="sidebar-divider" />
 
           {fileCategories.map((cat) => (
             <div
               key={cat.id}
-              className={`menu-item ${activeCategory === cat.id ? "active" : ""}`}
+              className={`menu-pill ${activeCategory === cat.id ? "active" : ""}`}
               onClick={() => setActiveCategory(cat.id)}
+              data-title={cat.name}
             >
               {cat.icon}
-              <span>{cat.name}</span>
-              <span className="menu-item-count">{getCount(cat.id)}</span>
             </div>
           ))}
+
+          <div className="sidebar-divider" />
+          
+          <div className={`menu-pill ${activeCategory === "settings" ? "active" : ""}`} onClick={() => setActiveCategory("settings")} data-title="Settings">
+            <Settings size={20} />
+          </div>
         </nav>
 
-        <div className="sidebar-footer">
-          <div className={`menu-item ${activeCategory === "settings" ? "active" : ""}`} onClick={() => setActiveCategory("settings")}>
-            <Settings size={18} />
-            <span>Settings</span>
-          </div>
-          <div className="sidebar-credit-footer">
-            <div>A Product of <span className="credit-lumen">Lumen Lab</span></div>
-            <div style={{ marginTop: "2px" }}>Designed & Developed by <span className="credit-shaheer">Shaheer Ahmed</span></div>
-          </div>
+        <div className="sidebar-footer-v2">
+          <button className="fab-add-button" onClick={handleOpenAddModal} data-title="Add Download">
+            <Plus size={20} strokeWidth={3} />
+          </button>
         </div>
       </aside>
 
       {/* Main Container */}
-      <div className="main-container">
-        {/* Top Bar */}
-        <header className="topbar">
-          <div className="topbar-left">
-            <div className="search-container">
-              <Search size={18} className="search-icon" />
-              <input
-                type="text"
-                placeholder="Search downloads..."
-                className="search-input"
-                value={searchQuery}
-                onChange={(e) => setSearchQuery(e.target.value)}
-              />
-            </div>
-          </div>
-
-          <div className="topbar-right">
-            <button className="btn-add-download" onClick={handleOpenAddModal}>
-              <Plus size={16} strokeWidth={3} />
-              <span>Add Download</span>
-            </button>
-          </div>
+      <div className="main-canvas">
+        {/* Spotlight Search Header */}
+        <header className="topbar-v2">
+           <div className="spotlight-search-container">
+             <Search size={18} className="spotlight-icon" />
+             <input
+               type="text"
+               placeholder="Search downloads..."
+               className="spotlight-input"
+               value={searchQuery}
+               onChange={(e) => setSearchQuery(e.target.value)}
+             />
+           </div>
         </header>
 
         {/* Content Area */}
-        <main className="content-area">
+        <main className="content-area-v2">
           {activeCategory === "settings" ? (
             <div className="settings-container">
               <div className="settings-card">
@@ -1103,115 +1089,89 @@ function App() {
 
                     return (
                       <div 
-                        className="download-card" 
+                        className="download-card-v2" 
                         key={d.id.toString()}
                         onClick={() => setSelectedTask(d)}
                       >
-                        <div className="card-header">
-                          <div className="file-icon-container">
-                            {getFileIcon(d.filename)}
-                          </div>
-                          <div className="file-info">
-                            <span className="file-name" title={d.filename}>{d.filename}</span>
-                            <div className="file-meta">
-                              <span>{formatBytes(d.downloaded)} of {d.total_size > 0 ? formatBytes(d.total_size) : "Unknown size"}</span>
-                              <span style={{ color: "var(--text-muted)" }}>•</span>
-                              <span className={`status-badge status-${statusText.toLowerCase()}`}>
-                                {statusText}
-                              </span>
-                            </div>
-                          </div>
+                        <div className="card-left-v2">
+                           <div className="circular-progress-container">
+                             {/* SVG Ring */}
+                             <svg className="progress-ring" width="56" height="56">
+                                <circle className="progress-ring-track" cx="28" cy="28" r="24" />
+                                <circle 
+                                  className={`progress-ring-fill ${isPaused ? "paused" : ""} ${isCompleted ? "completed" : ""}`} 
+                                  cx="28" cy="28" r="24" 
+                                  strokeDasharray={`${2 * Math.PI * 24}`}
+                                  strokeDashoffset={`${2 * Math.PI * 24 * (1 - progressPercent / 100)}`}
+                                />
+                             </svg>
+                             <div className="circular-icon-inner">
+                               {getFileIcon(d.filename)}
+                             </div>
+                           </div>
                         </div>
 
-                        <div className="progress-container">
-                          <div className="progress-bar-track">
-                            <div 
-                              className={`progress-bar-fill ${isPaused ? "paused" : ""} ${isCompleted ? "completed" : ""}`}
-                              style={{ width: `${progressPercent}%` }}
-                            />
-                          </div>
-                          <div className="progress-stats">
-                            <span>{progressPercent}%</span>
-                            <div className="speed-eta">
+                        <div className="card-middle-v2">
+                           <h3 className="file-name-v2" title={d.filename}>{d.filename}</h3>
+                           <div className="file-meta-v2">
+                              <span className={`status-pill-v2 status-${statusText.toLowerCase()}`}>{statusText}</span>
+                              <span className="meta-divider">•</span>
+                              <span>{formatBytes(d.downloaded)} / {d.total_size > 0 ? formatBytes(d.total_size) : "Unknown size"}</span>
                               {isDownloading && (
                                 <>
-                                  <span>{formatBytes(d.speed)}/s</span>
-                                  <span style={{ color: "var(--text-muted)" }}>•</span>
-                                  <span>ETA: {d.eta}</span>
+                                  <span className="meta-divider">•</span>
+                                  <span className="speed-text-v2">{formatBytes(d.speed)}/s</span>
+                                  <span className="meta-divider">•</span>
+                                  <span>{d.eta}</span>
                                 </>
                               )}
-                              {isPaused && <span>Paused</span>}
-                              {isCompleted && <span>Finished</span>}
-                              {isFailed && <span style={{ color: "var(--accent-red)" }}>Error</span>}
-                            </div>
-                          </div>
+                           </div>
                         </div>
 
-                        <div className="card-actions">
+                        <div className="card-right-hover-actions">
                           {isTrash ? (
                             <>
-                              <button 
-                                className="action-btn" 
-                                style={{ color: "var(--accent-green)", borderColor: "rgba(16, 185, 129, 0.2)", background: "rgba(16, 185, 129, 0.05)" }}
-                                onClick={(e) => handleRedownload(e, d.id)}
-                              >
-                                <Play size={14} />
-                                <span>Re-download</span>
+                              <button className="hover-action-btn" onClick={(e) => { e.stopPropagation(); handleRedownload(e, d.id); }} title="Re-download">
+                                <Play size={16} />
                               </button>
-                              <button className="action-btn action-btn-danger" onClick={(e) => promptRemoveTask(e, d)}>
-                                <Trash2 size={14} />
-                                <span>Delete Permanently</span>
+                              <button className="hover-action-btn danger" onClick={(e) => { e.stopPropagation(); promptRemoveTask(e, d); }} title="Delete Permanently">
+                                <Trash2 size={16} />
                               </button>
                             </>
                           ) : (
                             <>
                               {isDownloading && (
-                                <button className="action-btn" onClick={(e) => handlePause(e, d.id)}>
-                                  <Pause size={14} />
-                                  <span>Pause</span>
+                                <button className="hover-action-btn" onClick={(e) => { e.stopPropagation(); handlePause(e, d.id); }} title="Pause">
+                                  <Pause size={16} />
                                 </button>
                               )}
                               {isPaused && (
-                                <button className="action-btn" onClick={(e) => handleResume(e, d.id)}>
-                                  <Play size={14} />
-                                  <span>Resume</span>
+                                <button className="hover-action-btn" onClick={(e) => { e.stopPropagation(); handleResume(e, d.id); }} title="Resume">
+                                  <Play size={16} />
                                 </button>
                               )}
                               {(isFailed || isPaused) && (
-                                <button 
-                                  className="action-btn" 
-                                  style={{ color: "var(--accent-orange)", borderColor: "rgba(245, 158, 11, 0.2)", background: "rgba(245, 158, 11, 0.05)" }} 
-                                  onClick={(e) => handleRefreshLink(e, d.id)}
-                                >
-                                  <RefreshCw size={14} />
-                                  <span>Refresh Link</span>
+                                <button className="hover-action-btn" onClick={(e) => { e.stopPropagation(); handleRefreshLink(e, d.id); }} title="Refresh Link">
+                                  <RefreshCw size={16} />
                                 </button>
                               )}
                               {isFailed && (
-                                <button className="action-btn" onClick={(e) => handleRedownload(e, d.id)}>
-                                  <Play size={14} />
-                                  <span>Re-download</span>
+                                <button className="hover-action-btn" onClick={(e) => { e.stopPropagation(); handleRedownload(e, d.id); }} title="Re-download">
+                                  <Play size={16} />
                                 </button>
                               )}
                               {isCompleted && (
-                                <button 
-                                  className="action-btn" 
-                                  style={{ color: "var(--accent-green)", borderColor: "rgba(16, 185, 129, 0.2)", background: "rgba(16, 185, 129, 0.05)" }}
-                                  onClick={(e) => handleOpenFileDir(e, d.save_path || "")}
-                                >
-                                  <FolderOpen size={14} />
-                                  <span>Open Folder</span>
+                                <button className="hover-action-btn success" onClick={(e) => { e.stopPropagation(); handleOpenFileDir(e, d.save_path || ""); }} title="Open Folder">
+                                  <FolderOpen size={16} />
                                 </button>
                               )}
                               {isCompleted && (
-                                <button className="action-btn" onClick={(e) => handleRedownload(e, d.id)}>
-                                  <Play size={14} />
-                                  <span>Re-download</span>
+                                <button className="hover-action-btn" onClick={(e) => { e.stopPropagation(); handleRedownload(e, d.id); }} title="Re-download">
+                                  <Play size={16} />
                                 </button>
                               )}
-                              <button className="action-btn action-btn-danger" onClick={(e) => promptRemoveTask(e, d)}>
-                                <X size={14} />
-                                <span>Remove</span>
+                              <button className="hover-action-btn danger" onClick={(e) => { e.stopPropagation(); promptRemoveTask(e, d); }} title="Delete">
+                                <X size={16} />
                               </button>
                             </>
                           )}
