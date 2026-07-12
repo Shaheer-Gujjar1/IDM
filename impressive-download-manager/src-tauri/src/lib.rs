@@ -355,9 +355,8 @@ pub fn run() {
         .setup(move |app| {
             // Set window icon programmatically (particularly important on Linux)
             if let Some(main_window) = app.get_webview_window("main") {
-                let icon_bytes = include_bytes!("../icons/128x128.png");
-                if let Ok(icon) = tauri::image::Image::from_bytes(icon_bytes) {
-                    let _ = main_window.set_icon(icon);
+                if let Some(icon) = app.default_window_icon() {
+                    let _ = main_window.set_icon(icon.clone());
                 }
             }
 
