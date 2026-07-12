@@ -96,5 +96,5 @@ To integrate Chrome/Edge downloads directly with IDM:
 
 ## 🤝 Credits
 
-- **A Product of:** [Lumen Lab](https://github.com/Shaheer-Gujjar1)
-- **Designed & Developed by:** [Shaheer Ahmed](https://github.com/Shaheer-Gujjar1)
+- **A Product of:** [Lumen Lab]
+- **Designed & Developed by:** [Shaheer Ahmed]
