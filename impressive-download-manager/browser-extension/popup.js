@@ -67,28 +67,50 @@ document.addEventListener('DOMContentLoaded', async () => {
       // Handle sending individual link
       document.getElementById(`send-btn-${index}`).addEventListener('click', async () => {
         const btn = document.getElementById(`send-btn-${index}`);
-        btn.textContent = 'Sending...';
-        btn.disabled = true;
+        const parent = btn.parentElement;
+        
+        // Replace button with deepin-style liquid progress
+        const progressContainer = document.createElement('div');
+        progressContainer.className = 'liquid-progress-container';
+        progressContainer.innerHTML = `
+          <div class="liquid-fill" id="liquid-${index}"></div>
+          <div class="liquid-icon" id="icon-${index}">↑</div>
+        `;
+        parent.replaceChild(progressContainer, btn);
+
+        const fill = document.getElementById(`liquid-${index}`);
+        const icon = document.getElementById(`icon-${index}`);
+        
+        // Fake progressive loading for visual flair
+        let percent = 0;
+        const interval = setInterval(() => {
+          percent += Math.random() * 20;
+          if (percent > 85) percent = 85;
+          fill.style.transform = `translateY(${100 - percent}%)`;
+        }, 150);
 
         chrome.runtime.sendMessage({
           type: 'SEND_TO_DESKTOP',
           url: item.url,
           filename: item.filename
         }, (response) => {
-          if (response && response.success) {
-            btn.textContent = 'Sent!';
-            btn.style.background = '#10b981';
-          } else {
-            btn.textContent = 'Failed';
-            btn.style.background = '#ef4444';
-            btn.style.color = '#fff';
-            setTimeout(() => {
-              btn.textContent = 'Send';
-              btn.disabled = false;
-              btn.style.background = '';
-              btn.style.color = '';
-            }, 2000);
-          }
+          setTimeout(() => {
+            clearInterval(interval);
+            if (response && response.success) {
+              fill.style.transform = `translateY(0%)`;
+              fill.style.background = '#10b981';
+              icon.textContent = '✓';
+            } else {
+              fill.style.transform = `translateY(0%)`;
+              fill.style.background = '#ef4444';
+              icon.textContent = '✕';
+              setTimeout(() => {
+                parent.replaceChild(btn, progressContainer);
+                btn.textContent = 'Retry';
+                btn.disabled = false;
+              }, 2000);
+            }
+          }, 600); // Give it a slight artificial delay so the user sees the cool animation
         });
       });
     });

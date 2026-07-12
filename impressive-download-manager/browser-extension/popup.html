@@ -168,6 +168,50 @@
       background: rgba(255, 255, 255, 0.06);
       border-color: rgba(255, 255, 255, 0.15);
     }
+    
+    .liquid-progress-container {
+      width: 28px;
+      height: 28px;
+      border-radius: 50%;
+      background: rgba(255, 255, 255, 0.05);
+      border: 1px solid rgba(255, 255, 255, 0.1);
+      position: relative;
+      overflow: hidden;
+      box-shadow: inset 0 2px 8px rgba(0,0,0,0.2);
+      flex-shrink: 0;
+    }
+    .liquid-fill {
+      position: absolute;
+      bottom: 0; left: 0; right: 0; height: 100%;
+      background: #00f0ff;
+      opacity: 0.5;
+      transform-origin: bottom;
+      transition: transform 0.2s linear, background 0.3s;
+      transform: translateY(100%);
+    }
+    .liquid-fill::before {
+      content: "";
+      position: absolute;
+      top: -4px;
+      left: -50%;
+      width: 200%;
+      height: 8px;
+      background: inherit;
+      opacity: 0.8;
+      border-radius: 40%;
+      animation: liquidWave 2s linear infinite;
+    }
+    @keyframes liquidWave {
+      0% { transform: rotate(0deg); }
+      100% { transform: rotate(360deg); }
+    }
+    .liquid-icon {
+      position: absolute;
+      top: 0; left: 0; right: 0; bottom: 0;
+      display: flex; align-items: center; justify-content: center;
+      font-size: 12px;
+      font-weight: 800;
+    }
   </style>
 </head>
 <body>

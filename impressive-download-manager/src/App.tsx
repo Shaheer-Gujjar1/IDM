@@ -770,6 +770,12 @@ function App() {
         </div>
 
         <nav className="sidebar-menu-v2">
+          <button className="menu-pill accent-pill" onClick={handleOpenAddModal} data-title="Add Download">
+            <Plus size={22} strokeWidth={3} />
+          </button>
+
+          <div className="sidebar-divider" />
+
           {mainCategories.map((cat) => (
             <div
               key={cat.id}
@@ -794,18 +800,12 @@ function App() {
             </div>
           ))}
 
-          <div className="sidebar-divider" />
+          <div style={{ marginTop: 'auto' }} />
           
           <div className={`menu-pill ${activeCategory === "settings" ? "active" : ""}`} onClick={() => setActiveCategory("settings")} data-title="Settings">
             <Settings size={20} />
           </div>
         </nav>
-
-        <div className="sidebar-footer-v2">
-          <button className="fab-add-button" onClick={handleOpenAddModal} data-title="Add Download">
-            <Plus size={20} strokeWidth={3} />
-          </button>
-        </div>
       </aside>
 
       {/* Main Container */}
@@ -1094,17 +1094,11 @@ function App() {
                         onClick={() => setSelectedTask(d)}
                       >
                         <div className="card-left-v2">
-                           <div className="circular-progress-container">
-                             {/* SVG Ring */}
-                             <svg className="progress-ring" width="56" height="56">
-                                <circle className="progress-ring-track" cx="28" cy="28" r="24" />
-                                <circle 
-                                  className={`progress-ring-fill ${isPaused ? "paused" : ""} ${isCompleted ? "completed" : ""}`} 
-                                  cx="28" cy="28" r="24" 
-                                  strokeDasharray={`${2 * Math.PI * 24}`}
-                                  strokeDashoffset={`${2 * Math.PI * 24 * (1 - progressPercent / 100)}`}
-                                />
-                             </svg>
+                           <div className="liquid-progress-container">
+                             <div 
+                               className={`liquid-fill ${isPaused ? "paused" : ""} ${isCompleted ? "completed" : ""}`} 
+                               style={{ transform: `translateY(${100 - progressPercent}%)` }} 
+                             />
                              <div className="circular-icon-inner">
                                {getFileIcon(d.filename)}
                              </div>
@@ -1188,62 +1182,64 @@ function App() {
 
       {/* Main Window Modal: Add New Download (triggered manually) */}
       {showAddModal && (
-        <div className="modal-backdrop" onClick={() => setShowAddModal(false)}>
-          <div className="modal-content" onClick={(e) => e.stopPropagation()}>
-            <div className="modal-header">
-              <span className="modal-title">New Download</span>
-              <button className="modal-close-btn" onClick={() => setShowAddModal(false)}>
-                <X size={18} />
+        <div className="modal-backdrop-v2" onClick={() => setShowAddModal(false)}>
+          <div className="modal-content-v2" onClick={(e) => e.stopPropagation()}>
+            <div className="modal-header-v2">
+              <span className="modal-title-v2">New Download</span>
+              <button className="modal-close-btn-v2" onClick={() => setShowAddModal(false)}>
+                <X size={20} />
               </button>
             </div>
 
-            <div className="form-group">
-              <span className="form-label">Download URL</span>
-              <input
-                type="text"
-                placeholder="Paste HTTP / HTTPS address..."
-                className="form-input"
-                value={inputUrl}
-                onChange={(e) => handleUrlChange(e.target.value)}
-              />
-            </div>
-
-            <div className="form-group">
-              <span className="form-label">Save Filename</span>
-              <input
-                type="text"
-                placeholder="Enter filename..."
-                className="form-input"
-                value={customFilename}
-                onChange={(e) => setCustomFilename(e.target.value)}
-              />
-            </div>
-
-            <div className="form-group">
-              <span className="form-label">Save Location</span>
-              <div style={{ display: "flex", gap: "8px" }}>
+            <div className="modal-body-v2">
+              <div className="form-group-v2">
+                <span className="form-label-v2">Download URL</span>
                 <input
                   type="text"
-                  placeholder="Enter absolute directory path..."
-                  className="form-input"
-                  value={savePath}
-                  onChange={(e) => setSavePath(e.target.value)}
+                  placeholder="Paste HTTP / HTTPS address..."
+                  className="spotlight-input"
+                  value={inputUrl}
+                  onChange={(e) => handleUrlChange(e.target.value)}
                 />
-                <button className="action-btn" style={{ padding: "0 14px", height: "46px" }} onClick={handlePickFolder}>Browse</button>
+              </div>
+
+              <div className="form-group-v2">
+                <span className="form-label-v2">Save Filename</span>
+                <input
+                  type="text"
+                  placeholder="Enter filename..."
+                  className="spotlight-input"
+                  value={customFilename}
+                  onChange={(e) => setCustomFilename(e.target.value)}
+                />
+              </div>
+
+              <div className="form-group-v2">
+                <span className="form-label-v2">Save Location</span>
+                <div style={{ display: "flex", gap: "12px" }}>
+                  <input
+                    type="text"
+                    placeholder="Enter directory path..."
+                    className="spotlight-input"
+                    value={savePath}
+                    onChange={(e) => setSavePath(e.target.value)}
+                  />
+                  <button className="hover-action-btn" style={{ width: "auto", padding: "0 20px" }} onClick={handlePickFolder}>Browse</button>
+                </div>
               </div>
             </div>
 
-            <div className="modal-actions">
-              <button className="action-btn" onClick={() => setShowAddModal(false)}>
+            <div className="modal-actions-v2">
+              <button className="hover-action-btn" style={{ width: "auto", padding: "0 24px" }} onClick={() => setShowAddModal(false)}>
                 Cancel
               </button>
               <button 
-                className="btn-add-download" 
-                style={{ padding: "8px 20px" }}
+                className="accent-pill" 
+                style={{ padding: "12px 32px", borderRadius: "100px", fontWeight: 700, fontSize: "1rem" }}
                 onClick={handleStartDownload}
                 disabled={!inputUrl}
               >
-                <span>Download Now</span>
+                Start Download
               </button>
             </div>
           </div>
