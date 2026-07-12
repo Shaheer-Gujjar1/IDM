@@ -15,6 +15,7 @@ pub enum DownloadStatus {
     Paused,
     Completed,
     Failed(String),
+    Trash,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -694,10 +695,79 @@ impl DownloadManager {
             if let Some(ref tx) = task.abort_tx {
                 let _ = tx.send(());
             }
-            let path = task.save_path.clone();
-            tokio::spawn(async move {
-                let _ = tokio::fs::remove_file(path).await;
-            });
+            drop(tasks);
+            let _ = self.save_history().await;
+            Ok(())
+        } else {
+            Err("Task not found".to_string())
+        }
+    }
+
+    pub async fn trash_task(&self, id: &str, delete_file: bool) -> Result<(), String> {
+        let tasks = self.tasks.read().await;
+        if let Some(task) = tasks.get(id) {
+            if let Some(ref tx) = task.abort_tx {
+                let _ = tx.send(());
+            }
+            *task.status.write().await = DownloadStatus::Trash;
+            
+            if delete_file {
+                let path = task.save_path.clone();
+                tokio::spawn(async move {
+                    let _ = tokio::fs::remove_file(path).await;
+                });
+            }
+            
+            let progress = DownloadProgress {
+                id: task.id.clone(),
+                filename: task.filename.clone(),
+                save_path: task.save_path.clone(),
+                total_size: task.total_size,
+                downloaded: task.downloaded.load(Ordering::Relaxed),
+                speed: 0.0,
+                eta: "---".to_string(),
+                status: DownloadStatus::Trash,
+            };
+            if let Some(ref handle) = self.app_handle.lock().await.clone() {
+                use tauri::Emitter;
+                let _ = handle.emit("download-progress", progress);
+            }
+            
+            drop(tasks);
+            let _ = self.save_history().await;
+            Ok(())
+        } else {
+            Err("Task not found".to_string())
+        }
+    }
+
+    pub async fn restore_task(&self, id: &str) -> Result<(), String> {
+        let tasks = self.tasks.read().await;
+        if let Some(task) = tasks.get(id) {
+            let mut status = task.status.write().await;
+            if *status == DownloadStatus::Trash {
+                let downloaded = task.downloaded.load(Ordering::Relaxed);
+                if task.total_size > 0 && downloaded >= task.total_size {
+                    *status = DownloadStatus::Completed;
+                } else {
+                    *status = DownloadStatus::Paused;
+                }
+            }
+            
+            let progress = DownloadProgress {
+                id: task.id.clone(),
+                filename: task.filename.clone(),
+                save_path: task.save_path.clone(),
+                total_size: task.total_size,
+                downloaded: task.downloaded.load(Ordering::Relaxed),
+                speed: 0.0,
+                eta: "---".to_string(),
+                status: status.clone(),
+            };
+            if let Some(ref handle) = self.app_handle.lock().await.clone() {
+                use tauri::Emitter;
+                let _ = handle.emit("download-progress", progress);
+            }
             
             drop(tasks);
             let _ = self.save_history().await;

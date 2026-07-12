@@ -93,6 +93,7 @@ html, body {
   height: 100%;
   padding: 24px 16px;
   z-index: 10;
+  overflow: hidden;
 }
 
 .brand {
@@ -128,6 +129,23 @@ html, body {
   flex-direction: column;
   gap: 6px;
   flex: 1;
+  overflow-y: auto;
+  padding-right: 4px;
+  scrollbar-width: thin;
+  scrollbar-color: rgba(255, 255, 255, 0.08) transparent;
+}
+
+.sidebar-menu::-webkit-scrollbar {
+  width: 4px;
+}
+
+.sidebar-menu::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.sidebar-menu::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.08);
+  border-radius: 4px;
 }
 
 .menu-item {
@@ -177,6 +195,35 @@ html, body {
   display: flex;
   flex-direction: column;
   gap: 8px;
+}
+
+.sidebar-credit-footer {
+  margin-top: 12px;
+  padding: 8px 4px 0 4px;
+  border-top: 1px solid rgba(255, 255, 255, 0.03);
+  font-size: 0.7rem;
+  color: var(--text-muted);
+  line-height: 1.4;
+  text-align: center;
+  font-weight: 500;
+}
+
+.credit-lumen {
+  font-weight: 700;
+  background: linear-gradient(135deg, var(--accent-cyan), #00ffbf);
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  display: inline-block;
+  text-shadow: 0 0 12px rgba(0, 240, 255, 0.25);
+}
+
+.credit-shaheer {
+  font-weight: 700;
+  background: linear-gradient(135deg, #a78bfa, #f43f5e);
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  display: inline-block;
+  text-shadow: 0 0 12px rgba(244, 63, 94, 0.25);
 }
 
 /* Main Area */

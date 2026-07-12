@@ -723,6 +723,10 @@ function App() {
             <Settings size={18} />
             <span>Settings</span>
           </div>
+          <div className="sidebar-credit-footer">
+            <div>A Product of <span className="credit-lumen">Lumen Lab</span></div>
+            <div style={{ marginTop: "2px" }}>Designed & Developed by <span className="credit-shaheer">Shaheer Ahmed</span></div>
+          </div>
         </div>
       </aside>
 

@@ -29,6 +29,13 @@ chrome.downloads.onDeterminingFilename.addListener((downloadItem, suggest) => {
     return;
   }
 
+  const url = downloadItem.url || "";
+  const referrer = downloadItem.referrer || "";
+  if (url.includes("web.whatsapp.com") || referrer.includes("web.whatsapp.com")) {
+    suggest();
+    return;
+  }
+
   // Ignore historical/restored downloads loaded by Chrome at startup
   if (downloadItem.startTime) {
     const downloadTime = new Date(downloadItem.startTime).getTime();
@@ -84,9 +91,13 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     (async () => {
       const url = message.url;
       const filename = message.filename;
-      const cookies = await getCookiesForUrl(url);
       const referrer = sender.tab?.url || "";
 
+      if (url.includes("web.whatsapp.com") || referrer.includes("web.whatsapp.com")) {
+        return;
+      }
+
+      const cookies = await getCookiesForUrl(url);
       await sendToDesktopApp(url, filename, cookies, referrer);
     })();
   } else if (message.type === 'MEDIA_DETECTED') {
