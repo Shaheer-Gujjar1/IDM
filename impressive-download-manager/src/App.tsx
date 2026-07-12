@@ -1389,50 +1389,58 @@ function App() {
       )}
 
       {showRemoveConfirm && taskToRemove && (
-        <div className="modal-backdrop">
-          <div className="download-modal" style={{ maxWidth: "420px" }}>
-            <div className="modal-header">
-              <span className="modal-title" style={{ color: "var(--accent-red)", display: "flex", alignItems: "center", gap: "8px" }}>
-                <Trash2 size={20} />
-                {getStatusText(taskToRemove.status) === "Trash" ? "Permanent Delete" : "Move to Trash"}
+        <div className="modal-backdrop-v2">
+          <div className="modal-content-v2" style={{ borderTop: "2px solid var(--accent-red)" }}>
+            <div className="modal-header-v2">
+              <span className="modal-title-v2" style={{ color: "var(--accent-red)", display: "flex", alignItems: "center", gap: "12px", fontSize: "1.6rem" }}>
+                <Trash2 size={24} strokeWidth={2.5} />
+                {getStatusText(taskToRemove.status) === "Trash" ? "Permanent Deletion" : "Move to Trash"}
               </span>
-              <button className="modal-close-btn" onClick={() => { setShowRemoveConfirm(false); setTaskToRemove(null); }}>
-                <X size={18} />
+              <button className="modal-close-btn-v2" onClick={() => { setShowRemoveConfirm(false); setTaskToRemove(null); }}>
+                <X size={20} />
               </button>
             </div>
             
-            <div style={{ display: "flex", flexDirection: "column", gap: "16px", marginTop: "8px" }}>
-              <p style={{ fontSize: "0.85rem", color: "var(--text-primary)", lineHeight: "1.5", margin: 0 }}>
+            <div className="modal-body-v2">
+              <p style={{ fontSize: "1rem", color: "var(--text-primary)", lineHeight: "1.6", margin: 0, fontWeight: 500 }}>
                 {getStatusText(taskToRemove.status) === "Trash" 
-                  ? `Are you sure you want to permanently delete "${taskToRemove.filename}"? This action cannot be undone.`
-                  : `Are you sure you want to move "${taskToRemove.filename}" to Trash?`
+                  ? `You are about to permanently delete "${taskToRemove.filename}". This action cannot be undone.`
+                  : `Are you sure you want to move "${taskToRemove.filename}" to the Trash?`
                 }
               </p>
 
               {getStatusText(taskToRemove.status) === "Completed" && (
-                <label className="custom-checkbox-container">
+                <label className="custom-checkbox-container" style={{ marginTop: "12px", padding: "16px", background: "rgba(255,255,255,0.03)", borderRadius: "12px", border: "1px solid rgba(255,255,255,0.05)" }}>
                   <input 
                     type="checkbox" 
                     checked={deleteFileFromDisk} 
                     onChange={(e) => setDeleteFileFromDisk(e.target.checked)}
                   />
                   <span className="custom-checkbox-checkmark"></span>
-                  <span className="custom-checkbox-label">Delete downloaded file from disk</span>
+                  <span className="custom-checkbox-label" style={{ fontSize: "0.95rem" }}>Also delete the downloaded file from disk</span>
                 </label>
               )}
+            </div>
 
-              <div className="modal-actions" style={{ marginTop: "8px" }}>
-                <button className="action-btn" style={{ flex: 1, justifyContent: "center" }} onClick={() => { setShowRemoveConfirm(false); setTaskToRemove(null); }}>
-                  <span>Cancel</span>
-                </button>
-                <button 
-                  className="btn-add-download" 
-                  style={{ flex: 1, background: "var(--accent-red)", border: "none", boxShadow: "0 0 16px rgba(239, 68, 68, 0.2)", padding: "10px 16px" }} 
-                  onClick={confirmRemoveTask}
-                >
-                  <span>Confirm</span>
-                </button>
-              </div>
+            <div className="modal-actions-v2">
+              <button className="hover-action-btn" style={{ width: "auto", padding: "0 24px" }} onClick={() => { setShowRemoveConfirm(false); setTaskToRemove(null); }}>
+                Cancel
+              </button>
+              <button 
+                className="accent-pill" 
+                style={{ 
+                  padding: "12px 32px", 
+                  borderRadius: "100px", 
+                  fontWeight: 700, 
+                  fontSize: "1rem", 
+                  background: "linear-gradient(135deg, #ef4444, #b91c1c)", 
+                  boxShadow: "0 4px 16px rgba(239, 68, 68, 0.4)",
+                  color: "#fff"
+                }} 
+                onClick={confirmRemoveTask}
+              >
+                Confirm Delete
+              </button>
             </div>
           </div>
         </div>

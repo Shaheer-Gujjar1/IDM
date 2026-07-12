@@ -184,26 +184,32 @@
       position: absolute;
       bottom: 0; left: 0; right: 0; height: 100%;
       background: #00f0ff;
-      opacity: 0.5;
       transform-origin: bottom;
       transition: transform 0.2s linear, background 0.3s;
       transform: translateY(100%);
     }
-    .liquid-fill::before {
+    .liquid-fill::before, .liquid-fill::after {
       content: "";
       position: absolute;
-      top: -4px;
-      left: -50%;
-      width: 200%;
-      height: 8px;
+      width: 250%; height: 250%;
+      top: 0; left: 50%;
+      transform: translateX(-50%);
+    }
+    .liquid-fill::before {
+      border-radius: 45%;
+      background: inherit;
+      opacity: 0.5;
+      animation: liquidRotate 3s linear infinite;
+    }
+    .liquid-fill::after {
+      border-radius: 40%;
       background: inherit;
       opacity: 0.8;
-      border-radius: 40%;
-      animation: liquidWave 2s linear infinite;
+      animation: liquidRotate 4s linear infinite;
     }
-    @keyframes liquidWave {
-      0% { transform: rotate(0deg); }
-      100% { transform: rotate(360deg); }
+    @keyframes liquidRotate {
+      0% { transform: translateX(-50%) rotate(0deg); }
+      100% { transform: translateX(-50%) rotate(360deg); }
     }
     .liquid-icon {
       position: absolute;

@@ -38,16 +38,17 @@
 .sidebar-menu-v2 {
   display: flex;
   flex-direction: column;
-  gap: 12px;
+  gap: 6px;
   flex: 1;
   width: 100%;
   align-items: center;
 }
 
 .menu-pill {
-  width: 44px;
-  height: 44px;
-  border-radius: 14px;
+  position: relative;
+  width: 38px;
+  height: 38px;
+  border-radius: 12px;
   display: flex;
   align-items: center;
   justify-content: center;
@@ -75,7 +76,7 @@
   width: 24px;
   height: 1px;
   background: rgba(255, 255, 255, 0.08);
-  margin: 8px 0;
+  margin: 4px 0;
 }
 
 .sidebar-footer-v2 {
@@ -528,32 +529,43 @@ html[data-theme="light"] .liquid-progress-container {
 .liquid-fill {
   position: absolute;
   bottom: 0; left: 0; right: 0; height: 100%;
-  background: var(--accent-cyan);
-  opacity: 0.3;
+  background: transparent;
   transform-origin: bottom;
-  transition: transform 0.5s cubic-bezier(0.16, 1, 0.3, 1), background 0.3s;
+  transition: transform 0.5s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+/* The true liquid wave using giant rotating squircles */
+.liquid-fill::before, .liquid-fill::after {
+  content: "";
+  position: absolute;
+  width: 250%;
+  height: 250%;
+  top: 0;
+  left: 50%;
+  transform: translateX(-50%);
 }
 
 .liquid-fill::before {
-  content: "";
-  position: absolute;
-  top: -8px;
-  left: -50%;
-  width: 200%;
-  height: 16px;
-  background: inherit;
-  opacity: 0.5;
+  border-radius: 45%;
+  background: rgba(6, 182, 212, 0.5);
+  animation: liquidRotate 5s linear infinite;
+}
+
+.liquid-fill::after {
   border-radius: 40%;
-  animation: liquidWave 3s linear infinite;
+  background: rgba(6, 182, 212, 0.8);
+  animation: liquidRotate 7s linear infinite;
 }
 
-@keyframes liquidWave {
-  0% { transform: rotate(0deg); }
-  100% { transform: rotate(360deg); }
+@keyframes liquidRotate {
+  0% { transform: translateX(-50%) rotate(0deg); }
+  100% { transform: translateX(-50%) rotate(360deg); }
 }
 
-.liquid-fill.paused { background: var(--accent-orange); opacity: 0.3; }
-.liquid-fill.completed { background: var(--accent-green); opacity: 0.3; }
+.liquid-fill.paused::before { background: rgba(245, 158, 11, 0.5); }
+.liquid-fill.paused::after { background: rgba(245, 158, 11, 0.8); }
+.liquid-fill.completed::before { background: rgba(16, 185, 129, 0.5); }
+.liquid-fill.completed::after { background: rgba(16, 185, 129, 0.8); }
 
 /* Premium System Sliders */
 .range-slider {
@@ -587,39 +599,45 @@ html[data-theme="light"] .range-slider {
   box-shadow: inset 0 1px 3px rgba(0,0,0,0.1);
 }
 
-/* Modal V2 Overhauls */
+/* Modal V2 Overhauls: Bottom Sheet Panel Design */
 .modal-backdrop-v2 {
   position: fixed;
   top: 0; left: 0; right: 0; bottom: 0;
-  background: rgba(0, 0, 0, 0.4);
-  backdrop-filter: blur(12px);
-  -webkit-backdrop-filter: blur(12px);
+  background: rgba(0, 0, 0, 0.6);
+  backdrop-filter: blur(40px);
+  -webkit-backdrop-filter: blur(40px);
   display: flex;
-  align-items: center;
+  align-items: flex-end; /* Dock to bottom of the window */
   justify-content: center;
   z-index: 1000;
   animation: fadeIn 0.3s ease;
 }
 
 .modal-content-v2 {
-  background: rgba(20, 24, 35, 0.6);
-  border: 1px solid rgba(255, 255, 255, 0.08);
-  border-radius: 28px;
+  background: rgba(10, 12, 17, 0.9);
+  border-top: 1px solid rgba(255, 255, 255, 0.1);
+  border-left: none;
+  border-right: none;
+  border-bottom: none;
+  border-radius: 0; /* User explicitly requested no rounded corners */
   width: 100%;
-  max-width: 500px;
-  box-shadow: 0 40px 100px rgba(0, 0, 0, 0.5);
-  backdrop-filter: blur(60px);
-  -webkit-backdrop-filter: blur(60px);
+  max-width: 100%;
+  box-shadow: 0 -20px 60px rgba(0, 0, 0, 0.6);
   display: flex;
   flex-direction: column;
-  overflow: hidden;
-  animation: slideUpFade 0.4s cubic-bezier(0.16, 1, 0.3, 1) backwards;
+  padding-bottom: 24px;
+  animation: slideUpPanel 0.4s cubic-bezier(0.16, 1, 0.3, 1) backwards;
+}
+
+@keyframes slideUpPanel {
+  0% { transform: translateY(100%); opacity: 0; }
+  100% { transform: translateY(0); opacity: 1; }
 }
 
 html[data-theme="light"] .modal-content-v2 {
-  background: rgba(255, 255, 255, 0.8);
-  border-color: rgba(0, 0, 0, 0.1);
-  box-shadow: 0 40px 100px rgba(0, 0, 0, 0.1);
+  background: rgba(255, 255, 255, 0.95);
+  border-top-color: rgba(0, 0, 0, 0.1);
+  box-shadow: 0 -20px 60px rgba(0, 0, 0, 0.1);
 }
 
 .modal-header-v2 {
