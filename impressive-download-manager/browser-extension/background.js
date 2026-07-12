@@ -22,9 +22,10 @@ async function getCookiesForUrl(url) {
 }
 
 // Intercept browser downloads automatically (Fallback)
-chrome.downloads.onCreated.addListener(async (downloadItem) => {
+chrome.downloads.onDeterminingFilename.addListener((downloadItem, suggest) => {
   // Only capture active downloads
   if (downloadItem.state && downloadItem.state !== "in_progress") {
+    suggest();
     return;
   }
 
@@ -33,26 +34,27 @@ chrome.downloads.onCreated.addListener(async (downloadItem) => {
     const downloadTime = new Date(downloadItem.startTime).getTime();
     const now = Date.now();
     if (now - downloadTime > 10000) {
+      suggest();
       return;
     }
   }
 
   if (downloadItem.url && !downloadItem.byExtensionId) {
-    try {
-      await chrome.downloads.cancel(downloadItem.id);
-      await chrome.downloads.erase({ id: downloadItem.id });
-    } catch (e) {
-      console.warn("Interception cancel failed:", e);
-    }
+    // Cancel download immediately to prevent browser's save dialogue from showing up
+    chrome.downloads.cancel(downloadItem.id);
+    suggest();
 
     const filename = downloadItem.filename 
       ? downloadItem.filename.split(/[\\/]/).pop() 
       : extractFilename(downloadItem.url);
     
-    const cookies = await getCookiesForUrl(downloadItem.url);
-    const referrer = downloadItem.referrer || "";
-
-    await sendToDesktopApp(downloadItem.url, filename, cookies, referrer);
+    (async () => {
+      const cookies = await getCookiesForUrl(downloadItem.url);
+      const referrer = downloadItem.referrer || "";
+      await sendToDesktopApp(downloadItem.url, filename, cookies, referrer);
+    })();
+  } else {
+    suggest();
   }
 });
 
