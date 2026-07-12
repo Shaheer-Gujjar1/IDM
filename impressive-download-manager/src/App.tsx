@@ -727,22 +727,22 @@ function App() {
 
   if (popupMode === "complete") {
     return (
-      <div className="modal-content-v2" style={{ height: "100vh", animation: "none", boxShadow: "none", border: "none", alignItems: "center", justifyContent: "center", position: "relative" }}>
-        <div style={{ width: "96px", height: "96px", borderRadius: "50%", background: "rgba(16, 185, 129, 0.1)", display: "flex", alignItems: "center", justifyContent: "center", marginBottom: "24px", boxShadow: "0 0 40px rgba(16, 185, 129, 0.2)" }}>
-          <CheckCircle size={48} color="var(--accent-green)" />
+      <div className="modal-content-v2" style={{ height: "100vh", animation: "none", boxShadow: "none", border: "none", alignItems: "center", justifyContent: "center", position: "relative", padding: "24px" }}>
+        <div style={{ width: "80px", height: "80px", borderRadius: "50%", background: "rgba(16, 185, 129, 0.1)", display: "flex", alignItems: "center", justifyContent: "center", marginBottom: "16px", boxShadow: "0 0 30px rgba(16, 185, 129, 0.15)" }}>
+          <CheckCircle size={40} color="var(--accent-green)" />
         </div>
-        <div style={{ fontSize: "1.8rem", fontWeight: 800, color: "var(--text-primary)", marginBottom: "16px", letterSpacing: "-0.5px" }}>
+        <div style={{ fontSize: "1.6rem", fontWeight: 800, color: "var(--text-primary)", marginBottom: "12px", letterSpacing: "-0.5px" }}>
           Download Complete!
         </div>
-        <div className="file-display-box" style={{ background: "rgba(255,255,255,0.03)", border: "1px solid rgba(255,255,255,0.06)", fontSize: "1.05rem", padding: "16px 24px", width: "85%", textAlign: "center", marginBottom: "40px", borderRadius: "16px" }}>
+        <div className="file-display-box" style={{ background: "rgba(255,255,255,0.03)", border: "1px solid rgba(255,255,255,0.06)", fontSize: "0.95rem", padding: "12px 20px", width: "90%", textAlign: "center", marginBottom: "32px", borderRadius: "12px", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }} title={popupFilename}>
           {popupFilename}
         </div>
         
-        <div style={{ position: "absolute", bottom: "24px", left: "24px", right: "24px", display: "flex", gap: "16px" }}>
+        <div style={{ position: "absolute", bottom: "24px", left: "24px", right: "24px", display: "flex", gap: "12px" }}>
           {popupSavePath && (
             <button
               className="hover-action-btn"
-              style={{ flex: 1, padding: "16px", borderRadius: "16px", color: "var(--accent-green)", fontWeight: 700, fontSize: "1rem", background: "rgba(16, 185, 129, 0.05)", border: "1px solid rgba(16, 185, 129, 0.15)" }}
+              style={{ flex: 1, padding: "14px", borderRadius: "12px", color: "var(--accent-green)", fontWeight: 700, fontSize: "0.95rem", background: "rgba(16, 185, 129, 0.05)", border: "1px solid rgba(16, 185, 129, 0.15)" }}
               onClick={() => handleOpenFileDir(null, popupSavePath)}
             >
               Open Folder
@@ -750,7 +750,7 @@ function App() {
           )}
           <button
             className="hover-action-btn"
-            style={{ flex: 1, padding: "16px", borderRadius: "16px", fontWeight: 700, fontSize: "1rem" }}
+            style={{ flex: 1, padding: "14px", borderRadius: "12px", fontWeight: 700, fontSize: "0.95rem" }}
             onClick={handleClosePopup}
           >
             Close

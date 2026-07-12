@@ -295,6 +295,35 @@ async fn resume_and_open_progress(
         .resizable(false)
         .build()
         .map_err(|e| e.to_string())?;
+}
+
+#[tauri::command]
+async fn redownload_and_open_progress(
+    id: String,
+    app_handle: tauri::AppHandle,
+    manager: State<'_, Arc<DownloadManager>>,
+) -> Result<(), String> {
+    manager.redownload_task(&id).await?;
+
+    let progress_url = format!("/index.html?popup=progress&id={}", id);
+    let window_label = format!("popup-progress-{}", id);
+
+    // If the window already exists, just focus it; otherwise create it
+    if let Some(win) = app_handle.get_webview_window(&window_label) {
+        let _ = win.show();
+        let _ = win.set_focus();
+    } else {
+        let _ = tauri::WebviewWindowBuilder::new(
+            &app_handle,
+            &window_label,
+            tauri::WebviewUrl::App(progress_url.into()),
+        )
+        .title("Downloading...")
+        .inner_size(520.0, 340.0)
+        .center()
+        .resizable(false)
+        .build()
+        .map_err(|e| e.to_string())?;
     }
     Ok(())
 }
@@ -594,6 +623,7 @@ pub fn run() {
             pause_download,
             resume_download,
             resume_and_open_progress,
+            redownload_and_open_progress,
             cancel_download,
             delete_task,
             trash_task,
