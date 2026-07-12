@@ -98,6 +98,18 @@ function App() {
 
   const [isThemeDropdownOpen, setIsThemeDropdownOpen] = useState(false);
   const themeDropdownRef = useRef<HTMLDivElement>(null);
+  const [activeTooltip, setActiveTooltip] = useState<{ title: string; x: number; y: number } | null>(null);
+
+  const showTooltip = (title: string, e: React.MouseEvent) => {
+    const rect = e.currentTarget.getBoundingClientRect();
+    setActiveTooltip({
+      title,
+      x: rect.right + 12,
+      y: rect.top + rect.height / 2
+    });
+  };
+
+  const hideTooltip = () => setActiveTooltip(null);
 
   useEffect(() => {
     const handleOutsideClick = (e: MouseEvent) => {
@@ -444,7 +456,7 @@ function App() {
       
       // If we are cancel-closing the standalone progress or refresh window, close this window
       if (popupMode === "progress" || popupMode === "refresh") {
-        await getCurrentWindow().close();
+        await handleClosePopup();
       }
     } catch (err) {
       console.error(err);
@@ -495,7 +507,15 @@ function App() {
 
 
   const handleClosePopup = async () => {
-    await getCurrentWindow().close();
+    try {
+      await invoke("close_window");
+    } catch (e) {
+      try {
+        await getCurrentWindow().close();
+      } catch (err) {
+        console.error("Failed to close window:", err);
+      }
+    }
   };
 
   // Helpers
@@ -580,15 +600,12 @@ function App() {
   // STANDALONE POPUP RENDER logic
   if (popupMode === "add") {
     return (
-      <div className="modal-content-v2" style={{ height: "100vh", animation: "none", boxShadow: "none", border: "none", padding: "16px" }}>
+      <div className="modal-content-v2" style={{ height: "100vh", overflowY: "auto", animation: "none", boxShadow: "none", border: "none", padding: "16px" }}>
         <div className="modal-header-v2" style={{ marginBottom: "12px", paddingBottom: "8px" }}>
           <span className="modal-title-v2" style={{ fontSize: "1.2rem" }}>New Download Captured</span>
-          <button className="modal-close-btn-v2" onClick={handleClosePopup}>
-            <X size={18} />
-          </button>
         </div>
         
-        <div className="modal-body-v2" style={{ flex: 1, display: "flex", flexDirection: "column", gap: "10px", padding: 0 }}>
+        <div className="modal-body-v2" style={{ display: "flex", flexDirection: "column", gap: "10px", padding: 0 }}>
           <div className="form-group-v2">
             <span className="form-label-v2" style={{ fontSize: "0.75rem", marginBottom: "4px" }}>Source URL</span>
             <input type="text" className="spotlight-input" style={{ padding: "8px 12px", fontSize: "0.85rem" }} value={popupUrl} onChange={(e) => setPopupUrl(e.target.value)} />
@@ -701,7 +718,7 @@ function App() {
         <p style={{ fontSize: "1rem", color: "var(--text-secondary)", textAlign: "center", width: "85%", lineHeight: 1.6 }}>
           We opened your web browser to the download page. Simply click the download button in your browser now. We will capture the updated address and resume automatically!
         </p>
-        <button className="hover-action-btn" style={{ position: "absolute", bottom: "24px", width: "calc(100% - 48px)", padding: "16px", borderRadius: "16px", color: "var(--accent-red)", fontWeight: 700, fontSize: "1rem" }} onClick={() => handleCancel(null, pId)}>
+        <button className="hover-action-btn" style={{ position: "absolute", bottom: "16px", width: "calc(100% - 48px)", padding: "12px", borderRadius: "16px", color: "var(--accent-red)", fontWeight: 700, fontSize: "0.85rem" }} onClick={() => handleCancel(null, pId)}>
           Cancel Refresh
         </button>
       </div>
@@ -753,7 +770,12 @@ function App() {
         </div>
 
         <nav className="sidebar-menu-v2">
-          <button className="menu-pill accent-pill" onClick={handleOpenAddModal} data-title="Add Download">
+          <button 
+            className="menu-pill accent-pill" 
+            onClick={handleOpenAddModal}
+            onMouseEnter={(e) => showTooltip("Add Download", e)}
+            onMouseLeave={hideTooltip}
+          >
             <Plus size={22} strokeWidth={3} />
           </button>
 
@@ -764,7 +786,8 @@ function App() {
               key={cat.id}
               className={`menu-pill ${activeCategory === cat.id ? "active" : ""}`}
               onClick={() => setActiveCategory(cat.id)}
-              data-title={cat.name}
+              onMouseEnter={(e) => showTooltip(cat.name, e)}
+              onMouseLeave={hideTooltip}
             >
               {cat.icon}
             </div>
@@ -777,7 +800,8 @@ function App() {
               key={cat.id}
               className={`menu-pill ${activeCategory === cat.id ? "active" : ""}`}
               onClick={() => setActiveCategory(cat.id)}
-              data-title={cat.name}
+              onMouseEnter={(e) => showTooltip(cat.name, e)}
+              onMouseLeave={hideTooltip}
             >
               {cat.icon}
             </div>
@@ -785,7 +809,12 @@ function App() {
 
           <div style={{ marginTop: 'auto' }} />
           
-          <div className={`menu-pill ${activeCategory === "settings" ? "active" : ""}`} onClick={() => setActiveCategory("settings")} data-title="Settings">
+          <div 
+            className={`menu-pill ${activeCategory === "settings" ? "active" : ""}`} 
+            onClick={() => setActiveCategory("settings")}
+            onMouseEnter={(e) => showTooltip("Settings", e)}
+            onMouseLeave={hideTooltip}
+          >
             <Settings size={20} />
           </div>
         </nav>
@@ -1417,6 +1446,18 @@ function App() {
               </button>
             </div>
           </div>
+        </div>
+      )}
+
+      {activeTooltip && (
+        <div 
+          className="global-tooltip-v2"
+          style={{
+            left: `${activeTooltip.x}px`,
+            top: `${activeTooltip.y}px`
+          }}
+        >
+          {activeTooltip.title}
         </div>
       )}
     </div>

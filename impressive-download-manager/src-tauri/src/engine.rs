@@ -48,7 +48,7 @@ pub struct DownloadTask {
     pub downloaded: Arc<AtomicU64>,
     pub status: Arc<RwLock<DownloadStatus>>,
     pub abort_tx: Option<broadcast::Sender<()>>,
-    pub chunks: Mutex<Vec<DownloadChunk>>,
+    pub chunks: std::sync::Mutex<Vec<DownloadChunk>>,
     pub speed: Arc<RwLock<f64>>,
     pub eta: Arc<RwLock<String>>,
 }
@@ -77,8 +77,9 @@ impl DownloadManager {
     pub fn new() -> Self {
         let client = reqwest::Client::builder()
             .user_agent("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
-            .tcp_nodelay(true)
+            // tcp_nodelay DISABLED: disabling Nagle's algorithm helps latency but HURTS bulk download throughput
             .pool_max_idle_per_host(32)
+            .connection_verbose(false)
             .build()
             .unwrap_or_default();
 
@@ -106,7 +107,7 @@ impl DownloadManager {
             for task in tasks.values() {
                 let downloaded = task.downloaded.load(Ordering::Relaxed);
                 let status = task.status.read().await.clone();
-                let chunks = task.chunks.lock().await.clone();
+                let chunks = task.chunks.lock().unwrap().clone();
                 persistent_tasks.push(PersistentTask {
                     id: task.id.clone(),
                     url: task.url.clone(),
@@ -155,7 +156,7 @@ impl DownloadManager {
                                 downloaded: Arc::new(AtomicU64::new(p_task.downloaded)),
                                 status: Arc::new(RwLock::new(status)),
                                 abort_tx: None,
-                                chunks: Mutex::new(p_task.chunks),
+                                chunks: std::sync::Mutex::new(p_task.chunks),
                                 speed: Arc::new(RwLock::new(0.0)),
                                 eta: Arc::new(RwLock::new("---".to_string())),
                             }));
@@ -177,13 +178,8 @@ impl DownloadManager {
     ) -> Result<String, String> {
         let id = uuid::Uuid::new_v4().to_string();
         
-        let client = reqwest::Client::builder()
-            .user_agent("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
-            .tcp_nodelay(true)
-            .build()
-            .unwrap_or_default();
-        
-        let mut head_req = client.head(&url);
+        // Reuse shared manager client — avoids redundant TLS handshakes
+        let mut head_req = self.client.head(&url);
         if !cookie.is_empty() {
             head_req = head_req.header(reqwest::header::COOKIE, &cookie);
         }
@@ -225,7 +221,7 @@ impl DownloadManager {
             downloaded: Arc::new(AtomicU64::new(0)),
             status: Arc::new(RwLock::new(DownloadStatus::Queued)),
             abort_tx: Some(abort_tx),
-            chunks: Mutex::new(vec![]),
+            chunks: std::sync::Mutex::new(vec![]),
             speed: Arc::new(RwLock::new(0.0)),
             eta: Arc::new(RwLock::new("---".to_string())),
         });
@@ -289,12 +285,12 @@ impl DownloadManager {
             } else {
                 chunks.push(DownloadChunk { start: 0, end: 0, downloaded: 0 });
             }
-            *task.chunks.lock().await = chunks;
+            *task.chunks.lock().unwrap() = chunks;
         }
 
         let abort_tx = task.abort_tx.as_ref().unwrap();
         let mut workers = vec![];
-        let chunks_list = task.chunks.lock().await.clone();
+        let chunks_list = task.chunks.lock().unwrap().clone();
 
         let id_clone = task.id.clone();
         let filename_clone = task.filename.clone();
@@ -306,12 +302,14 @@ impl DownloadManager {
         let app_handle_opt = self.app_handle.lock().await.clone();
         let task_speed = task.speed.clone();
         let task_eta = task.eta.clone();
+        let manager_for_save = self.clone();
 
         // Speed & Progress reporting loop
         tokio::spawn(async move {
             let mut interval = tokio::time::interval(Duration::from_millis(800));
             let mut last_bytes = downloaded_counter.load(Ordering::Relaxed);
             let mut last_check = Instant::now();
+            let mut save_ticks = 0;
 
             loop {
                 tokio::select! {
@@ -320,13 +318,23 @@ impl DownloadManager {
                         let current_bytes = downloaded_counter.load(Ordering::Relaxed);
                         let now = Instant::now();
                         let duration = now.duration_since(last_check).as_secs_f64();
-                        let speed = if duration > 0.0 {
+                        let raw_speed = if duration > 0.0 {
                             (current_bytes - last_bytes) as f64 / duration
                         } else {
                             0.0
                         };
 
-                        let eta = if speed > 0.0 && total_size > current_bytes {
+                        let mut speed_guard = task_speed.write().await;
+                        let last_speed = *speed_guard;
+                        let speed = if last_speed <= 0.0 {
+                            raw_speed
+                        } else {
+                            // 0.3 weight to current speed, 0.7 to historical trend
+                            0.3 * raw_speed + 0.7 * last_speed
+                        };
+                        *speed_guard = speed;
+
+                        let eta = if speed > 1024.0 && total_size > current_bytes {
                             let rem = total_size - current_bytes;
                             let rem_secs = (rem as f64 / speed).round() as u64;
                             if rem_secs >= 3600 {
@@ -354,7 +362,6 @@ impl DownloadManager {
                         };
 
                         let status = status_ref.read().await.clone();
-                        *task_speed.write().await = speed;
                         *task_eta.write().await = eta.clone();
 
                         let progress = DownloadProgress {
@@ -371,6 +378,16 @@ impl DownloadManager {
                         if let Some(ref handle) = app_handle_opt {
                             use tauri::Emitter;
                             let _ = handle.emit("download-progress", progress);
+                        }
+
+                        // Periodic autosave every ~30 seconds — moved outside hot path
+                        save_ticks += 1;
+                        if save_ticks >= 37 {
+                            save_ticks = 0;
+                            let manager_clone = manager_for_save.clone();
+                            tokio::spawn(async move {
+                                let _ = manager_clone.save_history().await;
+                            });
                         }
 
                         if status == DownloadStatus::Completed || matches!(status, DownloadStatus::Failed(_)) {
@@ -426,6 +443,7 @@ impl DownloadManager {
 
                 let mut stream = res.bytes_stream();
                 let mut local_downloaded = chunk.downloaded;
+                let mut last_saved_downloaded = chunk.downloaded;
 
                 // --- Blocking writer thread ---
                 // Open a *std* file handle so the writer thread never touches async I/O
@@ -435,17 +453,34 @@ impl DownloadManager {
                 };
 
                 // Channel: async reader → blocking writer
-                // Up to 64 chunks of 128 KB = 8 MB in flight before back-pressure
+                // Up to 64 chunks of 512 KB = 32 MB in flight before back-pressure
                 let (tx, rx) = std::sync::mpsc::sync_channel::<(u64, Vec<u8>)>(64);
                 let downloaded_for_writer = downloaded.clone();
 
                 // Spawn a blocking OS thread that does all disk I/O
+                // total_size cap prevents counter overflow if server ignores range headers
+                let writer_total_size = total_size;
                 let writer_handle = tokio::task::spawn_blocking(move || {
                     let mut f = std_file;
                     for (write_pos, buf) in rx {
-                        if f.seek(std::io::SeekFrom::Start(write_pos)).is_ok() {
-                            if f.write_all(&buf).is_ok() {
-                                downloaded_for_writer.fetch_add(buf.len() as u64, Ordering::Relaxed);
+                        // Hard cap: never write beyond total file size
+                        if writer_total_size > 0 {
+                            let already = downloaded_for_writer.load(Ordering::Relaxed);
+                            if already >= writer_total_size {
+                                break; // done, discard remaining
+                            }
+                            let allowed = (writer_total_size - already).min(buf.len() as u64) as usize;
+                            let safe_buf = &buf[..allowed];
+                            if f.seek(std::io::SeekFrom::Start(write_pos)).is_ok() {
+                                if f.write_all(safe_buf).is_ok() {
+                                    downloaded_for_writer.fetch_add(allowed as u64, Ordering::Relaxed);
+                                }
+                            }
+                        } else {
+                            if f.seek(std::io::SeekFrom::Start(write_pos)).is_ok() {
+                                if f.write_all(&buf).is_ok() {
+                                    downloaded_for_writer.fetch_add(buf.len() as u64, Ordering::Relaxed);
+                                }
                             }
                         }
                     }
@@ -454,7 +489,7 @@ impl DownloadManager {
                 });
 
                 // --- Async network reader --- reads at full line speed, no disk awaits ---
-                let mut net_buffer = Vec::with_capacity(256 * 1024);
+                let mut net_buffer = Vec::with_capacity(512 * 1024);
 
                 loop {
                     tokio::select! {
@@ -479,11 +514,21 @@ impl DownloadManager {
 
                                     net_buffer.extend_from_slice(bytes_to_add);
 
-                                    // Flush to writer thread every 256 KB
-                                    if net_buffer.len() >= 256 * 1024 {
+                                    // Flush to writer thread every 512 KB
+                                    if net_buffer.len() >= 512 * 1024 {
                                         let write_pos = chunk.start + local_downloaded;
-                                        let flushed = std::mem::replace(&mut net_buffer, Vec::with_capacity(256 * 1024));
+                                        let flushed = std::mem::replace(&mut net_buffer, Vec::with_capacity(512 * 1024));
                                         local_downloaded += flushed.len() as u64;
+
+                                        // Lock chunks to save progress only every 8 MB to eliminate lock contention
+                                        if local_downloaded - last_saved_downloaded >= 8 * 1024 * 1024 {
+                                            last_saved_downloaded = local_downloaded;
+                                            let mut chunks_lock = task_clone.chunks.lock().unwrap();
+                                            if idx < chunks_lock.len() {
+                                                chunks_lock[idx].downloaded = local_downloaded;
+                                            }
+                                        }
+
                                         // If channel is full this will block briefly, which is fine
                                         if tx.send((write_pos, flushed)).is_err() {
                                             break; // writer died
@@ -516,7 +561,7 @@ impl DownloadManager {
                 let _ = writer_handle.await;
 
                 // Update segment offset state when aborted or finished
-                let mut chunks_lock = task_clone.chunks.lock().await;
+                let mut chunks_lock = task_clone.chunks.lock().unwrap();
                 if idx < chunks_lock.len() {
                     chunks_lock[idx].downloaded = local_downloaded;
                 }
@@ -609,14 +654,14 @@ impl DownloadManager {
         if let Some(task) = tasks.get_mut(id) {
             {
                 let mut status = task.status.write().await;
-                if *status != DownloadStatus::Paused {
-                    return Err("Task is not paused".to_string());
+                if *status != DownloadStatus::Paused && !matches!(*status, DownloadStatus::Failed(_)) {
+                    return Err("Task is not paused or failed".to_string());
                 }
                 *status = DownloadStatus::Queued;
             }
 
-            let accept_ranges = task.chunks.lock().await.len() > 1;
-            let chunks_clone = task.chunks.lock().await.clone();
+            let accept_ranges = task.chunks.lock().unwrap().len() > 1;
+            let chunks_clone = task.chunks.lock().unwrap().clone();
 
             let (abort_tx, _) = broadcast::channel(1);
             let updated_task = Arc::new(DownloadTask {
@@ -630,7 +675,7 @@ impl DownloadManager {
                 downloaded: task.downloaded.clone(),
                 status: task.status.clone(),
                 abort_tx: Some(abort_tx),
-                chunks: Mutex::new(chunks_clone),
+                chunks: std::sync::Mutex::new(chunks_clone),
                 speed: task.speed.clone(),
                 eta: task.eta.clone(),
             });
@@ -790,7 +835,7 @@ impl DownloadManager {
             let path = task.save_path.clone();
             let _ = tokio::fs::remove_file(path).await;
 
-            let accept_ranges = task.chunks.lock().await.len() > 1;
+            let accept_ranges = task.chunks.lock().unwrap().len() > 1;
 
             let (abort_tx, _) = broadcast::channel(1);
             let updated_task = Arc::new(DownloadTask {
@@ -804,7 +849,7 @@ impl DownloadManager {
                 downloaded: Arc::new(AtomicU64::new(0)),
                 status: Arc::new(RwLock::new(DownloadStatus::Queued)),
                 abort_tx: Some(abort_tx),
-                chunks: Mutex::new(vec![]),
+                chunks: std::sync::Mutex::new(vec![]),
                 speed: Arc::new(RwLock::new(0.0)),
                 eta: Arc::new(RwLock::new("---".to_string())),
             });

@@ -42,6 +42,11 @@
   flex: 1;
   width: 100%;
   align-items: center;
+  overflow-y: auto;
+  padding-bottom: 12px;
+}
+.sidebar-menu-v2::-webkit-scrollbar {
+  display: none;
 }
 
 .menu-pill {
@@ -410,41 +415,36 @@ html[data-theme="light"] .sidebar-divider {
   background: rgba(0, 0, 0, 0.08);
 }
 
-/* Tooltips */
-.menu-pill, .fab-add-button {
-  position: relative;
-}
-
-.menu-pill::after, .fab-add-button::after {
-  content: attr(data-title);
-  position: absolute;
-  left: calc(100% + 12px);
-  background: rgba(10, 12, 17, 0.9);
+/* Global React-based Tooltip V2 */
+.global-tooltip-v2 {
+  position: fixed;
+  background: rgba(10, 12, 17, 0.95);
   color: #fff;
   padding: 6px 12px;
   border-radius: 8px;
   font-size: 0.8rem;
   font-weight: 600;
-  opacity: 0;
   pointer-events: none;
-  transition: opacity 0.2s ease, transform 0.2s ease;
-  transform: translateX(-10px);
-  white-space: nowrap;
-  z-index: 99999;
+  z-index: 999999;
   backdrop-filter: blur(8px);
   box-shadow: 0 4px 12px rgba(0, 0, 0, 0.2);
+  white-space: nowrap;
+  transform: translateY(-50%);
 }
 
-.menu-pill:hover::after, .fab-add-button:hover::after {
-  opacity: 1;
-  transform: translateX(0);
-}
-
-html[data-theme="light"] .menu-pill::after,
-html[data-theme="light"] .fab-add-button::after {
-  background: rgba(255, 255, 255, 0.9);
-  color: #0f172a;
+html[data-theme="light"] .global-tooltip-v2 {
+  background: rgba(255, 255, 255, 0.95);
+  color: #000;
   box-shadow: 0 4px 12px rgba(0, 0, 0, 0.1);
+  border: 1px solid rgba(0, 0, 0, 0.05);
+}
+
+.sidebar-menu-v2 {
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+}
+.sidebar-menu-v2::-webkit-scrollbar {
+  display: none;
 }
 
 /* Settings V2 Overhaul */

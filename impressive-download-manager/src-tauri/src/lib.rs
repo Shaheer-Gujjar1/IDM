@@ -509,7 +509,7 @@ pub fn run() {
                                                             downloaded: task.downloaded.clone(),
                                                             status: std::sync::Arc::new(tokio::sync::RwLock::new(engine::DownloadStatus::Paused)), // Set to Paused so resume can start it
                                                             abort_tx: None,
-                                                            chunks: tokio::sync::Mutex::new(task.chunks.lock().await.clone()),
+                                                            chunks: std::sync::Mutex::new(task.chunks.lock().unwrap().clone()),
                                                             speed: std::sync::Arc::new(tokio::sync::RwLock::new(0.0)),
                                                             eta: std::sync::Arc::new(tokio::sync::RwLock::new("---".to_string())),
                                                         });
