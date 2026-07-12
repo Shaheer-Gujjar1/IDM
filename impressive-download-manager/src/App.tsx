@@ -3,8 +3,6 @@ import {
   Download, 
   Search, 
   Plus, 
-  TrendingUp, 
-  Gauge, 
   Layers, 
   Activity, 
   CheckCircle2, 
@@ -494,10 +492,6 @@ function App() {
     { id: "archives", name: "Archives", icon: <Archive size={16} /> },
   ];
 
-  const totalSpeed = downloads
-    .filter((d) => getStatusText(d.status) === "Downloading")
-    .reduce((sum, d) => sum + d.speed, 0);
-
   // STANDALONE POPUP RENDER logic
   if (popupMode === "add") {
     return (
@@ -750,20 +744,6 @@ function App() {
           </div>
 
           <div className="topbar-right">
-            <div className="system-stats">
-              <div className="stat-item">
-                <TrendingUp size={14} color="var(--accent-cyan)" />
-                <span>Speed:</span>
-                <span className="stat-value">{formatBytes(totalSpeed)}/s</span>
-              </div>
-              <div style={{ width: "1px", height: "14px", background: "var(--border-color)" }} />
-              <div className="stat-item">
-                <Gauge size={14} color="var(--accent-green)" />
-                <span>Limit:</span>
-                <span className="stat-value">{speedLimitEnabled ? `${speedLimitKb} KB/s` : "Unlimited"}</span>
-              </div>
-            </div>
-
             <button className="btn-add-download" onClick={handleOpenAddModal}>
               <Plus size={16} strokeWidth={3} />
               <span>Add Download</span>

@@ -116,9 +116,55 @@ async fn refresh_download_link(
 
 #[tauri::command]
 async fn open_file_dir(path: String) -> Result<(), String> {
-    // reveal_item_in_dir opens the folder AND highlights the specific file
-    tauri_plugin_opener::reveal_item_in_dir(&path)
-        .map_err(|e| e.to_string())
+    #[cfg(target_os = "linux")]
+    {
+        let path_clone = path.clone();
+        let _ = tokio::task::spawn_blocking(move || {
+            // Nautilus (GNOME) — selects the file
+            if std::process::Command::new("nautilus")
+                .args(["--select", &path_clone])
+                .spawn()
+                .is_ok()
+            {
+                return;
+            }
+            // Dolphin (KDE) — selects the file
+            if std::process::Command::new("dolphin")
+                .args(["--select", &path_clone])
+                .spawn()
+                .is_ok()
+            {
+                return;
+            }
+            // Nemo (Cinnamon) — opens and highlights
+            if std::process::Command::new("nemo")
+                .arg(&path_clone)
+                .spawn()
+                .is_ok()
+            {
+                return;
+            }
+            // Generic fallback: open parent directory
+            if let Some(parent) = std::path::Path::new(&path_clone).parent() {
+                let _ = std::process::Command::new("xdg-open")
+                    .arg(parent)
+                    .spawn();
+            }
+        })
+        .await;
+    }
+    #[cfg(target_os = "windows")]
+    {
+        // /select, highlights the exact file in Explorer
+        let arg = format!("/select,{}", path);
+        let _ = std::process::Command::new("explorer").arg(arg).spawn();
+    }
+    #[cfg(target_os = "macos")]
+    {
+        // -R reveals and selects in Finder
+        let _ = std::process::Command::new("open").args(["-R", &path]).spawn();
+    }
+    Ok(())
 }
 
 #[tauri::command]

@@ -297,6 +297,7 @@ impl DownloadManager {
 
         let id_clone = task.id.clone();
         let filename_clone = task.filename.clone();
+        let save_path_clone = task.save_path.clone();
         let total_size = task.total_size;
         let downloaded_counter = task.downloaded.clone();
         let status_ref = task.status.clone();
@@ -358,6 +359,7 @@ impl DownloadManager {
                         let progress = DownloadProgress {
                             id: id_clone.clone(),
                             filename: filename_clone.clone(),
+                            save_path: save_path_clone.clone(),
                             total_size,
                             downloaded: current_bytes,
                             speed,
@@ -546,6 +548,7 @@ impl DownloadManager {
             let progress = DownloadProgress {
                 id: task.id.clone(),
                 filename: task.filename.clone(),
+                save_path: task.save_path.clone(),
                 total_size: task.total_size,
                 downloaded: task.downloaded.load(Ordering::Relaxed),
                 speed: 0.0,
@@ -580,6 +583,7 @@ impl DownloadManager {
             let progress = DownloadProgress {
                 id: task.id.clone(),
                 filename: task.filename.clone(),
+                save_path: task.save_path.clone(),
                 total_size: task.total_size,
                 downloaded: task.downloaded.load(Ordering::Relaxed),
                 speed: 0.0,
@@ -664,6 +668,7 @@ impl DownloadManager {
             let progress = DownloadProgress {
                 id: task.id.clone(),
                 filename: task.filename.clone(),
+                save_path: task.save_path.clone(),
                 total_size: task.total_size,
                 downloaded: task.downloaded.load(Ordering::Relaxed),
                 speed: 0.0,
