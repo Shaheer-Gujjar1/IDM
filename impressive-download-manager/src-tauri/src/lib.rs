@@ -295,6 +295,8 @@ async fn resume_and_open_progress(
         .resizable(false)
         .build()
         .map_err(|e| e.to_string())?;
+    }
+    Ok(())
 }
 
 #[tauri::command]

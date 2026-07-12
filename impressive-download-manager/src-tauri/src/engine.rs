@@ -35,6 +35,7 @@ pub struct DownloadProgress {
     pub speed: f64, // bytes/sec
     pub eta: String,
     pub status: DownloadStatus,
+    pub file_exists: bool,
 }
 
 pub struct DownloadTask {
@@ -373,6 +374,7 @@ impl DownloadManager {
                             speed,
                             eta,
                             status: status.clone(),
+                            file_exists: std::path::Path::new(&save_path_clone).exists(),
                         };
 
                         if let Some(ref handle) = app_handle_opt {
@@ -601,6 +603,7 @@ impl DownloadManager {
                 speed: 0.0,
                 eta: "0s".to_string(),
                 status: final_status,
+                file_exists: std::path::Path::new(&task.save_path).exists(),
             };
             if let Some(ref handle) = self.app_handle.lock().await.clone() {
                 use tauri::Emitter;
@@ -636,6 +639,7 @@ impl DownloadManager {
                 speed: 0.0,
                 eta: "---".to_string(),
                 status: DownloadStatus::Paused,
+                file_exists: std::path::Path::new(&task.save_path).exists(),
             };
             if let Some(ref handle) = self.app_handle.lock().await.clone() {
                 use tauri::Emitter;
@@ -721,6 +725,7 @@ impl DownloadManager {
                 speed: 0.0,
                 eta: "---".to_string(),
                 status: DownloadStatus::Failed("Cancelled by user".to_string()),
+                file_exists: std::path::Path::new(&task.save_path).exists(),
             };
             if let Some(ref handle) = self.app_handle.lock().await.clone() {
                 use tauri::Emitter;
@@ -773,6 +778,7 @@ impl DownloadManager {
                 speed: 0.0,
                 eta: "---".to_string(),
                 status: DownloadStatus::Trash,
+                file_exists: std::path::Path::new(&task.save_path).exists(),
             };
             if let Some(ref handle) = self.app_handle.lock().await.clone() {
                 use tauri::Emitter;
@@ -812,6 +818,7 @@ impl DownloadManager {
                 speed: 0.0,
                 eta: "---".to_string(),
                 status: final_status,
+                file_exists: std::path::Path::new(&task.save_path).exists(),
             };
             if let Some(ref handle) = self.app_handle.lock().await.clone() {
                 use tauri::Emitter;
@@ -894,6 +901,7 @@ impl DownloadManager {
                 speed,
                 eta,
                 status,
+                file_exists: std::path::Path::new(&task.save_path).exists(),
             })
         } else {
             None
@@ -917,6 +925,7 @@ impl DownloadManager {
                 speed,
                 eta,
                 status,
+                file_exists: std::path::Path::new(&task.save_path).exists(),
             });
         }
         list

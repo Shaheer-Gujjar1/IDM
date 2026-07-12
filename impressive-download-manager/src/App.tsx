@@ -42,6 +42,7 @@ interface DownloadProgress {
   status: DownloadStatus;
   url?: string;
   save_path?: string;
+  file_exists?: boolean;
 }
 
 interface Category {
@@ -434,7 +435,11 @@ function App() {
   const handleRedownload = async (e: React.MouseEvent | null, id: string) => {
     if (e) e.stopPropagation();
     try {
-      await invoke("redownload_task", { id });
+      if (popupMode === "progress") {
+        await invoke("redownload_task", { id });
+      } else {
+        await invoke("redownload_and_open_progress", { id });
+      }
     } catch (err) {
       console.error(err);
     }
@@ -568,19 +573,7 @@ function App() {
     return getFileCategory(d.filename) === activeCategory;
   });
 
-  const getCount = (catId: string): number => {
-    return downloads.filter((d) => {
-      const statusText = getStatusText(d.status);
-      if (catId === "trash") return statusText === "Trash";
-      if (statusText === "Trash") return false; // Exclude from all other category counts
-      
-      if (catId === "all") return true;
-      if (catId === "downloading") return statusText === "Downloading" || statusText === "Queued";
-      if (catId === "completed") return statusText === "Completed";
-      if (catId === "paused") return statusText === "Paused";
-      return getFileCategory(d.filename) === catId;
-    }).length;
-  };
+
 
   const mainCategories: Category[] = [
     { id: "all", name: "All Downloads", icon: <Layers size={18} /> },
@@ -1137,9 +1130,11 @@ function App() {
                         <div className="card-right-hover-actions">
                           {isTrash ? (
                             <>
-                              <button className="hover-action-btn" onClick={(e) => { e.stopPropagation(); handleRedownload(e, d.id); }} title="Re-download">
-                                <Play size={16} />
-                              </button>
+                              {!d.file_exists && (
+                                <button className="hover-action-btn" onClick={(e) => { e.stopPropagation(); handleRedownload(e, d.id); }} title="Re-download">
+                                  <Play size={16} />
+                                </button>
+                              )}
                               <button className="hover-action-btn danger" onClick={(e) => { e.stopPropagation(); promptRemoveTask(e, d); }} title="Delete Permanently">
                                 <Trash2 size={16} />
                               </button>
@@ -1161,7 +1156,7 @@ function App() {
                                   <RefreshCw size={16} />
                                 </button>
                               )}
-                              {isFailed && (
+                              {isFailed && !d.file_exists && (
                                 <button className="hover-action-btn" onClick={(e) => { e.stopPropagation(); handleRedownload(e, d.id); }} title="Re-download">
                                   <Play size={16} />
                                 </button>
@@ -1171,7 +1166,7 @@ function App() {
                                   <FolderOpen size={16} />
                                 </button>
                               )}
-                              {isCompleted && (
+                              {isCompleted && !d.file_exists && (
                                 <button className="hover-action-btn" onClick={(e) => { e.stopPropagation(); handleRedownload(e, d.id); }} title="Re-download">
                                   <Play size={16} />
                                 </button>
@@ -1336,14 +1331,16 @@ function App() {
             <div className="drawer-section" style={{ marginTop: "auto", borderTop: "1px solid rgba(255, 255, 255, 0.06)", paddingTop: "16px", display: "flex", gap: "10px", flexWrap: "wrap" }}>
               {getStatusText(selectedTask.status) === "Trash" ? (
                 <>
-                  <button 
-                    className="action-btn" 
-                    style={{ flex: 1, color: "var(--accent-green)", borderColor: "rgba(16, 185, 129, 0.2)", background: "rgba(16, 185, 129, 0.05)" }}
-                    onClick={(e) => handleRedownload(e, selectedTask.id)}
-                  >
-                    <Play size={14} />
-                    <span>Re-download</span>
-                  </button>
+                  {!selectedTask.file_exists && (
+                    <button 
+                      className="action-btn" 
+                      style={{ flex: 1, color: "var(--accent-green)", borderColor: "rgba(16, 185, 129, 0.2)", background: "rgba(16, 185, 129, 0.05)" }}
+                      onClick={(e) => handleRedownload(e, selectedTask.id)}
+                    >
+                      <Play size={14} />
+                      <span>Re-download</span>
+                    </button>
+                  )}
                   <button className="action-btn action-btn-danger" style={{ flex: 1 }} onClick={(e) => promptRemoveTask(e, selectedTask)}>
                     <Trash2 size={14} />
                     <span>Delete Permanently</span>
@@ -1383,7 +1380,7 @@ function App() {
                       <span>Open Folder</span>
                     </button>
                   )}
-                  {getStatusText(selectedTask.status) === "Completed" && (
+                  {getStatusText(selectedTask.status) === "Completed" && !selectedTask.file_exists && (
                     <button className="action-btn" style={{ flex: 1 }} onClick={(e) => handleRedownload(e, selectedTask.id)}>
                       <Play size={14} />
                       <span>Re-download</span>
