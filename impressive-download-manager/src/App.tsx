@@ -1185,6 +1185,10 @@ function App() {
             </div>
           )}
         </main>
+
+        <footer className="branding-footer" style={{ padding: "12px", textAlign: "center", borderTop: "1px solid rgba(255, 255, 255, 0.03)", color: "rgba(255, 255, 255, 0.35)", fontSize: "0.8rem", background: "rgba(20, 24, 35, 0.2)" }}>
+          A Product of <span style={{ color: "var(--accent-cyan)", fontWeight: 700, textShadow: "0 0 10px rgba(6, 182, 212, 0.2)" }}>Lumen Lab</span>, Designed & Developed by <span style={{ color: "var(--accent-orange)", fontWeight: 700, textShadow: "0 0 10px rgba(245, 158, 11, 0.2)" }}>Shaheer Ahmed</span>
+        </footer>
       </div>
 
       {/* Main Window Modal: Add New Download (triggered manually) */}
