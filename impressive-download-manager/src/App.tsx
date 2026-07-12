@@ -23,7 +23,8 @@ import {
   Network,
   Globe,
   Sliders,
-  Calendar
+  Calendar,
+  RefreshCw
 } from "lucide-react";
 import { listen } from "@tauri-apps/api/event";
 import { invoke } from "@tauri-apps/api/core";
@@ -356,6 +357,24 @@ function App() {
     }
   };
 
+  const handleRedownload = async (e: React.MouseEvent | null, id: string) => {
+    if (e) e.stopPropagation();
+    try {
+      await invoke("redownload_task", { id });
+    } catch (err) {
+      console.error(err);
+    }
+  };
+
+  const handleRefreshLink = async (e: React.MouseEvent | null, id: string) => {
+    if (e) e.stopPropagation();
+    try {
+      await invoke("refresh_download_link", { id });
+    } catch (err) {
+      console.error(err);
+    }
+  };
+
   const handleCancel = async (e: React.MouseEvent | null, id: String) => {
     if (e) e.stopPropagation();
     if (selectedTask?.id === id) setSelectedTask(null);
@@ -559,6 +578,37 @@ function App() {
               </button>
             </>
           )}
+        </div>
+      </div>
+    );
+  }
+
+  if (popupMode === "refresh") {
+    const pId = new URLSearchParams(window.location.search).get("id") || "";
+    return (
+      <div className="standalone-popup">
+        <div className="modal-header">
+          <span className="modal-title" style={{ display: "flex", alignItems: "center", gap: "8px", color: "var(--accent-orange)" }}>
+            <RefreshCw size={18} className="spin-slow" />
+            Refreshing Link...
+          </span>
+        </div>
+        <div style={{ display: "flex", flexDirection: "column", gap: "12px", height: "100%", justifyContent: "center", alignItems: "center", textAlign: "center", padding: "10px 20px" }}>
+          <div style={{ color: "var(--accent-orange)", fontSize: "1.1rem", fontWeight: 700, marginBottom: "4px" }}>
+            Waiting for Capture
+          </div>
+          <p style={{ fontSize: "0.82rem", color: "var(--text-secondary)", margin: 0, lineHeight: 1.5 }}>
+            We opened your web browser to the download page.
+          </p>
+          <p style={{ fontSize: "0.82rem", color: "var(--text-secondary)", margin: 0, lineHeight: 1.5 }}>
+            Simply click the download button in your browser now. We will capture the updated address and resume downloading from your saved progress!
+          </p>
+          <div className="modal-actions" style={{ width: "100%", marginTop: "16px" }}>
+            <button className="action-btn action-btn-danger" style={{ width: "100%" }} onClick={() => handleCancel(null, pId)}>
+              <X size={14} />
+              <span>Cancel Refresh</span>
+            </button>
+          </div>
         </div>
       </div>
     );
@@ -957,6 +1007,22 @@ function App() {
                               <span>Resume</span>
                             </button>
                           )}
+                          {(isFailed || isPaused) && (
+                            <button 
+                              className="action-btn" 
+                              style={{ color: "var(--accent-orange)", borderColor: "rgba(245, 158, 11, 0.2)", background: "rgba(245, 158, 11, 0.05)" }} 
+                              onClick={(e) => handleRefreshLink(e, d.id)}
+                            >
+                              <RefreshCw size={14} />
+                              <span>Refresh Link</span>
+                            </button>
+                          )}
+                          {isFailed && (
+                            <button className="action-btn" onClick={(e) => handleRedownload(e, d.id)}>
+                              <Play size={14} />
+                              <span>Re-download</span>
+                            </button>
+                          )}
                           <button className="action-btn action-btn-danger" onClick={(e) => handleCancel(e, d.id)}>
                             <X size={14} />
                             <span>Remove</span>
@@ -1109,6 +1175,37 @@ function App() {
                   {selectedTask.id.startsWith("mock") ? "2f9a74c2e64627a6c98ee403bf6506d2" : "Calculating on complete..."}
                 </span>
               </div>
+            </div>
+
+            <div className="drawer-section" style={{ marginTop: "auto", borderTop: "1px solid rgba(255, 255, 255, 0.06)", paddingTop: "16px", display: "flex", gap: "10px", flexWrap: "wrap" }}>
+              {getStatusText(selectedTask.status) === "Downloading" && (
+                <button className="action-btn" style={{ flex: 1 }} onClick={(e) => handlePause(e, selectedTask.id)}>
+                  <Pause size={14} />
+                  <span>Pause</span>
+                </button>
+              )}
+              {getStatusText(selectedTask.status) === "Paused" && (
+                <button className="action-btn" style={{ flex: 1 }} onClick={(e) => handleResume(e, selectedTask.id)}>
+                  <Play size={14} />
+                  <span>Resume</span>
+                </button>
+              )}
+              {(getStatusText(selectedTask.status).startsWith("Failed") || getStatusText(selectedTask.status) === "Paused") && (
+                <button 
+                  className="action-btn" 
+                  style={{ flex: 1, color: "var(--accent-orange)", borderColor: "rgba(245, 158, 11, 0.2)", background: "rgba(245, 158, 11, 0.05)" }} 
+                  onClick={(e) => handleRefreshLink(e, selectedTask.id)}
+                >
+                  <RefreshCw size={14} />
+                  <span>Refresh Link</span>
+                </button>
+              )}
+              {getStatusText(selectedTask.status).startsWith("Failed") && (
+                <button className="action-btn" style={{ flex: 1 }} onClick={(e) => handleRedownload(e, selectedTask.id)}>
+                  <Play size={14} />
+                  <span>Re-download</span>
+                </button>
+              )}
             </div>
           </div>
         </div>

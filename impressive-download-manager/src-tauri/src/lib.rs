@@ -41,6 +41,72 @@ async fn cancel_download(
 }
 
 #[tauri::command]
+async fn redownload_task(
+    id: String,
+    manager: State<'_, Arc<DownloadManager>>,
+) -> Result<(), String> {
+    manager.redownload_task(&id).await
+}
+
+#[tauri::command]
+async fn refresh_download_link(
+    id: String,
+    app_handle: tauri::AppHandle,
+    manager: State<'_, Arc<DownloadManager>>,
+) -> Result<(), String> {
+    let tasks = manager.tasks.read().await;
+    if let Some(task) = tasks.get(&id) {
+        if let Some(ref tx) = task.abort_tx {
+            let _ = tx.send(());
+        }
+
+        *task.status.write().await = engine::DownloadStatus::Failed("REFRESHING".to_string());
+        
+        let browser_url = if !task.referrer.is_empty() {
+            task.referrer.clone()
+        } else {
+            task.url.clone()
+        };
+
+        #[cfg(target_os = "linux")]
+        {
+            let _ = std::process::Command::new("xdg-open")
+                .arg(&browser_url)
+                .spawn();
+        }
+        #[cfg(target_os = "windows")]
+        {
+            let _ = std::process::Command::new("cmd")
+                .args(&["/C", "start", &browser_url])
+                .spawn();
+        }
+        #[cfg(target_os = "macos")]
+        {
+            let _ = std::process::Command::new("open")
+                .arg(&browser_url)
+                .spawn();
+        }
+
+        let refresh_url = format!("/index.html?popup=refresh&id={}", id);
+        let _ = tauri::WebviewWindowBuilder::new(
+            &app_handle,
+            format!("popup-refresh-{}", id),
+            tauri::WebviewUrl::App(refresh_url.into()),
+        )
+        .title("Refreshing Link...")
+        .inner_size(520.0, 300.0)
+        .center()
+        .resizable(false)
+        .build()
+        .map_err(|e| e.to_string())?;
+        
+        drop(tasks);
+        let _ = manager.save_history().await;
+    }
+    Ok(())
+}
+
+#[tauri::command]
 async fn select_folder() -> Result<String, String> {
     let folder = rfd::AsyncFileDialog::new()
         .pick_folder()
@@ -207,11 +273,13 @@ pub fn run() {
         .setup(move |app| {
             let handle = app.handle().clone();
             let handle_for_server = app.handle().clone();
-            let manager = manager_for_setup;
+            let manager_for_server = manager_for_setup;
             
+            let manager_for_init = manager_for_server.clone();
             // Spawn app handle binding on Tauri's async runtime
             tauri::async_runtime::spawn(async move {
-                manager.set_app_handle(handle).await;
+                manager_for_init.set_app_handle(handle).await;
+                let _ = manager_for_init.load_history().await;
             });
 
             // Spawn local capture server on Tauri's async runtime
@@ -227,6 +295,7 @@ pub fn run() {
                 loop {
                     if let Ok((mut stream, _)) = listener.accept().await {
                         let app_handle = handle_for_server.clone();
+                        let manager = manager_for_server.clone();
                         tauri::async_runtime::spawn(async move {
                             use tokio::io::{AsyncReadExt, AsyncWriteExt};
                             let mut buffer = vec![0; 4096];
@@ -287,7 +356,80 @@ pub fn run() {
                                                 }
                                             }
 
-                                            // Spawn native popup-add window pre-filled with payload
+                                            // Check if there is an active task waiting for a refresh link
+                                            let mut refresh_task_id = None;
+                                            {
+                                                let tasks = manager.tasks.read().await;
+                                                for task in tasks.values() {
+                                                    let status = task.status.read().await;
+                                                    if let engine::DownloadStatus::Failed(ref msg) = *status {
+                                                        if msg == "REFRESHING" {
+                                                            refresh_task_id = Some(task.id.clone());
+                                                            break;
+                                                        }
+                                                    }
+                                                }
+                                            }
+
+                                            if let Some(ref id) = refresh_task_id {
+                                                // Re-trigger/resume with new link!
+                                                let mut tasks = manager.tasks.write().await;
+                                                if let Some(task) = tasks.get_mut(id) {
+                                                    let (abort_tx, _) = tokio::sync::broadcast::channel(1);
+                                                    let updated_task = std::sync::Arc::new(engine::DownloadTask {
+                                                        id: task.id.clone(),
+                                                        url: payload.url.clone(),
+                                                        filename: task.filename.clone(),
+                                                        save_path: task.save_path.clone(),
+                                                        cookie: payload.cookie.clone().unwrap_or_default(),
+                                                        referrer: payload.referrer.clone().unwrap_or_default(),
+                                                        total_size: task.total_size,
+                                                        downloaded: task.downloaded.clone(),
+                                                        status: std::sync::Arc::new(tokio::sync::RwLock::new(engine::DownloadStatus::Queued)),
+                                                        abort_tx: Some(abort_tx),
+                                                        chunks: tokio::sync::Mutex::new(task.chunks.lock().await.clone()),
+                                                        speed: std::sync::Arc::new(tokio::sync::RwLock::new(0.0)),
+                                                        eta: std::sync::Arc::new(tokio::sync::RwLock::new("---".to_string())),
+                                                    });
+                                                    
+                                                    tasks.insert(id.clone(), updated_task.clone());
+                                                    
+                                                    let manager_clone = manager.clone();
+                                                    let task_to_run = updated_task.clone();
+                                                    tokio::spawn(async move {
+                                                        if let Err(e) = manager_clone.run_task(task_to_run, true).await {
+                                                            eprintln!("Refresh resume failed: {}", e);
+                                                        }
+                                                    });
+
+                                                    // Close refresh window
+                                                    if let Some(win) = app_handle.get_webview_window(&format!("popup-refresh-{}", id)) {
+                                                        let _ = win.close();
+                                                    }
+
+                                                    // Open progress window
+                                                    let progress_url = format!("/index.html?popup=progress&id={}", id);
+                                                    let _ = tauri::WebviewWindowBuilder::new(
+                                                        &app_handle,
+                                                        format!("popup-progress-{}", id),
+                                                        tauri::WebviewUrl::App(progress_url.into()),
+                                                    )
+                                                    .title("Downloading...")
+                                                    .inner_size(520.0, 340.0)
+                                                    .center()
+                                                    .resizable(false)
+                                                    .build();
+                                                }
+
+                                                let response = "HTTP/1.1 200 OK\r\n\
+                                                                Access-Control-Allow-Origin: *\r\n\
+                                                                Content-Type: application/json\r\n\r\n\
+                                                                {\"status\":\"ok\"}";
+                                                let _ = stream.write_all(response.as_bytes()).await;
+                                                return;
+                                            }
+
+                                            // Default: Spawn native popup-add window pre-filled with payload
                                             let add_url = format!(
                                                 "/index.html?popup=add&url={}&filename={}&cookie={}&referrer={}",
                                                 urlencoding::encode(&payload.url),
@@ -336,6 +478,8 @@ pub fn run() {
             resume_download,
             resume_and_open_progress,
             cancel_download,
+            redownload_task,
+            refresh_download_link,
             select_folder,
             open_progress_window,
             open_complete_window,

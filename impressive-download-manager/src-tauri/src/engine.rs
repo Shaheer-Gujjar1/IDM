@@ -51,6 +51,20 @@ pub struct DownloadTask {
     pub eta: Arc<RwLock<String>>,
 }
 
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct PersistentTask {
+    pub id: String,
+    pub url: String,
+    pub filename: String,
+    pub save_path: String,
+    pub cookie: String,
+    pub referrer: String,
+    pub total_size: u64,
+    pub downloaded: u64,
+    pub status: DownloadStatus,
+    pub chunks: Vec<DownloadChunk>,
+}
+
 pub struct DownloadManager {
     pub tasks: RwLock<HashMap<String, Arc<DownloadTask>>>,
     pub app_handle: Mutex<Option<tauri::AppHandle>>,
@@ -66,6 +80,80 @@ impl DownloadManager {
 
     pub async fn set_app_handle(&self, handle: tauri::AppHandle) {
         *self.app_handle.lock().await = Some(handle);
+    }
+
+    pub async fn save_history(&self) -> Result<(), String> {
+        let app_handle_guard = self.app_handle.lock().await;
+        if let Some(ref handle) = *app_handle_guard {
+            use tauri::Manager;
+            let app_dir = handle.path().app_data_dir().map_err(|e| e.to_string())?;
+            let _ = tokio::fs::create_dir_all(&app_dir).await;
+            let history_path = app_dir.join("history.json");
+            
+            let tasks = self.tasks.read().await;
+            let mut persistent_tasks = Vec::new();
+            for task in tasks.values() {
+                let downloaded = task.downloaded.load(Ordering::Relaxed);
+                let status = task.status.read().await.clone();
+                let chunks = task.chunks.lock().await.clone();
+                persistent_tasks.push(PersistentTask {
+                    id: task.id.clone(),
+                    url: task.url.clone(),
+                    filename: task.filename.clone(),
+                    save_path: task.save_path.clone(),
+                    cookie: task.cookie.clone(),
+                    referrer: task.referrer.clone(),
+                    total_size: task.total_size,
+                    downloaded,
+                    status,
+                    chunks,
+                });
+            }
+            
+            if let Ok(serialized) = serde_json::to_string_pretty(&persistent_tasks) {
+                let _ = tokio::fs::write(history_path, serialized).await;
+            }
+        }
+        Ok(())
+    }
+
+    pub async fn load_history(&self) -> Result<(), String> {
+        let app_handle_guard = self.app_handle.lock().await;
+        if let Some(ref handle) = *app_handle_guard {
+            use tauri::Manager;
+            let app_dir = handle.path().app_data_dir().map_err(|e| e.to_string())?;
+            let history_path = app_dir.join("history.json");
+            if history_path.exists() {
+                if let Ok(data) = tokio::fs::read_to_string(&history_path).await {
+                    if let Ok(persistent_tasks) = serde_json::from_str::<Vec<PersistentTask>>(&data) {
+                        let mut tasks = self.tasks.write().await;
+                        for p_task in persistent_tasks {
+                            let status = match p_task.status {
+                                DownloadStatus::Downloading | DownloadStatus::Queued => DownloadStatus::Paused,
+                                other => other,
+                            };
+                            
+                            tasks.insert(p_task.id.clone(), Arc::new(DownloadTask {
+                                id: p_task.id,
+                                url: p_task.url,
+                                filename: p_task.filename,
+                                save_path: p_task.save_path,
+                                cookie: p_task.cookie,
+                                referrer: p_task.referrer,
+                                total_size: p_task.total_size,
+                                downloaded: Arc::new(AtomicU64::new(p_task.downloaded)),
+                                status: Arc::new(RwLock::new(status)),
+                                abort_tx: None,
+                                chunks: Mutex::new(p_task.chunks),
+                                speed: Arc::new(RwLock::new(0.0)),
+                                eta: Arc::new(RwLock::new("---".to_string())),
+                            }));
+                        }
+                    }
+                }
+            }
+        }
+        Ok(())
     }
 
     pub async fn start_download(
@@ -132,6 +220,11 @@ impl DownloadManager {
 
         self.tasks.write().await.insert(id.clone(), task.clone());
 
+        let manager_clone_save = self.clone();
+        tokio::spawn(async move {
+            let _ = manager_clone_save.save_history().await;
+        });
+
         let manager_clone = self.clone();
         tokio::spawn(async move {
             if let Err(e) = manager_clone.run_task(task, accept_ranges).await {
@@ -142,7 +235,7 @@ impl DownloadManager {
         Ok(id)
     }
 
-    async fn run_task(&self, task: Arc<DownloadTask>, accept_ranges: bool) -> Result<(), String> {
+    pub async fn run_task(self: &Arc<Self>, task: Arc<DownloadTask>, accept_ranges: bool) -> Result<(), String> {
         *task.status.write().await = DownloadStatus::Downloading;
 
         let is_new = task.downloaded.load(Ordering::Relaxed) == 0;
@@ -197,6 +290,7 @@ impl DownloadManager {
         let app_handle_opt = self.app_handle.lock().await.clone();
         let task_speed = task.speed.clone();
         let task_eta = task.eta.clone();
+        let task_manager = self.clone();
 
         // Speed & Progress reporting loop
         tokio::spawn(async move {
@@ -219,13 +313,26 @@ impl DownloadManager {
 
                         let eta = if speed > 0.0 && total_size > current_bytes {
                             let rem = total_size - current_bytes;
-                            let rem_secs = rem as f64 / speed;
-                            if rem_secs > 3600.0 {
-                                format!("{:.1}h", rem_secs / 3600.0)
-                            } else if rem_secs > 60.0 {
-                                format!("{:.1}m", rem_secs / 60.0)
+                            let rem_secs = (rem as f64 / speed).round() as u64;
+                            if rem_secs >= 3600 {
+                                let h = rem_secs / 3600;
+                                let m = (rem_secs % 3600) / 60;
+                                let s = rem_secs % 60;
+                                if m > 0 {
+                                    format!("{}h {}m {}s", h, m, s)
+                                } else {
+                                    format!("{}h {}s", h, s)
+                                }
+                            } else if rem_secs >= 60 {
+                                let m = rem_secs / 60;
+                                let s = rem_secs % 60;
+                                if s > 0 {
+                                    format!("{} mins {} secs", m, s)
+                                } else {
+                                    format!("{} mins", m)
+                                }
                             } else {
-                                format!("{:.0}s", rem_secs)
+                                format!("{} secs", rem_secs)
                             }
                         } else {
                             "---".to_string()
@@ -234,6 +341,9 @@ impl DownloadManager {
                         let status = status_ref.read().await.clone();
                         *task_speed.write().await = speed;
                         *task_eta.write().await = eta.clone();
+
+                        // Save history periodically
+                        let _ = task_manager.save_history().await;
 
                         let progress = DownloadProgress {
                             id: id_clone.clone(),
@@ -383,6 +493,7 @@ impl DownloadManager {
             }
         }
 
+        let _ = self.save_history().await;
         Ok(())
     }
 
@@ -409,6 +520,8 @@ impl DownloadManager {
                 let _ = handle.emit("download-progress", progress);
             }
 
+            drop(tasks);
+            let _ = self.save_history().await;
             Ok(())
         } else {
             Err("Task not found".to_string())
@@ -456,6 +569,8 @@ impl DownloadManager {
                 }
             });
 
+            drop(tasks);
+            let _ = self.save_history().await;
             Ok(())
         } else {
             Err("Task not found".to_string())
@@ -472,6 +587,58 @@ impl DownloadManager {
             tokio::spawn(async move {
                 let _ = tokio::fs::remove_file(path).await;
             });
+            
+            drop(tasks);
+            let _ = self.save_history().await;
+            Ok(())
+        } else {
+            Err("Task not found".to_string())
+        }
+    }
+
+    pub async fn redownload_task(&self, id: &str) -> Result<(), String> {
+        let mut tasks = self.tasks.write().await;
+        if let Some(task) = tasks.get_mut(id) {
+            if let Some(ref tx) = task.abort_tx {
+                let _ = tx.send(());
+            }
+
+            let path = task.save_path.clone();
+            let _ = tokio::fs::remove_file(path).await;
+
+            let (abort_tx, _) = broadcast::channel(1);
+            let updated_task = Arc::new(DownloadTask {
+                id: task.id.clone(),
+                url: task.url.clone(),
+                filename: task.filename.clone(),
+                save_path: task.save_path.clone(),
+                cookie: task.cookie.clone(),
+                referrer: task.referrer.clone(),
+                total_size: task.total_size,
+                downloaded: Arc::new(AtomicU64::new(0)),
+                status: Arc::new(RwLock::new(DownloadStatus::Queued)),
+                abort_tx: Some(abort_tx),
+                chunks: Mutex::new(vec![]),
+                speed: Arc::new(RwLock::new(0.0)),
+                eta: Arc::new(RwLock::new("---".to_string())),
+            });
+
+            tasks.insert(id.to_string(), updated_task.clone());
+
+            let manager_clone = Arc::new(Self {
+                tasks: RwLock::new(tasks.clone()),
+                app_handle: Mutex::new(self.app_handle.lock().await.clone()),
+            });
+
+            let accept_ranges = updated_task.total_size > 0;
+            tokio::spawn(async move {
+                if let Err(e) = manager_clone.run_task(updated_task, accept_ranges).await {
+                    eprintln!("Redownload failed: {}", e);
+                }
+            });
+
+            drop(tasks);
+            let _ = self.save_history().await;
             Ok(())
         } else {
             Err("Task not found".to_string())
