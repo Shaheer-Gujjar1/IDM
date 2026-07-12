@@ -24,7 +24,8 @@ import {
   Globe,
   Sliders,
   Calendar,
-  RefreshCw
+  RefreshCw,
+  FolderOpen
 } from "lucide-react";
 import { listen } from "@tauri-apps/api/event";
 import { invoke } from "@tauri-apps/api/core";
@@ -377,15 +378,33 @@ function App() {
 
   const handleCancel = async (e: React.MouseEvent | null, id: String) => {
     if (e) e.stopPropagation();
-    if (selectedTask?.id === id) setSelectedTask(null);
     try {
       await invoke("cancel_download", { id });
-      setDownloads((prev) => prev.filter((d) => d.id !== id));
       
-      // If we are cancel-closing the standalone progress window, close this window
-      if (popupMode === "progress") {
+      // If we are cancel-closing the standalone progress or refresh window, close this window
+      if (popupMode === "progress" || popupMode === "refresh") {
         await invoke("close_window");
       }
+    } catch (err) {
+      console.error(err);
+    }
+  };
+
+  const handleOpenFileDir = async (e: React.MouseEvent | null, path: string) => {
+    if (e) e.stopPropagation();
+    try {
+      await invoke("open_file_dir", { path });
+    } catch (err) {
+      console.error(err);
+    }
+  };
+
+  const handleDeleteTask = async (e: React.MouseEvent | null, id: string) => {
+    if (e) e.stopPropagation();
+    if (selectedTask?.id === id) setSelectedTask(null);
+    try {
+      await invoke("delete_task", { id });
+      setDownloads((prev) => prev.filter((d) => d.id !== id));
     } catch (err) {
       console.error(err);
     }
@@ -1023,7 +1042,23 @@ function App() {
                               <span>Re-download</span>
                             </button>
                           )}
-                          <button className="action-btn action-btn-danger" onClick={(e) => handleCancel(e, d.id)}>
+                          {isCompleted && (
+                            <button 
+                              className="action-btn" 
+                              style={{ color: "var(--accent-green)", borderColor: "rgba(16, 185, 129, 0.2)", background: "rgba(16, 185, 129, 0.05)" }}
+                              onClick={(e) => handleOpenFileDir(e, d.save_path || "")}
+                            >
+                              <FolderOpen size={14} />
+                              <span>Open Folder</span>
+                            </button>
+                          )}
+                          {isCompleted && (
+                            <button className="action-btn" onClick={(e) => handleRedownload(e, d.id)}>
+                              <Play size={14} />
+                              <span>Re-download</span>
+                            </button>
+                          )}
+                          <button className="action-btn action-btn-danger" onClick={(e) => handleDeleteTask(e, d.id)}>
                             <X size={14} />
                             <span>Remove</span>
                           </button>
@@ -1200,12 +1235,26 @@ function App() {
                   <span>Refresh Link</span>
                 </button>
               )}
-              {getStatusText(selectedTask.status).startsWith("Failed") && (
+              {getStatusText(selectedTask.status) === "Completed" && (
+                <button 
+                  className="action-btn" 
+                  style={{ flex: 1, color: "var(--accent-green)", borderColor: "rgba(16, 185, 129, 0.2)", background: "rgba(16, 185, 129, 0.05)" }}
+                  onClick={(e) => handleOpenFileDir(e, selectedTask.save_path || "")}
+                >
+                  <FolderOpen size={14} />
+                  <span>Open Folder</span>
+                </button>
+              )}
+              {getStatusText(selectedTask.status) === "Completed" && (
                 <button className="action-btn" style={{ flex: 1 }} onClick={(e) => handleRedownload(e, selectedTask.id)}>
                   <Play size={14} />
                   <span>Re-download</span>
                 </button>
               )}
+              <button className="action-btn action-btn-danger" style={{ flex: 1 }} onClick={(e) => handleDeleteTask(e, selectedTask.id)}>
+                <X size={14} />
+                <span>Delete</span>
+              </button>
             </div>
           </div>
         </div>

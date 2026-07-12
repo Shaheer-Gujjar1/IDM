@@ -41,6 +41,14 @@ async fn cancel_download(
 }
 
 #[tauri::command]
+async fn delete_task(
+    id: String,
+    manager: State<'_, Arc<DownloadManager>>,
+) -> Result<(), String> {
+    manager.delete_task(&id).await
+}
+
+#[tauri::command]
 async fn redownload_task(
     id: String,
     manager: State<'_, Arc<DownloadManager>>,
@@ -102,6 +110,32 @@ async fn refresh_download_link(
         
         drop(tasks);
         let _ = manager.save_history().await;
+    }
+    Ok(())
+}
+
+#[tauri::command]
+async fn open_file_dir(path: String) -> Result<(), String> {
+    let path_buf = std::path::PathBuf::from(path);
+    if let Some(parent) = path_buf.parent() {
+        #[cfg(target_os = "linux")]
+        {
+            let _ = std::process::Command::new("xdg-open")
+                .arg(parent)
+                .spawn();
+        }
+        #[cfg(target_os = "windows")]
+        {
+            let _ = std::process::Command::new("explorer")
+                .arg(parent)
+                .spawn();
+        }
+        #[cfg(target_os = "macos")]
+        {
+            let _ = std::process::Command::new("open")
+                .arg(parent)
+                .spawn();
+        }
     }
     Ok(())
 }
@@ -280,7 +314,40 @@ pub fn run() {
             tauri::async_runtime::spawn(async move {
                 manager_for_init.set_app_handle(handle).await;
                 let _ = manager_for_init.load_history().await;
+
+                // Write linux autostart .desktop configuration automatically
+                #[cfg(target_os = "linux")]
+                {
+                    if let Ok(home) = std::env::var("HOME") {
+                        if let Ok(current_exe) = std::env::current_exe() {
+                            let exe_str = current_exe.to_string_lossy().to_string();
+                            let autostart_dir = std::path::Path::new(&home).join(".config").join("autostart");
+                            let _ = std::fs::create_dir_all(&autostart_dir);
+                            let desktop_path = autostart_dir.join("impressive-download-manager.desktop");
+                            let desktop_content = format!(
+                                "[Desktop Entry]\n\
+                                 Type=Application\n\
+                                 Exec=\"{}\" --background\n\
+                                 Hidden=false\n\
+                                 NoDisplay=false\n\
+                                 X-GNOME-Autostart-enabled=true\n\
+                                 Name=Impressive Download Manager\n\
+                                 Comment=Start Impressive Download Manager in the background\n",
+                                exe_str
+                            );
+                            let _ = std::fs::write(desktop_path, desktop_content);
+                        }
+                    }
+                }
             });
+
+            // Parse --background arg and hide window if launched in background
+            let args: Vec<String> = std::env::args().collect();
+            if args.contains(&"--background".to_string()) {
+                if let Some(win) = app.get_webview_window("main") {
+                    let _ = win.hide();
+                }
+            }
 
             // Spawn local capture server on Tauri's async runtime
             tauri::async_runtime::spawn(async move {
@@ -372,54 +439,49 @@ pub fn run() {
                                             }
 
                                             if let Some(ref id) = refresh_task_id {
-                                                // Re-trigger/resume with new link!
-                                                let mut tasks = manager.tasks.write().await;
-                                                if let Some(task) = tasks.get_mut(id) {
-                                                    let (abort_tx, _) = tokio::sync::broadcast::channel(1);
-                                                    let updated_task = std::sync::Arc::new(engine::DownloadTask {
-                                                        id: task.id.clone(),
-                                                        url: payload.url.clone(),
-                                                        filename: task.filename.clone(),
-                                                        save_path: task.save_path.clone(),
-                                                        cookie: payload.cookie.clone().unwrap_or_default(),
-                                                        referrer: payload.referrer.clone().unwrap_or_default(),
-                                                        total_size: task.total_size,
-                                                        downloaded: task.downloaded.clone(),
-                                                        status: std::sync::Arc::new(tokio::sync::RwLock::new(engine::DownloadStatus::Queued)),
-                                                        abort_tx: Some(abort_tx),
-                                                        chunks: tokio::sync::Mutex::new(task.chunks.lock().await.clone()),
-                                                        speed: std::sync::Arc::new(tokio::sync::RwLock::new(0.0)),
-                                                        eta: std::sync::Arc::new(tokio::sync::RwLock::new("---".to_string())),
-                                                    });
-                                                    
-                                                    tasks.insert(id.clone(), updated_task.clone());
-                                                    
-                                                    let manager_clone = manager.clone();
-                                                    let task_to_run = updated_task.clone();
-                                                    tokio::spawn(async move {
-                                                        if let Err(e) = manager_clone.run_task(task_to_run, true).await {
-                                                            eprintln!("Refresh resume failed: {}", e);
-                                                        }
-                                                    });
-
-                                                    // Close refresh window
-                                                    if let Some(win) = app_handle.get_webview_window(&format!("popup-refresh-{}", id)) {
-                                                        let _ = win.close();
+                                                // Update task properties within scoped block to drop write-lock immediately
+                                                {
+                                                    let mut tasks = manager.tasks.write().await;
+                                                    if let Some(task) = tasks.get_mut(id) {
+                                                        let updated_task = std::sync::Arc::new(engine::DownloadTask {
+                                                            id: task.id.clone(),
+                                                            url: payload.url.clone(),
+                                                            filename: task.filename.clone(),
+                                                            save_path: task.save_path.clone(),
+                                                            cookie: payload.cookie.clone().unwrap_or_default(),
+                                                            referrer: payload.referrer.clone().unwrap_or_default(),
+                                                            total_size: task.total_size,
+                                                            downloaded: task.downloaded.clone(),
+                                                            status: std::sync::Arc::new(tokio::sync::RwLock::new(engine::DownloadStatus::Paused)), // Set to Paused so resume can start it
+                                                            abort_tx: None,
+                                                            chunks: tokio::sync::Mutex::new(task.chunks.lock().await.clone()),
+                                                            speed: std::sync::Arc::new(tokio::sync::RwLock::new(0.0)),
+                                                            eta: std::sync::Arc::new(tokio::sync::RwLock::new("---".to_string())),
+                                                        });
+                                                        tasks.insert(id.clone(), updated_task);
                                                     }
-
-                                                    // Open progress window
-                                                    let progress_url = format!("/index.html?popup=progress&id={}", id);
-                                                    let _ = tauri::WebviewWindowBuilder::new(
-                                                        &app_handle,
-                                                        format!("popup-progress-{}", id),
-                                                        tauri::WebviewUrl::App(progress_url.into()),
-                                                    )
-                                                    .title("Downloading...")
-                                                    .inner_size(520.0, 340.0)
-                                                    .center()
-                                                    .resizable(false)
-                                                    .build();
                                                 }
+
+                                                // Call official resume command to trigger range check and start download workers
+                                                let _ = manager.resume_download(id).await;
+
+                                                // Close refresh window
+                                                if let Some(win) = app_handle.get_webview_window(&format!("popup-refresh-{}", id)) {
+                                                    let _ = win.close();
+                                                }
+
+                                                // Open progress window
+                                                let progress_url = format!("/index.html?popup=progress&id={}", id);
+                                                let _ = tauri::WebviewWindowBuilder::new(
+                                                    &app_handle,
+                                                    format!("popup-progress-{}", id),
+                                                    tauri::WebviewUrl::App(progress_url.into()),
+                                                )
+                                                .title("Downloading...")
+                                                .inner_size(520.0, 340.0)
+                                                .center()
+                                                .resizable(false)
+                                                .build();
 
                                                 let response = "HTTP/1.1 200 OK\r\n\
                                                                 Access-Control-Allow-Origin: *\r\n\
@@ -455,11 +517,11 @@ pub fn run() {
                                                             Access-Control-Allow-Headers: Content-Type\r\n\
                                                             Content-Type: application/json\r\n\r\n\
                                                             {\"status\":\"ok\"}";
-                                            let _ = stream.write_all(response.as_bytes()).await;
-                                            return;
+                                                let _ = stream.write_all(response.as_bytes()).await;
+                                                return;
+                                            }
                                         }
                                     }
-                                }
 
                                 let response = "HTTP/1.1 400 Bad Request\r\n\
                                                 Access-Control-Allow-Origin: *\r\n\r\n";
@@ -478,8 +540,10 @@ pub fn run() {
             resume_download,
             resume_and_open_progress,
             cancel_download,
+            delete_task,
             redownload_task,
             refresh_download_link,
+            open_file_dir,
             select_folder,
             open_progress_window,
             open_complete_window,

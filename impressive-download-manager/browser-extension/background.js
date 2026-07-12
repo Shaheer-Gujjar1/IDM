@@ -50,7 +50,17 @@ chrome.downloads.onDeterminingFilename.addListener((downloadItem, suggest) => {
     
     (async () => {
       const cookies = await getCookiesForUrl(downloadItem.url);
-      const referrer = downloadItem.referrer || "";
+      let referrer = downloadItem.referrer || "";
+      if (!referrer) {
+        try {
+          const tabs = await chrome.tabs.query({ active: true, currentWindow: true });
+          if (tabs && tabs[0]) {
+            referrer = tabs[0].url || "";
+          }
+        } catch (err) {
+          console.warn("Failed to fetch fallback tab referrer:", err);
+        }
+      }
       await sendToDesktopApp(downloadItem.url, filename, cookies, referrer);
     })();
   } else {

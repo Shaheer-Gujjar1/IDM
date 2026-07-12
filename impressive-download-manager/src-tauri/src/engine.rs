@@ -68,13 +68,22 @@ pub struct PersistentTask {
 pub struct DownloadManager {
     pub tasks: RwLock<HashMap<String, Arc<DownloadTask>>>,
     pub app_handle: Mutex<Option<tauri::AppHandle>>,
+    pub client: reqwest::Client,
 }
 
 impl DownloadManager {
     pub fn new() -> Self {
+        let client = reqwest::Client::builder()
+            .user_agent("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
+            .tcp_nodelay(true)
+            .pool_max_idle_per_host(32)
+            .build()
+            .unwrap_or_default();
+
         Self {
             tasks: RwLock::new(HashMap::new()),
             app_handle: Mutex::new(None),
+            client,
         }
     }
 
@@ -168,6 +177,7 @@ impl DownloadManager {
         
         let client = reqwest::Client::builder()
             .user_agent("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
+            .tcp_nodelay(true)
             .build()
             .unwrap_or_default();
         
@@ -245,8 +255,11 @@ impl DownloadManager {
             let _ = tokio::fs::create_dir_all(parent).await;
         }
 
-        // Pre-allocate file space only if this is a brand new download
-        if is_new {
+        let file_exists = tokio::fs::metadata(&task.save_path).await.is_ok();
+        let should_initialize = is_new || !file_exists;
+
+        if should_initialize {
+            task.downloaded.store(0, Ordering::Relaxed);
             let file = OpenOptions::new()
                 .write(true)
                 .create(true)
@@ -290,7 +303,6 @@ impl DownloadManager {
         let app_handle_opt = self.app_handle.lock().await.clone();
         let task_speed = task.speed.clone();
         let task_eta = task.eta.clone();
-        let task_manager = self.clone();
 
         // Speed & Progress reporting loop
         tokio::spawn(async move {
@@ -342,9 +354,6 @@ impl DownloadManager {
                         *task_speed.write().await = speed;
                         *task_eta.write().await = eta.clone();
 
-                        // Save history periodically
-                        let _ = task_manager.save_history().await;
-
                         let progress = DownloadProgress {
                             id: id_clone.clone(),
                             filename: filename_clone.clone(),
@@ -378,6 +387,7 @@ impl DownloadManager {
             let downloaded = task.downloaded.clone();
             let task_clone = task.clone();
             let mut task_abort_rx = abort_tx.subscribe();
+            let client = self.client.clone();
 
             let worker = tokio::spawn(async move {
                 let start_offset = chunk.start + chunk.downloaded;
@@ -386,10 +396,6 @@ impl DownloadManager {
                     return;
                 }
 
-                let client = reqwest::Client::builder()
-                    .user_agent("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
-                    .build()
-                    .unwrap_or_default();
                 let mut req = client.get(&url);
                 if !task_clone.cookie.is_empty() {
                     req = req.header(reqwest::header::COOKIE, &task_clone.cookie);
@@ -422,6 +428,8 @@ impl DownloadManager {
                     Err(_) => return,
                 };
 
+                let mut buffer = Vec::with_capacity(128 * 1024);
+
                 loop {
                     tokio::select! {
                         _ = task_abort_rx.recv() => {
@@ -430,19 +438,52 @@ impl DownloadManager {
                         bytes_chunk = stream.next() => {
                             match bytes_chunk {
                                 Some(Ok(bytes)) => {
-                                    let write_pos = chunk.start + local_downloaded;
-                                    if file.seek(std::io::SeekFrom::Start(write_pos)).await.is_err() {
+                                    let mut bytes_to_add = bytes.as_ref();
+                                    if num_chunks > 1 && end_offset > 0 {
+                                        let current_pos = chunk.start + local_downloaded;
+                                        if current_pos >= end_offset + 1 {
+                                            break;
+                                        }
+                                        let remaining = (end_offset + 1) - current_pos;
+                                        if bytes_to_add.len() as u64 > remaining {
+                                            bytes_to_add = &bytes_to_add[..remaining as usize];
+                                        }
+                                    }
+
+                                    buffer.extend_from_slice(bytes_to_add);
+
+                                    let is_done_chunk = num_chunks > 1 && end_offset > 0 && 
+                                        (chunk.start + local_downloaded + buffer.len() as u64 >= end_offset + 1);
+
+                                    if buffer.len() >= 128 * 1024 || is_done_chunk {
+                                        let write_pos = chunk.start + local_downloaded;
+                                        if file.seek(std::io::SeekFrom::Start(write_pos)).await.is_ok() {
+                                            if file.write_all(&buffer).await.is_ok() {
+                                                let len = buffer.len() as u64;
+                                                local_downloaded += len;
+                                                downloaded.fetch_add(len, Ordering::Relaxed);
+                                            }
+                                        }
+                                        buffer.clear();
+                                    }
+
+                                    if is_done_chunk {
                                         break;
                                     }
-                                    if file.write_all(&bytes).await.is_err() {
-                                        break;
-                                    }
-                                    let len = bytes.len() as u64;
-                                    local_downloaded += len;
-                                    downloaded.fetch_add(len, Ordering::Relaxed);
                                 }
                                 _ => break,
                             }
+                        }
+                    }
+                }
+
+                if !buffer.is_empty() {
+                    let write_pos = chunk.start + local_downloaded;
+                    if file.seek(std::io::SeekFrom::Start(write_pos)).await.is_ok() {
+                        if file.write_all(&buffer).await.is_ok() {
+                            let len = buffer.len() as u64;
+                            local_downloaded += len;
+                            downloaded.fetch_add(len, Ordering::Relaxed);
                         }
                     }
                 }
@@ -500,7 +541,13 @@ impl DownloadManager {
     pub async fn pause_download(&self, id: &str) -> Result<(), String> {
         let tasks = self.tasks.read().await;
         if let Some(task) = tasks.get(id) {
-            *task.status.write().await = DownloadStatus::Paused;
+            {
+                let mut status = task.status.write().await;
+                if *status == DownloadStatus::Completed || matches!(*status, DownloadStatus::Failed(_)) {
+                    return Ok(());
+                }
+                *status = DownloadStatus::Paused;
+            }
             if let Some(ref tx) = task.abort_tx {
                 let _ = tx.send(());
             }
@@ -539,6 +586,9 @@ impl DownloadManager {
                 *status = DownloadStatus::Queued;
             }
 
+            let accept_ranges = task.chunks.lock().await.len() > 1;
+            let chunks_clone = task.chunks.lock().await.clone();
+
             let (abort_tx, _) = broadcast::channel(1);
             let updated_task = Arc::new(DownloadTask {
                 id: task.id.clone(),
@@ -551,7 +601,7 @@ impl DownloadManager {
                 downloaded: task.downloaded.clone(),
                 status: task.status.clone(),
                 abort_tx: Some(abort_tx),
-                chunks: Mutex::new(task.chunks.lock().await.clone()),
+                chunks: Mutex::new(chunks_clone),
                 speed: task.speed.clone(),
                 eta: task.eta.clone(),
             });
@@ -561,10 +611,11 @@ impl DownloadManager {
             let manager_clone = Arc::new(Self {
                 tasks: RwLock::new(tasks.clone()),
                 app_handle: Mutex::new(self.app_handle.lock().await.clone()),
+                client: self.client.clone(),
             });
 
             tokio::spawn(async move {
-                if let Err(e) = manager_clone.run_task(updated_task, true).await {
+                if let Err(e) = manager_clone.run_task(updated_task, accept_ranges).await {
                     eprintln!("Resume failed: {}", e);
                 }
             });
@@ -578,6 +629,37 @@ impl DownloadManager {
     }
 
     pub async fn cancel_download(&self, id: &str) -> Result<(), String> {
+        let tasks = self.tasks.read().await;
+        if let Some(task) = tasks.get(id) {
+            if let Some(ref tx) = task.abort_tx {
+                let _ = tx.send(());
+            }
+            
+            *task.status.write().await = DownloadStatus::Failed("Cancelled by user".to_string());
+            
+            let progress = DownloadProgress {
+                id: task.id.clone(),
+                filename: task.filename.clone(),
+                total_size: task.total_size,
+                downloaded: task.downloaded.load(Ordering::Relaxed),
+                speed: 0.0,
+                eta: "---".to_string(),
+                status: DownloadStatus::Failed("Cancelled by user".to_string()),
+            };
+            if let Some(ref handle) = self.app_handle.lock().await.clone() {
+                use tauri::Emitter;
+                let _ = handle.emit("download-progress", progress);
+            }
+            
+            drop(tasks);
+            let _ = self.save_history().await;
+            Ok(())
+        } else {
+            Err("Task not found".to_string())
+        }
+    }
+
+    pub async fn delete_task(&self, id: &str) -> Result<(), String> {
         let mut tasks = self.tasks.write().await;
         if let Some(task) = tasks.remove(id) {
             if let Some(ref tx) = task.abort_tx {
@@ -606,6 +688,8 @@ impl DownloadManager {
             let path = task.save_path.clone();
             let _ = tokio::fs::remove_file(path).await;
 
+            let accept_ranges = task.chunks.lock().await.len() > 1;
+
             let (abort_tx, _) = broadcast::channel(1);
             let updated_task = Arc::new(DownloadTask {
                 id: task.id.clone(),
@@ -628,9 +712,9 @@ impl DownloadManager {
             let manager_clone = Arc::new(Self {
                 tasks: RwLock::new(tasks.clone()),
                 app_handle: Mutex::new(self.app_handle.lock().await.clone()),
+                client: self.client.clone(),
             });
 
-            let accept_ranges = updated_task.total_size > 0;
             tokio::spawn(async move {
                 if let Err(e) = manager_clone.run_task(updated_task, accept_ranges).await {
                     eprintln!("Redownload failed: {}", e);
