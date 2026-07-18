@@ -577,6 +577,18 @@ function App() {
     return getFileCategory(d.filename) === activeCategory;
   });
 
+  const sortedDownloads = [...filteredDownloads].sort((a, b) => {
+    const statusA = getStatusText(a.status);
+    const statusB = getStatusText(b.status);
+
+    const isAActive = statusA === "Downloading" || statusA === "Queued" || statusA === "Paused";
+    const isBActive = statusB === "Downloading" || statusB === "Queued" || statusB === "Paused";
+
+    if (isAActive && !isBActive) return -1;
+    if (!isAActive && isBActive) return 1;
+    return 0;
+  });
+
 
 
   const mainCategories: Category[] = [
@@ -1089,7 +1101,7 @@ function App() {
                 </div>
               ) : (
                 <div className="download-grid">
-                  {filteredDownloads.map((d) => {
+                  {sortedDownloads.map((d) => {
                     const statusText = getStatusText(d.status);
                     const isDownloading = statusText === "Downloading";
                     const isPaused = statusText === "Paused";

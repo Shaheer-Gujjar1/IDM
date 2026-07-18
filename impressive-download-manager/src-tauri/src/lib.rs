@@ -356,6 +356,14 @@ fn parse_content_disposition(value: &str) -> Option<String> {
     None
 }
 
+fn parse_content_range(value: &str) -> Option<u64> {
+    if let Some(slash_idx) = value.rfind('/') {
+        let total_str = value[slash_idx + 1..].trim();
+        return total_str.parse::<u64>().ok();
+    }
+    None
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let download_manager = Arc::new(DownloadManager::new());
@@ -384,6 +392,17 @@ pub fn run() {
             }
         })
         .setup(move |app| {
+            // Check if port 9600 is already in use by another instance
+            if std::net::TcpListener::bind("127.0.0.1:9600").is_err() {
+                // Another instance is already running. Notify it to show the main window.
+                if let Ok(mut stream) = std::net::TcpStream::connect("127.0.0.1:9600") {
+                    use std::io::Write;
+                    let _ = stream.write_all(b"POST /show-main HTTP/1.1\r\n\r\n");
+                }
+                // Exit this second instance immediately
+                std::process::exit(0);
+            }
+
             // Set window icon programmatically (particularly important on Linux)
             if let Some(main_window) = app.get_webview_window("main") {
                 if let Some(icon) = app.default_window_icon() {
@@ -466,8 +485,22 @@ pub fn run() {
                                     return;
                                 }
 
-                                // Check if it is a POST to /download
-                                if req_str.starts_with("POST /download") || req_str.contains("POST /download") {
+                                 // Check if it is a request to show the main window from a second instance
+                                 if req_str.starts_with("POST /show-main") || req_str.contains("POST /show-main") {
+                                     if let Some(main_win) = app_handle.get_webview_window("main") {
+                                         let _ = main_win.show();
+                                         let _ = main_win.set_focus();
+                                     }
+                                     let response = "HTTP/1.1 200 OK\r\n\
+                                                     Access-Control-Allow-Origin: *\r\n\
+                                                     Content-Type: text/plain\r\n\r\n\
+                                                     ok";
+                                     let _ = stream.write_all(response.as_bytes()).await;
+                                     return;
+                                 }
+
+                                 // Check if it is a POST to /download
+                                 if req_str.starts_with("POST /download") || req_str.contains("POST /download") {
                                     if let Some(body_start) = req_str.find("\r\n\r\n") {
                                         let body = &req_str[body_start + 4..];
                                         
@@ -490,25 +523,85 @@ pub fn run() {
                                                 .unwrap_or_default();
 
                                             let mut total_size = 0u64;
-                                            if let Ok(res) = client.head(&payload.url).timeout(std::time::Duration::from_secs(2)).send().await {
-                                                if let Some(cd_val) = res.headers().get(reqwest::header::CONTENT_DISPOSITION).and_then(|h| h.to_str().ok()) {
-                                                    if let Some(parsed) = parse_content_disposition(cd_val) {
-                                                        filename = parsed;
+                                            let mut got_headers = false;
+
+                                            // 1. Try HEAD request first
+                                            let head_req = client.head(&payload.url)
+                                                .header(reqwest::header::COOKIE, payload.cookie.clone().unwrap_or_default())
+                                                .header(reqwest::header::REFERER, payload.referrer.clone().unwrap_or_default())
+                                                .timeout(std::time::Duration::from_secs(2))
+                                                .send()
+                                                .await;
+
+                                            if let Ok(res) = head_req {
+                                                if res.status().is_success() {
+                                                    if let Some(cd_val) = res.headers().get(reqwest::header::CONTENT_DISPOSITION).and_then(|h| h.to_str().ok()) {
+                                                        if let Some(parsed) = parse_content_disposition(cd_val) {
+                                                            filename = parsed;
+                                                        }
+                                                    }
+                                                    total_size = res.headers()
+                                                        .get(reqwest::header::CONTENT_LENGTH)
+                                                        .and_then(|val| val.to_str().ok())
+                                                        .and_then(|s| s.parse::<u64>().ok())
+                                                        .unwrap_or(0);
+                                                    if total_size > 0 {
+                                                        got_headers = true;
+                                                    }
+
+                                                    let has_hash_filename = filename.chars().all(|c| c.is_numeric() || c.is_ascii_lowercase()) && filename.len() > 10;
+                                                    if has_hash_filename || filename == "download" || filename == "captured_download" {
+                                                        let final_url = res.url().as_str();
+                                                        if let Ok(parsed_url) = reqwest::Url::parse(final_url) {
+                                                            if let Some(last_seg) = parsed_url.path_segments().and_then(|s| s.last()) {
+                                                                if !last_seg.is_empty() && last_seg != "download" {
+                                                                    filename = last_seg.to_string();
+                                                                }
+                                                            }
+                                                        }
                                                     }
                                                 }
-                                                total_size = res.headers()
-                                                    .get(reqwest::header::CONTENT_LENGTH)
-                                                    .and_then(|val| val.to_str().ok())
-                                                    .and_then(|s| s.parse::<u64>().ok())
-                                                    .unwrap_or(0);
+                                            }
 
-                                                let has_hash_filename = filename.chars().all(|c| c.is_numeric() || c.is_ascii_lowercase()) && filename.len() > 10;
-                                                if has_hash_filename || filename == "download" || filename == "captured_download" {
-                                                    let final_url = res.url().as_str();
-                                                    if let Ok(parsed_url) = reqwest::Url::parse(final_url) {
-                                                        if let Some(last_seg) = parsed_url.path_segments().and_then(|s| s.last()) {
-                                                            if !last_seg.is_empty() && last_seg != "download" {
-                                                                filename = last_seg.to_string();
+                                            // 2. Fallback to range GET request if size is still 0
+                                            if !got_headers {
+                                                let get_req = client.get(&payload.url)
+                                                    .header(reqwest::header::COOKIE, payload.cookie.clone().unwrap_or_default())
+                                                    .header(reqwest::header::REFERER, payload.referrer.clone().unwrap_or_default())
+                                                    .header("Range", "bytes=0-0")
+                                                    .timeout(std::time::Duration::from_secs(2))
+                                                    .send()
+                                                    .await;
+
+                                                if let Ok(res) = get_req {
+                                                    if res.status().is_success() || res.status() == reqwest::StatusCode::PARTIAL_CONTENT {
+                                                        if let Some(cd_val) = res.headers().get(reqwest::header::CONTENT_DISPOSITION).and_then(|h| h.to_str().ok()) {
+                                                            if let Some(parsed) = parse_content_disposition(cd_val) {
+                                                                filename = parsed;
+                                                            }
+                                                        }
+                                                        if let Some(cr_val) = res.headers().get("Content-Range").and_then(|h| h.to_str().ok()) {
+                                                            if let Some(size) = parse_content_range(cr_val) {
+                                                                total_size = size;
+                                                            }
+                                                        }
+                                                        if total_size == 0 {
+                                                            total_size = res.headers()
+                                                                .get(reqwest::header::CONTENT_LENGTH)
+                                                                .and_then(|val| val.to_str().ok())
+                                                                .and_then(|s| s.parse::<u64>().ok())
+                                                                .unwrap_or(0);
+                                                        }
+
+                                                        let has_hash_filename = filename.chars().all(|c| c.is_numeric() || c.is_ascii_lowercase()) && filename.len() > 10;
+                                                        if has_hash_filename || filename == "download" || filename == "captured_download" {
+                                                            let final_url = res.url().as_str();
+                                                            if let Ok(parsed_url) = reqwest::Url::parse(final_url) {
+                                                                if let Some(last_seg) = parsed_url.path_segments().and_then(|s| s.last()) {
+                                                                    if !last_seg.is_empty() && last_seg != "download" {
+                                                                        filename = last_seg.to_string();
+                                                                    }
+                                                                }
                                                             }
                                                         }
                                                     }
