@@ -208,7 +208,6 @@ async fn open_progress_window(app_handle: tauri::AppHandle, id: String) -> Resul
     )
     .title("Downloading...")
     .inner_size(520.0, 340.0)
-    .center()
     .build()
     .map_err(|e| e.to_string())?;
 
@@ -235,7 +234,6 @@ async fn open_complete_window(app_handle: tauri::AppHandle, filename: String, sa
     )
     .title("Download Finished")
     .inner_size(520.0, 360.0)
-    .center()
     .build()
     .map_err(|e| e.to_string())?;
 
@@ -318,7 +316,6 @@ async fn redownload_and_open_progress(
         )
         .title("Downloading...")
         .inner_size(520.0, 340.0)
-        .center()
         .build()
         .map_err(|e| e.to_string())?;
     }
@@ -564,7 +561,7 @@ pub fn run() {
                                                     .header(reqwest::header::COOKIE, payload.cookie.clone().unwrap_or_default())
                                                     .header(reqwest::header::REFERER, payload.referrer.clone().unwrap_or_default())
                                                     .header("Range", "bytes=0-0")
-                                                    .timeout(std::time::Duration::from_secs(2))
+                                                    .timeout(std::time::Duration::from_secs(5))
                                                     .send()
                                                     .await;
 
@@ -659,7 +656,6 @@ pub fn run() {
                                                 )
                                                 .title("Downloading...")
                                                 .inner_size(520.0, 340.0)
-                                                .center()
                                                 .build();
 
                                                 let response = "HTTP/1.1 200 OK\r\n\
@@ -687,7 +683,6 @@ pub fn run() {
                                             )
                                             .title("New Download Captured")
                                             .inner_size(520.0, 370.0)
-                                            .center()
                                             .build();
                                             
                                             let response = "HTTP/1.1 200 OK\r\n\

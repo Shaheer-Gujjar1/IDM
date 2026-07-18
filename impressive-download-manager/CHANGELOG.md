@@ -12,6 +12,8 @@
   - **Executables** (red) – new category handling `.exe`, `.msi`, `.deb`, `.rpm`, `.dmg`, `.pkg`, `.appimage`, `.apk`.
 - **Category CSS rules** (`.liquid-fill.cat‑*`) added to `src/V2.css`.
 - **Download size display** in the “New Download Captured” popup (shows “Estimated File Size: …”).
+- **Fast Range GET size fallback**: Automatically sends a partial HTTP GET range request (`Range: bytes=0-0`) to extract content length/range when server HEAD queries fail.
+- **Single-Instance Enforcement**: Restricts TCP port 9600 binding to a single instance, communicating with and focusing the running instance on subsequent launches.
 
 ### Changed
 - **Popup window title** renamed from **“New Download”** to **“New Download Captured”** (both the Tauri window title and the in‑popup header).
@@ -22,11 +24,14 @@
   - Completed state adds a subtle opacity reduction for a polished finish.
 - **Added `popupSize` React state** to carry the estimated size from the backend to the UI.
 - **Added `executables` entry** in `getFileCategory` (App.tsx).
+- **Active downloads sorting**: Ongoing, paused, and queued downloads now sort to the top of the dashboard list.
+- **Enabled window controls**: Removed `.resizable(false)` from all popups to guarantee that native Minimize, Maximize, and Close titlebar buttons stay active and functional on Linux/GNOME.
 
 ### Fixed
 - **Light‑mode footer**: colors now use theme variables, making the footer visible in light mode.
 - **Download progress**: completed items always display **100 %** even when size is unknown.
 - **Header removal bug**: old “New Download Captured” title block inside the modal is gone.
+- **Async locking deadlock**: Replaced async `tokio::sync::RwLock` fields (`status`, `speed`, `eta`) in the download engine with standard library `Mutex` guards, eliminating GUI freezes when downloading.
 
 ### Build & Packaging
 - Updated build scripts to produce `.deb`, `.rpm`, and `.AppImage` bundles for version `0.1.2`.

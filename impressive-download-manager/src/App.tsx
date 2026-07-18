@@ -68,6 +68,7 @@ function App() {
   const [searchQuery, setSearchQuery] = useState("");
   const [downloads, setDownloads] = useState<DownloadProgress[]>([]);
 
+
   // Modal State (Manual Trigger)
   const [showAddModal, setShowAddModal] = useState(false);
   const [inputUrl, setInputUrl] = useState("");
