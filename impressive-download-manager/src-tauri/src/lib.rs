@@ -121,7 +121,6 @@ async fn refresh_download_link(
         .title("Refreshing Link...")
         .inner_size(520.0, 300.0)
         .center()
-        .resizable(false)
         .build()
         .map_err(|e| e.to_string())?;
         
@@ -210,7 +209,6 @@ async fn open_progress_window(app_handle: tauri::AppHandle, id: String) -> Resul
     .title("Downloading...")
     .inner_size(520.0, 340.0)
     .center()
-    .resizable(false)
     .build()
     .map_err(|e| e.to_string())?;
 
@@ -238,7 +236,6 @@ async fn open_complete_window(app_handle: tauri::AppHandle, filename: String, sa
     .title("Download Finished")
     .inner_size(520.0, 360.0)
     .center()
-    .resizable(false)
     .build()
     .map_err(|e| e.to_string())?;
 
@@ -292,7 +289,6 @@ async fn resume_and_open_progress(
         .title("Downloading...")
         .inner_size(520.0, 340.0)
         .center()
-        .resizable(false)
         .build()
         .map_err(|e| e.to_string())?;
     }
@@ -323,7 +319,6 @@ async fn redownload_and_open_progress(
         .title("Downloading...")
         .inner_size(520.0, 340.0)
         .center()
-        .resizable(false)
         .build()
         .map_err(|e| e.to_string())?;
     }
@@ -665,7 +660,6 @@ pub fn run() {
                                                 .title("Downloading...")
                                                 .inner_size(520.0, 340.0)
                                                 .center()
-                                                .resizable(false)
                                                 .build();
 
                                                 let response = "HTTP/1.1 200 OK\r\n\
@@ -694,7 +688,6 @@ pub fn run() {
                                             .title("New Download Captured")
                                             .inner_size(520.0, 370.0)
                                             .center()
-                                            .resizable(false)
                                             .build();
                                             
                                             let response = "HTTP/1.1 200 OK\r\n\
