@@ -61,6 +61,7 @@ function App() {
   const [popupReferrer, setPopupReferrer] = useState("");
   const [popupTaskId, setPopupTaskId] = useState<string | null>(null);
   const [popupProgress, setPopupProgress] = useState<DownloadProgress | null>(null);
+  const [popupSize, setPopupSize] = useState("0");
 
   // Main Dashboard State
   const [activeCategory, setActiveCategory] = useState("all");
