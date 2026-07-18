@@ -47,11 +47,11 @@ pub struct DownloadTask {
     pub referrer: String,
     pub total_size: AtomicU64,
     pub downloaded: Arc<AtomicU64>,
-    pub status: Arc<RwLock<DownloadStatus>>,
+    pub status: Arc<std::sync::Mutex<DownloadStatus>>,
     pub abort_tx: Option<broadcast::Sender<()>>,
     pub chunks: std::sync::Mutex<Vec<DownloadChunk>>,
-    pub speed: Arc<RwLock<f64>>,
-    pub eta: Arc<RwLock<String>>,
+    pub speed: Arc<std::sync::Mutex<f64>>,
+    pub eta: Arc<std::sync::Mutex<String>>,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
@@ -107,7 +107,7 @@ impl DownloadManager {
             let mut persistent_tasks = Vec::new();
             for task in tasks.values() {
                 let downloaded = task.downloaded.load(Ordering::Relaxed);
-                let status = task.status.read().await.clone();
+                let status = task.status.lock().unwrap().clone();
                 let chunks = task.chunks.lock().unwrap().clone();
                 persistent_tasks.push(PersistentTask {
                     id: task.id.clone(),
@@ -155,11 +155,11 @@ impl DownloadManager {
                                 referrer: p_task.referrer,
                                 total_size: AtomicU64::new(p_task.total_size),
                                 downloaded: Arc::new(AtomicU64::new(p_task.downloaded)),
-                                status: Arc::new(RwLock::new(status)),
+                                status: Arc::new(std::sync::Mutex::new(status)),
                                 abort_tx: None,
                                 chunks: std::sync::Mutex::new(p_task.chunks),
-                                speed: Arc::new(RwLock::new(0.0)),
-                                eta: Arc::new(RwLock::new("---".to_string())),
+                                speed: Arc::new(std::sync::Mutex::new(0.0)),
+                                eta: Arc::new(std::sync::Mutex::new("---".to_string())),
                             }));
                         }
                     }
@@ -220,11 +220,11 @@ impl DownloadManager {
             referrer: referrer.clone(),
             total_size: AtomicU64::new(total_size),
             downloaded: Arc::new(AtomicU64::new(0)),
-            status: Arc::new(RwLock::new(DownloadStatus::Queued)),
+            status: Arc::new(std::sync::Mutex::new(DownloadStatus::Queued)),
             abort_tx: Some(abort_tx),
             chunks: std::sync::Mutex::new(vec![]),
-            speed: Arc::new(RwLock::new(0.0)),
-            eta: Arc::new(RwLock::new("---".to_string())),
+            speed: Arc::new(std::sync::Mutex::new(0.0)),
+            eta: Arc::new(std::sync::Mutex::new("---".to_string())),
         });
 
         self.tasks.write().await.insert(id.clone(), task.clone());
@@ -245,7 +245,7 @@ impl DownloadManager {
     }
 
     pub async fn run_task(self: &Arc<Self>, task: Arc<DownloadTask>, accept_ranges: bool) -> Result<(), String> {
-        *task.status.write().await = DownloadStatus::Downloading;
+        *task.status.lock().unwrap() = DownloadStatus::Downloading;
 
         let is_new = task.downloaded.load(Ordering::Relaxed) == 0;
         let num_chunks = if accept_ranges && task.total_size.load(Ordering::Relaxed) > 0 { 8 } else { 1 };
@@ -326,7 +326,7 @@ impl DownloadManager {
                             0.0
                         };
 
-                        let mut speed_guard = task_speed.write().await;
+                        let mut speed_guard = task_speed.lock().unwrap();
                         let last_speed = *speed_guard;
                         let speed = if last_speed <= 0.0 {
                             raw_speed
@@ -364,8 +364,8 @@ impl DownloadManager {
                             "---".to_string()
                         };
 
-                        let status = status_ref.read().await.clone();
-                        *task_eta.write().await = eta.clone();
+                        let status = status_ref.lock().unwrap().clone();
+                        *task_eta.lock().unwrap() = eta.clone();
 
                         let progress = DownloadProgress {
                             id: id_clone.clone(),
@@ -592,7 +592,7 @@ impl DownloadManager {
         let _ = writer_handle.await;
 
         let is_aborted = {
-            let s = task.status.read().await;
+            let s = task.status.lock().unwrap();
             *s == DownloadStatus::Paused
         };
 
@@ -600,15 +600,15 @@ impl DownloadManager {
             let downloaded_bytes = task.downloaded.load(Ordering::Relaxed);
             let total_size_val = task.total_size.load(Ordering::Relaxed);
             if total_size_val > 0 && downloaded_bytes >= total_size_val {
-                *task.status.write().await = DownloadStatus::Completed;
+                *task.status.lock().unwrap() = DownloadStatus::Completed;
             } else if total_size_val == 0 && downloaded_bytes > 0 {
                 task.total_size.store(downloaded_bytes, Ordering::Relaxed);
-                *task.status.write().await = DownloadStatus::Completed;
+                *task.status.lock().unwrap() = DownloadStatus::Completed;
             } else {
-                *task.status.write().await = DownloadStatus::Failed("Download incomplete".to_string());
+                *task.status.lock().unwrap() = DownloadStatus::Failed("Download incomplete".to_string());
             }
 
-            let final_status = task.status.read().await.clone();
+            let final_status = task.status.lock().unwrap().clone();
             let progress = DownloadProgress {
                 id: task.id.clone(),
                 filename: task.filename.clone(),
@@ -634,7 +634,7 @@ impl DownloadManager {
         let tasks = self.tasks.read().await;
         if let Some(task) = tasks.get(id) {
             {
-                let mut status = task.status.write().await;
+                let mut status = task.status.lock().unwrap();
                 if *status == DownloadStatus::Completed || matches!(*status, DownloadStatus::Failed(_)) {
                     return Ok(());
                 }
@@ -673,7 +673,7 @@ impl DownloadManager {
         let mut tasks = self.tasks.write().await;
         if let Some(task) = tasks.get_mut(id) {
             {
-                let mut status = task.status.write().await;
+                let mut status = task.status.lock().unwrap();
                 if *status != DownloadStatus::Paused && !matches!(*status, DownloadStatus::Failed(_)) {
                     return Err("Task is not paused or failed".to_string());
                 }
@@ -729,7 +729,7 @@ impl DownloadManager {
                 let _ = tx.send(());
             }
             
-            *task.status.write().await = DownloadStatus::Failed("Cancelled by user".to_string());
+            *task.status.lock().unwrap() = DownloadStatus::Failed("Cancelled by user".to_string());
             
             let progress = DownloadProgress {
                 id: task.id.clone(),
@@ -775,7 +775,7 @@ impl DownloadManager {
             if let Some(ref tx) = task.abort_tx {
                 let _ = tx.send(());
             }
-            *task.status.write().await = DownloadStatus::Trash;
+            *task.status.lock().unwrap() = DownloadStatus::Trash;
             
             if delete_file {
                 let path = task.save_path.clone();
@@ -812,7 +812,7 @@ impl DownloadManager {
         let tasks = self.tasks.read().await;
         if let Some(task) = tasks.get(id) {
             let final_status = {
-                let mut status = task.status.write().await;
+                let mut status = task.status.lock().unwrap();
                 if *status == DownloadStatus::Trash {
                     let downloaded = task.downloaded.load(Ordering::Relaxed);
                     let total_size_val = task.total_size.load(Ordering::Relaxed);
@@ -871,11 +871,11 @@ impl DownloadManager {
                 referrer: task.referrer.clone(),
                 total_size: AtomicU64::new(task.total_size.load(Ordering::Relaxed)),
                 downloaded: Arc::new(AtomicU64::new(0)),
-                status: Arc::new(RwLock::new(DownloadStatus::Queued)),
+                status: Arc::new(std::sync::Mutex::new(DownloadStatus::Queued)),
                 abort_tx: Some(abort_tx),
                 chunks: std::sync::Mutex::new(vec![]),
-                speed: Arc::new(RwLock::new(0.0)),
-                eta: Arc::new(RwLock::new("---".to_string())),
+                speed: Arc::new(std::sync::Mutex::new(0.0)),
+                eta: Arc::new(std::sync::Mutex::new("---".to_string())),
             });
 
             tasks.insert(id.to_string(), updated_task.clone());
@@ -904,9 +904,9 @@ impl DownloadManager {
         let tasks = self.tasks.read().await;
         if let Some(task) = tasks.get(id) {
             let current_bytes = task.downloaded.load(Ordering::Relaxed);
-            let speed = *task.speed.read().await;
-            let eta = task.eta.read().await.clone();
-            let status = task.status.read().await.clone();
+            let speed = *task.speed.lock().unwrap();
+            let eta = task.eta.lock().unwrap().clone();
+            let status = task.status.lock().unwrap().clone();
             
             Some(DownloadProgress {
                 id: task.id.clone(),
@@ -929,9 +929,9 @@ impl DownloadManager {
         let mut list = vec![];
         for task in tasks.values() {
             let current_bytes = task.downloaded.load(Ordering::Relaxed);
-            let status = task.status.read().await.clone();
-            let speed = *task.speed.read().await;
-            let eta = task.eta.read().await.clone();
+            let status = task.status.lock().unwrap().clone();
+            let speed = *task.speed.lock().unwrap();
+            let eta = task.eta.lock().unwrap().clone();
             list.push(DownloadProgress {
                 id: task.id.clone(),
                 filename: task.filename.clone(),

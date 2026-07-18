@@ -85,7 +85,7 @@ async fn refresh_download_link(
             let _ = tx.send(());
         }
 
-        *task.status.write().await = engine::DownloadStatus::Failed("REFRESHING".to_string());
+        *task.status.lock().unwrap() = engine::DownloadStatus::Failed("REFRESHING".to_string());
         
         let browser_url = if !task.referrer.is_empty() {
             task.referrer.clone()
@@ -608,7 +608,7 @@ pub fn run() {
                                             {
                                                 let tasks = manager.tasks.read().await;
                                                 for task in tasks.values() {
-                                                    let status = task.status.read().await;
+                                                    let status = task.status.lock().unwrap();
                                                     if let engine::DownloadStatus::Failed(ref msg) = *status {
                                                         if msg == "REFRESHING" {
                                                             refresh_task_id = Some(task.id.clone());
@@ -632,11 +632,11 @@ pub fn run() {
                                                             referrer: payload.referrer.clone().unwrap_or_default(),
                                                             total_size: std::sync::atomic::AtomicU64::new(task.total_size.load(std::sync::atomic::Ordering::Relaxed)),
                                                             downloaded: task.downloaded.clone(),
-                                                            status: std::sync::Arc::new(tokio::sync::RwLock::new(engine::DownloadStatus::Paused)), // Set to Paused so resume can start it
+                                                            status: std::sync::Arc::new(std::sync::Mutex::new(engine::DownloadStatus::Paused)), // Set to Paused so resume can start it
                                                             abort_tx: None,
                                                             chunks: std::sync::Mutex::new(task.chunks.lock().unwrap().clone()),
-                                                            speed: std::sync::Arc::new(tokio::sync::RwLock::new(0.0)),
-                                                            eta: std::sync::Arc::new(tokio::sync::RwLock::new("---".to_string())),
+                                                            speed: std::sync::Arc::new(std::sync::Mutex::new(0.0)),
+                                                            eta: std::sync::Arc::new(std::sync::Mutex::new("---".to_string())),
                                                         });
                                                         tasks.insert(id.clone(), updated_task);
                                                     }
