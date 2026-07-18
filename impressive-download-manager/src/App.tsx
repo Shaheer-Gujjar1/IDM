@@ -552,6 +552,7 @@ function App() {
     if (["mp3", "wav", "aac", "flac", "m4a", "ogg"].includes(ext)) return "audio";
     if (["pdf", "docx", "doc", "txt", "xlsx", "pptx", "epub"].includes(ext)) return "documents";
     if (["zip", "rar", "7z", "tar", "gz", "bz2"].includes(ext)) return "archives";
+    if (["exe", "msi", "deb", "rpm", "dmg", "pkg", "appimage", "apk"].includes(ext)) return "executables";
     return "other";
   };
 

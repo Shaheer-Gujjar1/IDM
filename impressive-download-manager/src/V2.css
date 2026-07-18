@@ -592,13 +592,16 @@ html[data-theme="light"] .liquid-progress-container {
   100% { transform: translateX(-30px); }
 }
 
-.liquid-fill.paused { background: var(--accent-orange); }
-.liquid-fill.paused::before { background: url('data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 12" preserveAspectRatio="none"><path d="M0,6 Q25,0 50,6 T100,6 L100,12 L0,12 Z" fill="%23f59e0b"/></svg>') repeat-x; background-size: 50px 12px; animation: waveMove 2s ease-in-out infinite alternate; }
-.liquid-fill.paused::after { background: url('data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 16" preserveAspectRatio="none"><path d="M0,8 Q25,0 50,8 T100,8 L100,16 L0,16 Z" fill="%23f59e0b"/></svg>') repeat-x; background-size: 70px 16px; animation: waveMove 3s ease-in-out infinite alternate; }
+.liquid-fill.paused::before,
+.liquid-fill.paused::after {
+  animation-play-state: paused !important;
+}
 
-.liquid-fill.completed { background: var(--accent-green); }
-.liquid-fill.completed::before { background: url('data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 12" preserveAspectRatio="none"><path d="M0,6 Q25,0 50,6 T100,6 L100,12 L0,12 Z" fill="%2310b981"/></svg>') repeat-x; background-size: 50px 12px; animation: waveMove 2s ease-in-out infinite alternate; }
-.liquid-fill.completed::after { background: url('data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 16" preserveAspectRatio="none"><path d="M0,8 Q25,0 50,8 T100,8 L100,16 L0,16 Z" fill="%2310b981"/></svg>') repeat-x; background-size: 70px 16px; animation: waveMove 3s ease-in-out infinite alternate; }
+.liquid-fill.completed::before,
+.liquid-fill.completed::after {
+  animation-play-state: paused !important;
+  opacity: 0.3 !important;
+}
 
 /* Premium System Sliders */
 .range-slider {
@@ -781,3 +784,8 @@ html[data-theme="light"] .branding-footer {
 .liquid-fill.cat-other { background: #14b8a6; }
 .liquid-fill.cat-other::before { background: url('data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 12" preserveAspectRatio="none"><path d="M0,6 Q25,0 50,6 T100,6 L100,12 L0,12 Z" fill="%2314b8a6"/></svg>') repeat-x; background-size: 50px 12px; }
 .liquid-fill.cat-other::after { background: url('data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 16" preserveAspectRatio="none"><path d="M0,8 Q25,0 50,8 T100,8 L100,16 L0,16 Z" fill="%2314b8a6"/></svg>') repeat-x; background-size: 70px 16px; }
+
+/* Executables: Red */
+.liquid-fill.cat-executables { background: #ef4444; }
+.liquid-fill.cat-executables::before { background: url('data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 12" preserveAspectRatio="none"><path d="M0,6 Q25,0 50,6 T100,6 L100,12 L0,12 Z" fill="%23ef4444"/></svg>') repeat-x; background-size: 50px 12px; }
+.liquid-fill.cat-executables::after { background: url('data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 16" preserveAspectRatio="none"><path d="M0,8 Q25,0 50,8 T100,8 L100,16 L0,16 Z" fill="%23ef4444"/></svg>') repeat-x; background-size: 70px 16px; }
