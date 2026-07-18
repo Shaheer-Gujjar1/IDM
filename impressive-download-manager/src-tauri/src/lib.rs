@@ -489,12 +489,18 @@ pub fn run() {
                                                 .build()
                                                 .unwrap_or_default();
 
+                                            let mut total_size = 0u64;
                                             if let Ok(res) = client.head(&payload.url).timeout(std::time::Duration::from_secs(2)).send().await {
                                                 if let Some(cd_val) = res.headers().get(reqwest::header::CONTENT_DISPOSITION).and_then(|h| h.to_str().ok()) {
                                                     if let Some(parsed) = parse_content_disposition(cd_val) {
                                                         filename = parsed;
                                                     }
                                                 }
+                                                total_size = res.headers()
+                                                    .get(reqwest::header::CONTENT_LENGTH)
+                                                    .and_then(|val| val.to_str().ok())
+                                                    .and_then(|s| s.parse::<u64>().ok())
+                                                    .unwrap_or(0);
 
                                                 let has_hash_filename = filename.chars().all(|c| c.is_numeric() || c.is_ascii_lowercase()) && filename.len() > 10;
                                                 if has_hash_filename || filename == "download" || filename == "captured_download" {
@@ -579,11 +585,12 @@ pub fn run() {
 
                                             // Default: Spawn native popup-add window pre-filled with payload
                                             let add_url = format!(
-                                                "/index.html?popup=add&url={}&filename={}&cookie={}&referrer={}",
+                                                "/index.html?popup=add&url={}&filename={}&cookie={}&referrer={}&size={}",
                                                 urlencoding::encode(&payload.url),
                                                 urlencoding::encode(&filename),
                                                 urlencoding::encode(&payload.cookie.unwrap_or_default()),
-                                                urlencoding::encode(&payload.referrer.unwrap_or_default())
+                                                urlencoding::encode(&payload.referrer.unwrap_or_default()),
+                                                total_size
                                             );
                                             
                                             let _ = tauri::WebviewWindowBuilder::new(
@@ -592,7 +599,7 @@ pub fn run() {
                                                 tauri::WebviewUrl::App(add_url.into()),
                                             )
                                             .title("New Download")
-                                            .inner_size(520.0, 360.0)
+                                            .inner_size(520.0, 410.0)
                                             .center()
                                             .resizable(false)
                                             .build();

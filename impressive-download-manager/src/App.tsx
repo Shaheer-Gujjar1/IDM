@@ -212,6 +212,7 @@ function App() {
     const savePath = params.get("save_path") || "";
     const cookie = params.get("cookie") || "";
     const referrer = params.get("referrer") || "";
+    const size = params.get("size") || "0";
     const taskId = params.get("id") || null;
 
     if (mode) {
@@ -222,6 +223,7 @@ function App() {
       setPopupCookie(cookie);
       setPopupReferrer(referrer);
       setPopupTaskId(taskId);
+      setPopupSize(size);
       
       if (mode === "progress") {
         // Fetch progress state immediately from Rust backend to prevent Connecting... freeze
@@ -614,6 +616,11 @@ function App() {
               <button className="hover-action-btn" style={{ width: "auto", padding: "0 12px", fontSize: "0.8rem", height: "34px" }} onClick={handlePickFolder}>Browse</button>
             </div>
           </div>
+          <div className="form-group-v2" style={{ marginTop: "2px" }}>
+            <span style={{ fontSize: "0.85rem", color: "var(--text-secondary)" }}>
+              Estimated File Size: <span style={{ fontWeight: 700, color: "var(--accent-cyan)" }}>{popupSize && popupSize !== "0" ? formatBytes(parseInt(popupSize)) : "Unknown Size"}</span>
+            </span>
+          </div>
         </div>
 
         <div className="modal-actions-v2" style={{ marginTop: "12px", paddingTop: "8px" }}>
@@ -627,21 +634,24 @@ function App() {
   }
 
   if (popupMode === "progress") {
-    const progressPercent = popupProgress && popupProgress.total_size > 0 
-      ? Math.min(100, Math.floor((popupProgress.downloaded / popupProgress.total_size) * 100))
-      : 0;
+    const isCompleted = popupProgress?.status === "Completed";
+    const progressPercent = isCompleted 
+      ? 100 
+      : (popupProgress && popupProgress.total_size > 0 
+          ? Math.min(100, Math.floor((popupProgress.downloaded / popupProgress.total_size) * 100))
+          : 0);
     const isPaused = popupProgress && (
       popupProgress.status === "Paused" ||
       JSON.stringify(popupProgress.status) === JSON.stringify("Paused")
     );
-    const isCompleted = popupProgress?.status === "Completed";
+    const catClass = popupProgress ? `cat-${getFileCategory(popupProgress.filename)}` : "";
 
     return (
       <div className="modal-content-v2" style={{ height: "100vh", animation: "none", boxShadow: "none", border: "none", alignItems: "center", justifyContent: "center", position: "relative" }}>
         
         <div className="liquid-progress-container" style={{ width: "100px", height: "100px", marginBottom: "16px" }}>
           <div 
-            className={`liquid-fill ${isPaused ? "paused" : ""} ${isCompleted ? "completed" : ""}`} 
+            className={`liquid-fill ${isPaused ? "paused" : ""} ${isCompleted ? "completed" : ""} ${catClass}`} 
             style={{ transform: `translateY(${100 - progressPercent}%)` }} 
           />
           <div style={{ position: "absolute", inset: 0, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", zIndex: 10 }}>
@@ -1088,9 +1098,12 @@ function App() {
                     const isFailed = statusText.startsWith("Failed");
                     const isTrash = statusText === "Trash";
                     
-                    const progressPercent = d.total_size > 0 
-                      ? Math.min(100, Math.floor((d.downloaded / d.total_size) * 100))
-                      : 0;
+                    const progressPercent = isCompleted 
+                      ? 100 
+                      : (d.total_size > 0 
+                          ? Math.min(100, Math.floor((d.downloaded / d.total_size) * 100))
+                          : 0);
+                    const catClass = `cat-${getFileCategory(d.filename)}`;
 
                     return (
                       <div 
@@ -1101,7 +1114,7 @@ function App() {
                         <div className="card-left-v2">
                            <div className="liquid-progress-container">
                              <div 
-                               className={`liquid-fill ${isPaused ? "paused" : ""} ${isCompleted ? "completed" : ""}`} 
+                               className={`liquid-fill ${isPaused ? "paused" : ""} ${isCompleted ? "completed" : ""} ${catClass}`} 
                                style={{ transform: `translateY(${100 - progressPercent}%)` }} 
                              />
                              <div className="circular-icon-inner">
@@ -1186,7 +1199,7 @@ function App() {
           )}
         </main>
 
-        <footer className="branding-footer" style={{ padding: "12px", textAlign: "center", borderTop: "1px solid rgba(255, 255, 255, 0.03)", color: "rgba(255, 255, 255, 0.35)", fontSize: "0.8rem", background: "rgba(20, 24, 35, 0.2)" }}>
+        <footer className="branding-footer" style={{ padding: "12px", textAlign: "center", fontSize: "0.8rem" }}>
           A Product of <span style={{ color: "var(--accent-cyan)", fontWeight: 700, textShadow: "0 0 10px rgba(6, 182, 212, 0.2)" }}>Lumen Lab</span>, Designed & Developed by <span style={{ color: "var(--accent-orange)", fontWeight: 700, textShadow: "0 0 10px rgba(245, 158, 11, 0.2)" }}>Shaheer Ahmed</span>
         </footer>
       </div>
