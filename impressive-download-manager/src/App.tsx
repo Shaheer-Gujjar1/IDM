@@ -597,9 +597,6 @@ function App() {
   if (popupMode === "add") {
     return (
       <div className="modal-content-v2" style={{ height: "100vh", overflowY: "auto", animation: "none", boxShadow: "none", border: "none", padding: "16px" }}>
-        <div className="modal-header-v2" style={{ marginBottom: "12px", paddingBottom: "8px" }}>
-          <span className="modal-title-v2" style={{ fontSize: "1.2rem" }}>New Download Captured</span>
-        </div>
         
         <div className="modal-body-v2" style={{ display: "flex", flexDirection: "column", gap: "10px", padding: 0 }}>
           <div className="form-group-v2">

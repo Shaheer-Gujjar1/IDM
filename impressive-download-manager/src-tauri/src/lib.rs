@@ -598,8 +598,8 @@ pub fn run() {
                                                 "popup-add",
                                                 tauri::WebviewUrl::App(add_url.into()),
                                             )
-                                            .title("New Download")
-                                            .inner_size(520.0, 410.0)
+                                            .title("New Download Captured")
+                                            .inner_size(520.0, 370.0)
                                             .center()
                                             .resizable(false)
                                             .build();
