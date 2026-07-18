@@ -47,6 +47,13 @@ chrome.downloads.onDeterminingFilename.addListener((downloadItem, suggest) => {
     return;
   }
 
+  // Do not capture downloads <= 1.00MB (1,048,576 bytes)
+  // If fileSize is -1 or 0, it means size is unknown, so we capture it.
+  if (downloadItem.fileSize > 0 && downloadItem.fileSize <= 1048576) {
+    suggest();
+    return;
+  }
+
   // Ignore historical/restored downloads loaded by Chrome at startup
   if (downloadItem.startTime) {
     const downloadTime = new Date(downloadItem.startTime).getTime();
@@ -96,29 +103,9 @@ chrome.contextMenus.onClicked.addListener(async (info, tab) => {
   }
 });
 
-// Listen to messages from content scripts (direct downloads + media sniffing)
+// Listen to messages from content scripts (media sniffing)
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
-  if (message.type === 'DIRECT_DOWNLOAD') {
-    (async () => {
-      const url = message.url;
-      const filename = message.filename;
-      const referrer = sender.tab?.url || "";
-
-      if (url.includes("web.whatsapp.com") || referrer.includes("web.whatsapp.com")) {
-        return;
-      }
-
-      // Whitelist image files
-      const isImage = /\.(png|jpe?g|gif|webp|svg|bmp|ico|tiff?)(?:\?.*)?$/i.test(url) ||
-                      /\.(png|jpe?g|gif|webp|svg|bmp|ico|tiff?)$/i.test(filename);
-      if (isImage) {
-        return;
-      }
-
-      const cookies = await getCookiesForUrl(url);
-      await sendToDesktopApp(url, filename, cookies, referrer);
-    })();
-  } else if (message.type === 'MEDIA_DETECTED') {
+  if (message.type === 'MEDIA_DETECTED') {
     (async () => {
       const tabId = sender.tab?.id;
       if (!tabId) return;

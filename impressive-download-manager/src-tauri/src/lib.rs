@@ -536,7 +536,7 @@ pub fn run() {
                                                             save_path: task.save_path.clone(),
                                                             cookie: payload.cookie.clone().unwrap_or_default(),
                                                             referrer: payload.referrer.clone().unwrap_or_default(),
-                                                            total_size: task.total_size,
+                                                            total_size: std::sync::atomic::AtomicU64::new(task.total_size.load(std::sync::atomic::Ordering::Relaxed)),
                                                             downloaded: task.downloaded.clone(),
                                                             status: std::sync::Arc::new(tokio::sync::RwLock::new(engine::DownloadStatus::Paused)), // Set to Paused so resume can start it
                                                             abort_tx: None,

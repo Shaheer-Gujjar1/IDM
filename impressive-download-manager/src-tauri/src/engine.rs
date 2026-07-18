@@ -45,7 +45,7 @@ pub struct DownloadTask {
     pub save_path: String,
     pub cookie: String,
     pub referrer: String,
-    pub total_size: u64,
+    pub total_size: AtomicU64,
     pub downloaded: Arc<AtomicU64>,
     pub status: Arc<RwLock<DownloadStatus>>,
     pub abort_tx: Option<broadcast::Sender<()>>,
@@ -116,7 +116,7 @@ impl DownloadManager {
                     save_path: task.save_path.clone(),
                     cookie: task.cookie.clone(),
                     referrer: task.referrer.clone(),
-                    total_size: task.total_size,
+                    total_size: task.total_size.load(Ordering::Relaxed),
                     downloaded,
                     status,
                     chunks,
@@ -153,7 +153,7 @@ impl DownloadManager {
                                 save_path: p_task.save_path,
                                 cookie: p_task.cookie,
                                 referrer: p_task.referrer,
-                                total_size: p_task.total_size,
+                                total_size: AtomicU64::new(p_task.total_size),
                                 downloaded: Arc::new(AtomicU64::new(p_task.downloaded)),
                                 status: Arc::new(RwLock::new(status)),
                                 abort_tx: None,
@@ -218,7 +218,7 @@ impl DownloadManager {
             save_path: save_path.clone(),
             cookie: cookie.clone(),
             referrer: referrer.clone(),
-            total_size,
+            total_size: AtomicU64::new(total_size),
             downloaded: Arc::new(AtomicU64::new(0)),
             status: Arc::new(RwLock::new(DownloadStatus::Queued)),
             abort_tx: Some(abort_tx),
@@ -248,7 +248,7 @@ impl DownloadManager {
         *task.status.write().await = DownloadStatus::Downloading;
 
         let is_new = task.downloaded.load(Ordering::Relaxed) == 0;
-        let num_chunks = if accept_ranges && task.total_size > 0 { 8 } else { 1 };
+        let num_chunks = if accept_ranges && task.total_size.load(Ordering::Relaxed) > 0 { 8 } else { 1 };
 
         if let Some(parent) = std::path::Path::new(&task.save_path).parent() {
             let _ = tokio::fs::create_dir_all(parent).await;
@@ -266,18 +266,19 @@ impl DownloadManager {
                 .open(&task.save_path)
                 .await
                 .map_err(|e| format!("Failed to create file: {}", e))?;
-            if task.total_size > 0 {
-                let _ = file.set_len(task.total_size).await;
+            let total_size_val = task.total_size.load(Ordering::Relaxed);
+            if total_size_val > 0 {
+                let _ = file.set_len(total_size_val).await;
             }
 
             // Initialize connection chunks
             let mut chunks = vec![];
-            if task.total_size > 0 {
-                let chunk_size = task.total_size / num_chunks;
+            if total_size_val > 0 {
+                let chunk_size = total_size_val / num_chunks;
                 for i in 0..num_chunks {
                     let start = i * chunk_size;
                     let end = if i == num_chunks - 1 {
-                        task.total_size - 1
+                        total_size_val - 1
                     } else {
                         (i + 1) * chunk_size - 1
                     };
@@ -296,7 +297,6 @@ impl DownloadManager {
         let id_clone = task.id.clone();
         let filename_clone = task.filename.clone();
         let save_path_clone = task.save_path.clone();
-        let total_size = task.total_size;
         let downloaded_counter = task.downloaded.clone();
         let status_ref = task.status.clone();
         let mut abort_rx = abort_tx.subscribe();
@@ -304,6 +304,7 @@ impl DownloadManager {
         let task_speed = task.speed.clone();
         let task_eta = task.eta.clone();
         let manager_for_save = self.clone();
+        let task_for_reporting = task.clone();
 
         // Speed & Progress reporting loop
         tokio::spawn(async move {
@@ -335,8 +336,9 @@ impl DownloadManager {
                         };
                         *speed_guard = speed;
 
-                        let eta = if speed > 1024.0 && total_size > current_bytes {
-                            let rem = total_size - current_bytes;
+                        let current_total_size = task_for_reporting.total_size.load(Ordering::Relaxed);
+                        let eta = if speed > 1024.0 && current_total_size > current_bytes {
+                            let rem = current_total_size - current_bytes;
                             let rem_secs = (rem as f64 / speed).round() as u64;
                             if rem_secs >= 3600 {
                                 let h = rem_secs / 3600;
@@ -369,7 +371,7 @@ impl DownloadManager {
                             id: id_clone.clone(),
                             filename: filename_clone.clone(),
                             save_path: save_path_clone.clone(),
-                            total_size,
+                            total_size: current_total_size,
                             downloaded: current_bytes,
                             speed,
                             eta,
@@ -413,18 +415,19 @@ impl DownloadManager {
         // Channel: async readers → single blocking writer (up to 128 chunks = 64 MB buffered)
         let (tx, rx) = std::sync::mpsc::sync_channel::<(u64, Vec<u8>)>(128);
         let downloaded_for_writer = task.downloaded.clone();
-        let writer_total_size = task.total_size;
+        let task_for_writer = task.clone();
 
         let writer_handle = tokio::task::spawn_blocking(move || {
             let mut f = std_file;
             for (write_pos, buf) in rx {
+                let current_total_size = task_for_writer.total_size.load(Ordering::Relaxed);
                 // Hard cap: never write beyond total file size
-                if writer_total_size > 0 {
+                if current_total_size > 0 {
                     let already = downloaded_for_writer.load(Ordering::Relaxed);
-                    if already >= writer_total_size {
+                    if already >= current_total_size {
                         continue; // skip, but don't break because other workers might be draining
                     }
-                    let allowed = (writer_total_size - already).min(buf.len() as u64) as usize;
+                    let allowed = (current_total_size - already).min(buf.len() as u64) as usize;
                     let safe_buf = &buf[..allowed];
                     if f.seek(std::io::SeekFrom::Start(write_pos)).is_ok() {
                         if f.write_all(safe_buf).is_ok() {
@@ -480,6 +483,16 @@ impl DownloadManager {
                 if !res.status().is_success() {
                     eprintln!("[Rust Engine] Worker HTTP request failed: {}", res.status());
                     return;
+                }
+
+                if task_clone.total_size.load(Ordering::Relaxed) == 0 {
+                    if let Some(content_length) = res.headers()
+                        .get(reqwest::header::CONTENT_LENGTH)
+                        .and_then(|val| val.to_str().ok())
+                        .and_then(|s| s.parse::<u64>().ok())
+                    {
+                        task_clone.total_size.store(content_length, Ordering::Relaxed);
+                    }
                 }
 
                 let mut stream = res.bytes_stream();
@@ -585,9 +598,11 @@ impl DownloadManager {
 
         if !is_aborted {
             let downloaded_bytes = task.downloaded.load(Ordering::Relaxed);
-            if task.total_size > 0 && downloaded_bytes >= task.total_size {
+            let total_size_val = task.total_size.load(Ordering::Relaxed);
+            if total_size_val > 0 && downloaded_bytes >= total_size_val {
                 *task.status.write().await = DownloadStatus::Completed;
-            } else if task.total_size == 0 && downloaded_bytes > 0 {
+            } else if total_size_val == 0 && downloaded_bytes > 0 {
+                task.total_size.store(downloaded_bytes, Ordering::Relaxed);
                 *task.status.write().await = DownloadStatus::Completed;
             } else {
                 *task.status.write().await = DownloadStatus::Failed("Download incomplete".to_string());
@@ -598,7 +613,7 @@ impl DownloadManager {
                 id: task.id.clone(),
                 filename: task.filename.clone(),
                 save_path: task.save_path.clone(),
-                total_size: task.total_size,
+                total_size: task.total_size.load(Ordering::Relaxed),
                 downloaded: task.downloaded.load(Ordering::Relaxed),
                 speed: 0.0,
                 eta: "0s".to_string(),
@@ -634,7 +649,7 @@ impl DownloadManager {
                 id: task.id.clone(),
                 filename: task.filename.clone(),
                 save_path: task.save_path.clone(),
-                total_size: task.total_size,
+                total_size: task.total_size.load(Ordering::Relaxed),
                 downloaded: task.downloaded.load(Ordering::Relaxed),
                 speed: 0.0,
                 eta: "---".to_string(),
@@ -676,7 +691,7 @@ impl DownloadManager {
                 save_path: task.save_path.clone(),
                 cookie: task.cookie.clone(),
                 referrer: task.referrer.clone(),
-                total_size: task.total_size,
+                total_size: AtomicU64::new(task.total_size.load(Ordering::Relaxed)),
                 downloaded: task.downloaded.clone(),
                 status: task.status.clone(),
                 abort_tx: Some(abort_tx),
@@ -720,7 +735,7 @@ impl DownloadManager {
                 id: task.id.clone(),
                 filename: task.filename.clone(),
                 save_path: task.save_path.clone(),
-                total_size: task.total_size,
+                total_size: task.total_size.load(Ordering::Relaxed),
                 downloaded: task.downloaded.load(Ordering::Relaxed),
                 speed: 0.0,
                 eta: "---".to_string(),
@@ -773,7 +788,7 @@ impl DownloadManager {
                 id: task.id.clone(),
                 filename: task.filename.clone(),
                 save_path: task.save_path.clone(),
-                total_size: task.total_size,
+                total_size: task.total_size.load(Ordering::Relaxed),
                 downloaded: task.downloaded.load(Ordering::Relaxed),
                 speed: 0.0,
                 eta: "---".to_string(),
@@ -800,7 +815,8 @@ impl DownloadManager {
                 let mut status = task.status.write().await;
                 if *status == DownloadStatus::Trash {
                     let downloaded = task.downloaded.load(Ordering::Relaxed);
-                    if task.total_size > 0 && downloaded >= task.total_size {
+                    let total_size_val = task.total_size.load(Ordering::Relaxed);
+                    if total_size_val > 0 && downloaded >= total_size_val {
                         *status = DownloadStatus::Completed;
                     } else {
                         *status = DownloadStatus::Paused;
@@ -813,7 +829,7 @@ impl DownloadManager {
                 id: task.id.clone(),
                 filename: task.filename.clone(),
                 save_path: task.save_path.clone(),
-                total_size: task.total_size,
+                total_size: task.total_size.load(Ordering::Relaxed),
                 downloaded: task.downloaded.load(Ordering::Relaxed),
                 speed: 0.0,
                 eta: "---".to_string(),
@@ -853,7 +869,7 @@ impl DownloadManager {
                 save_path: task.save_path.clone(),
                 cookie: task.cookie.clone(),
                 referrer: task.referrer.clone(),
-                total_size: task.total_size,
+                total_size: AtomicU64::new(task.total_size.load(Ordering::Relaxed)),
                 downloaded: Arc::new(AtomicU64::new(0)),
                 status: Arc::new(RwLock::new(DownloadStatus::Queued)),
                 abort_tx: Some(abort_tx),
@@ -896,7 +912,7 @@ impl DownloadManager {
                 id: task.id.clone(),
                 filename: task.filename.clone(),
                 save_path: task.save_path.clone(),
-                total_size: task.total_size,
+                total_size: task.total_size.load(Ordering::Relaxed),
                 downloaded: current_bytes,
                 speed,
                 eta,
@@ -920,7 +936,7 @@ impl DownloadManager {
                 id: task.id.clone(),
                 filename: task.filename.clone(),
                 save_path: task.save_path.clone(),
-                total_size: task.total_size,
+                total_size: task.total_size.load(Ordering::Relaxed),
                 downloaded: current_bytes,
                 speed,
                 eta,
