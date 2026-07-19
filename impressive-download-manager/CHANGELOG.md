@@ -1,5 +1,12 @@
 # CHANGELOG
 
+## [0.2.3] – 2026-07-19
+
+### Fixed
+- Resolved window button freeze by fixing ABBA deadlock in `engine.rs` (app_handle/tasks lock order).
+- Fixed download tasks not syncing/displaying in the Tauri app UI.
+- Updated version numbers across Cargo.toml, package.json, tauri.conf.json.
+
 ## [0.1.2] – 2026-07-18
 
 ### Added
@@ -20,7 +27,7 @@
 - **Removed duplicated header** inside the captured‑download popup – now only the native window title is shown.
 - **Popup height** reduced to `370 px` to fit the new layout without scrolling.
 - **Liquid‑fill animation handling**:
-  - Paused & completed states now only pause the animation (no background‑color overrides), preserving the file‑type color.
+  - Paused \& completed states now only pause the animation (no background‑color overrides), preserving the file‑type color.
   - Completed state adds a subtle opacity reduction for a polished finish.
 - **Added `popupSize` React state** to carry the estimated size from the backend to the UI.
 - **Added `executables` entry** in `getFileCategory` (App.tsx).
