@@ -683,20 +683,23 @@ impl DownloadManager {
         }
     }
 
-    pub async fn resume_download(&self, id: &str) -> Result<(), String> {
-        let app_handle_opt = self.app_handle.lock().await.clone();
+    pub async fn resume_download(self: &Arc<Self>, id: &str) -> Result<(), String> {
         let mut tasks = self.tasks.write().await;
         if let Some(task) = tasks.get_mut(id) {
+            let chunks_clone = {
+                let chunks_lock = task.chunks.lock().unwrap();
+                chunks_lock.clone()
+            };
+
             {
-                let mut status = task.status.lock().unwrap();
-                if *status != DownloadStatus::Paused && !matches!(*status, DownloadStatus::Failed(_)) {
-                    return Err("Task is not paused or failed".to_string());
+                let mut status_lock = task.status.lock().unwrap();
+                if *status_lock == DownloadStatus::Completed || *status_lock == DownloadStatus::Downloading {
+                    return Ok(());
                 }
-                *status = DownloadStatus::Queued;
+                *status_lock = DownloadStatus::Queued;
             }
 
-            let accept_ranges = task.chunks.lock().unwrap().len() > 1;
-            let chunks_clone = task.chunks.lock().unwrap().clone();
+            let accept_ranges = chunks_clone.len() > 1;
 
             let (abort_tx, _) = broadcast::channel(1);
             let updated_task = Arc::new(DownloadTask {
@@ -717,13 +720,7 @@ impl DownloadManager {
 
             tasks.insert(id.to_string(), updated_task.clone());
 
-            let theme_val = self.theme_mode.lock().await.clone();
-            let manager_clone = Arc::new(Self {
-                tasks: RwLock::new(tasks.clone()),
-                app_handle: Mutex::new(app_handle_opt),
-                client: self.client.clone(),
-                theme_mode: Mutex::new(theme_val),
-            });
+            let manager_clone = self.clone();
 
             tokio::spawn(async move {
                 if let Err(e) = manager_clone.run_task(updated_task, accept_ranges).await {
@@ -869,8 +866,7 @@ impl DownloadManager {
         }
     }
 
-    pub async fn redownload_task(&self, id: &str) -> Result<(), String> {
-        let app_handle_opt = self.app_handle.lock().await.clone();
+    pub async fn redownload_task(self: &Arc<Self>, id: &str) -> Result<(), String> {
         let mut tasks = self.tasks.write().await;
         if let Some(task) = tasks.get_mut(id) {
             if let Some(ref tx) = task.abort_tx {
@@ -901,13 +897,7 @@ impl DownloadManager {
 
             tasks.insert(id.to_string(), updated_task.clone());
 
-            let theme_val = self.theme_mode.lock().await.clone();
-            let manager_clone = Arc::new(Self {
-                tasks: RwLock::new(tasks.clone()),
-                app_handle: Mutex::new(app_handle_opt),
-                client: self.client.clone(),
-                theme_mode: Mutex::new(theme_val),
-            });
+            let manager_clone = self.clone();
 
             tokio::spawn(async move {
                 if let Err(e) = manager_clone.run_task(updated_task, accept_ranges).await {

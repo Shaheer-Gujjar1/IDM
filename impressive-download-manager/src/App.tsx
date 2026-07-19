@@ -142,7 +142,7 @@ function App() {
       }
       document.documentElement.setAttribute("data-theme", resolvedTheme);
       
-      invoke("sync_theme_mode", { mode: resolvedTheme }).catch(console.error);
+      invoke("sync_theme_mode", { theme_mode: resolvedTheme }).catch(console.error);
     };
 
     applyTheme();
@@ -250,19 +250,26 @@ function App() {
         })
         .catch(console.error);
     }
+  }, []);
 
-    // Workaround for Wayland GTK mapping bug:
-    // Window starts hidden in tauri.conf.json. Once React is ready, we show it.
-    // If we're on the main window, we trigger a rapid maximize/unmaximize 
-    // to force Wayland/GTK to map the boundaries properly without crashing.
-    setTimeout(async () => {
-      const win = getCurrentWindow();
-      if (!mode) {
-        await win.maximize();
-        await win.unmaximize();
-      }
-      await win.show();
-    }, 150);
+  // Workaround for Wayland GTK mapping bug:
+  // After the window is visible and mapped on the screen (~500ms), we trigger a quick
+  // maximize and unmaximize sequence to force the GNOME compositor to recalculate
+  // titlebar decoration hit-test boundaries.
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    const mode = params.get("popup");
+    if (!mode) {
+      setTimeout(async () => {
+        try {
+          const win = getCurrentWindow();
+          await win.maximize();
+          await win.unmaximize();
+        } catch (e) {
+          console.error("Failed to apply Wayland layout fix:", e);
+        }
+      }, 500);
+    }
   }, []);
 
   // Poll to keep main dashboard synced with background downloads

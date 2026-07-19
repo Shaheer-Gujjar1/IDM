@@ -15,13 +15,13 @@
         "title": "IDM (Impressive Download Manager)",
         "width": 800,
         "height": 600,
-        "visible": false,
         "decorations": true,
         "transparent": false,
         "resizable": true,
         "maximizable": true,
         "minimizable": true,
-        "closable": true
+        "closable": true,
+        "center": false
       }
     ],
     "security": {

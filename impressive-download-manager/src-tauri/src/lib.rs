@@ -120,7 +120,6 @@ async fn refresh_download_link(
         )
         .title("Refreshing Link...")
         .inner_size(520.0, 300.0)
-        .center()
         .build()
         .map_err(|e| e.to_string())?;
         
@@ -286,7 +285,6 @@ async fn resume_and_open_progress(
         )
         .title("Downloading...")
         .inner_size(520.0, 340.0)
-        .center()
         .build()
         .map_err(|e| e.to_string())?;
     }
@@ -405,14 +403,7 @@ pub fn run() {
                 std::process::exit(0);
             }
 
-            // Workaround for GTK/Wayland titlebar freeze on startup:
-            // Forcing a hide/show or size change causes GTK to map the titlebar boundaries properly.
-            if let Some(main_window) = app.get_webview_window("main") {
-                let _ = main_window.hide();
-                let _ = main_window.show();
-            }
-
-            // Removed manual set_icon to prevent Wayland decoration freeze
+            // Removed temporary Wayland workaround blocks as we now force X11 backend in main.rs
 
             let handle = app.handle().clone();
             let handle_for_server = app.handle().clone();
