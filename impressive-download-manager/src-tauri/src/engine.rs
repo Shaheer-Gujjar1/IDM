@@ -599,6 +599,11 @@ impl DownloadManager {
         // Wait for the single writer thread to finish flushing to disk
         let _ = writer_handle.await;
 
+        let is_deleted = !self.tasks.read().await.contains_key(&task.id);
+        if is_deleted {
+            return Ok(());
+        }
+
         let is_aborted = {
             let s = task.status.lock().unwrap();
             *s == DownloadStatus::Paused
