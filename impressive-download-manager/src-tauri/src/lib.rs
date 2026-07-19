@@ -294,6 +294,16 @@ async fn resume_and_open_progress(
 }
 
 #[tauri::command]
+async fn sync_theme_mode(
+    theme_mode: String,
+    manager: State<'_, Arc<DownloadManager>>,
+) -> Result<(), String> {
+    *manager.theme_mode.lock().await = theme_mode;
+    Ok(())
+}
+
+
+#[tauri::command]
 async fn redownload_and_open_progress(
     id: String,
     app_handle: tauri::AppHandle,
@@ -468,11 +478,14 @@ pub fn run() {
                                 
                                 // Handle CORS Preflight request
                                 if req_str.starts_with("OPTIONS") {
-                                    let response = "HTTP/1.1 204 No Content\r\n\
+                                    let theme = manager.theme_mode.lock().await.clone();
+                                    let response = format!("HTTP/1.1 204 No Content\r\n\
                                                     Access-Control-Allow-Origin: *\r\n\
                                                     Access-Control-Allow-Methods: POST, OPTIONS\r\n\
                                                     Access-Control-Allow-Headers: Content-Type\r\n\
-                                                    Access-Control-Max-Age: 86400\r\n\r\n";
+                                                    Access-Control-Expose-Headers: X-App-Theme\r\n\
+                                                    X-App-Theme: {}\r\n\
+                                                    Access-Control-Max-Age: 86400\r\n\r\n", theme);
                                     let _ = stream.write_all(response.as_bytes()).await;
                                     return;
                                 }
@@ -726,7 +739,8 @@ pub fn run() {
             open_complete_window,
             close_window,
             get_download_progress,
-            get_all_downloads
+            get_all_downloads,
+            sync_theme_mode
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

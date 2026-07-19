@@ -133,12 +133,16 @@ function App() {
     localStorage.setItem("theme_mode", themeMode);
     
     const applyTheme = () => {
+      let resolvedTheme = "dark";
       if (themeMode === "system") {
         const isDark = window.matchMedia("(prefers-color-scheme: dark)").matches;
-        document.documentElement.setAttribute("data-theme", isDark ? "dark" : "light");
+        resolvedTheme = isDark ? "dark" : "light";
       } else {
-        document.documentElement.setAttribute("data-theme", themeMode);
+        resolvedTheme = themeMode;
       }
+      document.documentElement.setAttribute("data-theme", resolvedTheme);
+      
+      invoke("sync_theme_mode", { themeMode: resolvedTheme }).catch(console.error);
     };
 
     applyTheme();

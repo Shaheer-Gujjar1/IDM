@@ -72,6 +72,7 @@ pub struct DownloadManager {
     pub tasks: RwLock<HashMap<String, Arc<DownloadTask>>>,
     pub app_handle: Mutex<Option<tauri::AppHandle>>,
     pub client: reqwest::Client,
+    pub theme_mode: Mutex<String>,
 }
 
 impl DownloadManager {
@@ -88,6 +89,7 @@ impl DownloadManager {
             tasks: RwLock::new(HashMap::new()),
             app_handle: Mutex::new(None),
             client,
+            theme_mode: Mutex::new("dark".to_string()),
         }
     }
 

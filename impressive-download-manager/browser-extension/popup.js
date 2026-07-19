@@ -6,14 +6,14 @@ document.addEventListener('DOMContentLoaded', async () => {
   const linkList = document.getElementById('link-list');
   const btnAddCurrent = document.getElementById('btn-add-manually');
 
-  // 1. Ping the Tauri App on port 9600 to check connection status
+  // 1. Ping the Tauri App on port 9600 to check connection status and sync theme
   async function checkAppConnection() {
     try {
       const controller = new AbortController();
       const timeoutId = setTimeout(() => controller.abort(), 1200);
 
       // Simple preflight OPTIONS ping
-      await fetch(`http://127.0.0.1:${PORT}/download`, {
+      const response = await fetch(`http://127.0.0.1:${PORT}/download`, {
         method: 'OPTIONS',
         mode: 'cors',
         signal: controller.signal
@@ -22,6 +22,12 @@ document.addEventListener('DOMContentLoaded', async () => {
       clearTimeout(timeoutId);
       statusDot.className = 'status-dot connected';
       statusText.textContent = 'App Connected';
+
+      // Dynamically sync theme using X-App-Theme header returned by backend OPTIONS server
+      const appTheme = response.headers.get('X-App-Theme');
+      if (appTheme === 'light' || appTheme === 'dark') {
+        document.documentElement.setAttribute('data-theme', appTheme);
+      }
     } catch (err) {
       statusDot.className = 'status-dot';
       statusText.textContent = 'App Offline';
@@ -30,25 +36,6 @@ document.addEventListener('DOMContentLoaded', async () => {
 
   // 2. Fetch and list captured items for current tab
   async function loadCapturedLinks() {
-    const state = await chrome.storage.local.get('extensionEnabled');
-    const isEnabled = state.extensionEnabled !== false;
-
-    if (!isEnabled) {
-      linkList.innerHTML = `
-        <div class="empty-state" style="color: #64748b;">
-          Interception is temporarily paused.<br>Turn it on to resume capturing.
-        </div>
-      `;
-      btnAddCurrent.disabled = true;
-      btnAddCurrent.style.opacity = '0.5';
-      btnAddCurrent.style.cursor = 'not-allowed';
-      return;
-    }
-
-    btnAddCurrent.disabled = false;
-    btnAddCurrent.style.opacity = '1';
-    btnAddCurrent.style.cursor = 'pointer';
-
     const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
     if (!tab) return;
 
@@ -137,9 +124,6 @@ document.addEventListener('DOMContentLoaded', async () => {
 
   // 3. Send current tab directly
   btnAddCurrent.addEventListener('click', async () => {
-    const state = await chrome.storage.local.get('extensionEnabled');
-    if (state.extensionEnabled === false) return;
-
     const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
     if (!tab || !tab.url) return;
 
@@ -168,35 +152,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     });
   });
 
-  // Power switch toggle handling
-  const powerCard = document.getElementById('power-card');
-  const powerStatus = document.getElementById('power-status');
-  const powerToggleBtn = document.getElementById('power-toggle-btn');
-
-  function updatePowerUI(enabled) {
-    if (enabled) {
-      powerCard.classList.remove('disabled');
-      powerStatus.textContent = 'Active';
-      powerStatus.style.color = '#00f0ff';
-    } else {
-      powerCard.classList.add('disabled');
-      powerStatus.textContent = 'Paused Temporary';
-      powerStatus.style.color = '#64748b';
-    }
-  }
-
-  // Bind click toggle
-  powerToggleBtn.addEventListener('click', async () => {
-    const current = await chrome.storage.local.get('extensionEnabled');
-    const newState = current.extensionEnabled === false ? true : false;
-    await chrome.storage.local.set({ extensionEnabled: newState });
-    updatePowerUI(newState);
-    await loadCapturedLinks();
-  });
-
   // Run checks
-  const initialState = await chrome.storage.local.get('extensionEnabled');
-  updatePowerUI(initialState.extensionEnabled !== false);
   await checkAppConnection();
   await loadCapturedLinks();
 });
