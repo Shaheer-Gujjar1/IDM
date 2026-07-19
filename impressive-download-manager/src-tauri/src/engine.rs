@@ -96,8 +96,11 @@ impl DownloadManager {
     }
 
     pub async fn save_history(&self) -> Result<(), String> {
-        let app_handle_guard = self.app_handle.lock().await;
-        if let Some(ref handle) = *app_handle_guard {
+        let handle_opt = {
+            let guard = self.app_handle.lock().await;
+            guard.clone()
+        };
+        if let Some(handle) = handle_opt {
             use tauri::Manager;
             let app_dir = handle.path().app_data_dir().map_err(|e| e.to_string())?;
             let _ = tokio::fs::create_dir_all(&app_dir).await;
@@ -131,8 +134,11 @@ impl DownloadManager {
     }
 
     pub async fn load_history(&self) -> Result<(), String> {
-        let app_handle_guard = self.app_handle.lock().await;
-        if let Some(ref handle) = *app_handle_guard {
+        let handle_opt = {
+            let guard = self.app_handle.lock().await;
+            guard.clone()
+        };
+        if let Some(handle) = handle_opt {
             use tauri::Manager;
             let app_dir = handle.path().app_data_dir().map_err(|e| e.to_string())?;
             let history_path = app_dir.join("history.json");
@@ -631,6 +637,7 @@ impl DownloadManager {
     }
 
     pub async fn pause_download(&self, id: &str) -> Result<(), String> {
+        let app_handle_opt = self.app_handle.lock().await.clone();
         let tasks = self.tasks.read().await;
         if let Some(task) = tasks.get(id) {
             {
@@ -656,7 +663,7 @@ impl DownloadManager {
                 status: DownloadStatus::Paused,
                 file_exists: std::path::Path::new(&task.save_path).exists(),
             };
-            if let Some(ref handle) = self.app_handle.lock().await.clone() {
+            if let Some(ref handle) = app_handle_opt {
                 use tauri::Emitter;
                 let _ = handle.emit("download-progress", progress);
             }
@@ -670,6 +677,7 @@ impl DownloadManager {
     }
 
     pub async fn resume_download(&self, id: &str) -> Result<(), String> {
+        let app_handle_opt = self.app_handle.lock().await.clone();
         let mut tasks = self.tasks.write().await;
         if let Some(task) = tasks.get_mut(id) {
             {
@@ -704,7 +712,7 @@ impl DownloadManager {
 
             let manager_clone = Arc::new(Self {
                 tasks: RwLock::new(tasks.clone()),
-                app_handle: Mutex::new(self.app_handle.lock().await.clone()),
+                app_handle: Mutex::new(app_handle_opt),
                 client: self.client.clone(),
             });
 
@@ -723,6 +731,7 @@ impl DownloadManager {
     }
 
     pub async fn cancel_download(&self, id: &str) -> Result<(), String> {
+        let app_handle_opt = self.app_handle.lock().await.clone();
         let tasks = self.tasks.read().await;
         if let Some(task) = tasks.get(id) {
             if let Some(ref tx) = task.abort_tx {
@@ -742,7 +751,7 @@ impl DownloadManager {
                 status: DownloadStatus::Failed("Cancelled by user".to_string()),
                 file_exists: std::path::Path::new(&task.save_path).exists(),
             };
-            if let Some(ref handle) = self.app_handle.lock().await.clone() {
+            if let Some(ref handle) = app_handle_opt {
                 use tauri::Emitter;
                 let _ = handle.emit("download-progress", progress);
             }
@@ -770,6 +779,7 @@ impl DownloadManager {
     }
 
     pub async fn trash_task(&self, id: &str, delete_file: bool) -> Result<(), String> {
+        let app_handle_opt = self.app_handle.lock().await.clone();
         let tasks = self.tasks.read().await;
         if let Some(task) = tasks.get(id) {
             if let Some(ref tx) = task.abort_tx {
@@ -795,7 +805,7 @@ impl DownloadManager {
                 status: DownloadStatus::Trash,
                 file_exists: std::path::Path::new(&task.save_path).exists(),
             };
-            if let Some(ref handle) = self.app_handle.lock().await.clone() {
+            if let Some(ref handle) = app_handle_opt {
                 use tauri::Emitter;
                 let _ = handle.emit("download-progress", progress);
             }
@@ -809,6 +819,7 @@ impl DownloadManager {
     }
 
     pub async fn restore_task(&self, id: &str) -> Result<(), String> {
+        let app_handle_opt = self.app_handle.lock().await.clone();
         let tasks = self.tasks.read().await;
         if let Some(task) = tasks.get(id) {
             let final_status = {
@@ -836,7 +847,7 @@ impl DownloadManager {
                 status: final_status,
                 file_exists: std::path::Path::new(&task.save_path).exists(),
             };
-            if let Some(ref handle) = self.app_handle.lock().await.clone() {
+            if let Some(ref handle) = app_handle_opt {
                 use tauri::Emitter;
                 let _ = handle.emit("download-progress", progress);
             }
@@ -850,6 +861,7 @@ impl DownloadManager {
     }
 
     pub async fn redownload_task(&self, id: &str) -> Result<(), String> {
+        let app_handle_opt = self.app_handle.lock().await.clone();
         let mut tasks = self.tasks.write().await;
         if let Some(task) = tasks.get_mut(id) {
             if let Some(ref tx) = task.abort_tx {
@@ -882,7 +894,7 @@ impl DownloadManager {
 
             let manager_clone = Arc::new(Self {
                 tasks: RwLock::new(tasks.clone()),
-                app_handle: Mutex::new(self.app_handle.lock().await.clone()),
+                app_handle: Mutex::new(app_handle_opt),
                 client: self.client.clone(),
             });
 
