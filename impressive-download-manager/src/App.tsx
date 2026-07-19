@@ -142,7 +142,7 @@ function App() {
       }
       document.documentElement.setAttribute("data-theme", resolvedTheme);
       
-      invoke("sync_theme_mode", { themeMode: resolvedTheme }).catch(console.error);
+      invoke("sync_theme_mode", { mode: resolvedTheme }).catch(console.error);
     };
 
     applyTheme();
