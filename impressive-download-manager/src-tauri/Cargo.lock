@@ -1811,7 +1811,7 @@ dependencies = [
 
 [[package]]
 name = "impressive-download-manager"
-version = "0.2.5"
+version = "0.2.3"
 dependencies = [
  "futures-util",
  "reqwest 0.12.28",
