@@ -231,18 +231,17 @@ function App() {
       setPopupTaskId(taskId);
       setPopupSize(size);
       
-      if (mode === "progress") {
-        // Fetch progress state immediately from Rust backend to prevent Connecting... freeze
-        if (taskId) {
-          invoke<DownloadProgress | null>("get_download_progress", { id: taskId })
-            .then((prog) => {
-              if (prog) setPopupProgress(prog);
-            })
-            .catch(console.error);
-        }
+      // Fetch progress state immediately from Rust backend to prevent Connecting... freeze
+      if (mode === "progress" && taskId) {
+        invoke<DownloadProgress | null>("get_download_progress", { id: taskId })
+          .then((prog) => {
+            if (prog) setPopupProgress(prog);
+          })
+          .catch(console.error);
       } else if (mode === "complete") {
         setPopupFilename(params.get("filename") || "");
       }
+    } else {
       // Main dashboard: fetch all active/completed downloads from backend
       invoke<DownloadProgress[]>("get_all_downloads")
         .then((list) => {
@@ -252,25 +251,7 @@ function App() {
     }
   }, []);
 
-  // Workaround for Wayland GTK mapping bug:
-  // After the window is visible and mapped on the screen (~500ms), we trigger a quick
-  // maximize and unmaximize sequence to force the GNOME compositor to recalculate
-  // titlebar decoration hit-test boundaries.
-  useEffect(() => {
-    const params = new URLSearchParams(window.location.search);
-    const mode = params.get("popup");
-    if (!mode) {
-      setTimeout(async () => {
-        try {
-          const win = getCurrentWindow();
-          await win.maximize();
-          await win.unmaximize();
-        } catch (e) {
-          console.error("Failed to apply Wayland layout fix:", e);
-        }
-      }, 500);
-    }
-  }, []);
+
 
   // Poll to keep main dashboard synced with background downloads
   useEffect(() => {

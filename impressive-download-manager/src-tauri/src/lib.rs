@@ -301,6 +301,8 @@ async fn sync_theme_mode(
 }
 
 
+
+
 #[tauri::command]
 async fn redownload_and_open_progress(
     id: String,
