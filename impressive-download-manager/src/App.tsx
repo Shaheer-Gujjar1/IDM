@@ -243,7 +243,6 @@ function App() {
       } else if (mode === "complete") {
         setPopupFilename(params.get("filename") || "");
       }
-    } else {
       // Main dashboard: fetch all active/completed downloads from backend
       invoke<DownloadProgress[]>("get_all_downloads")
         .then((list) => {
@@ -251,6 +250,19 @@ function App() {
         })
         .catch(console.error);
     }
+
+    // Workaround for Wayland GTK mapping bug:
+    // Window starts hidden in tauri.conf.json. Once React is ready, we show it.
+    // If we're on the main window, we trigger a rapid maximize/unmaximize 
+    // to force Wayland/GTK to map the boundaries properly without crashing.
+    setTimeout(async () => {
+      const win = getCurrentWindow();
+      if (!mode) {
+        await win.maximize();
+        await win.unmaximize();
+      }
+      await win.show();
+    }, 150);
   }, []);
 
   // Poll to keep main dashboard synced with background downloads

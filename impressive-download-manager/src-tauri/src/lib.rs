@@ -405,12 +405,14 @@ pub fn run() {
                 std::process::exit(0);
             }
 
-            // Set window icon programmatically (particularly important on Linux)
+            // Workaround for GTK/Wayland titlebar freeze on startup:
+            // Forcing a hide/show or size change causes GTK to map the titlebar boundaries properly.
             if let Some(main_window) = app.get_webview_window("main") {
-                if let Some(icon) = app.default_window_icon() {
-                    let _ = main_window.set_icon(icon.clone());
-                }
+                let _ = main_window.hide();
+                let _ = main_window.show();
             }
+
+            // Removed manual set_icon to prevent Wayland decoration freeze
 
             let handle = app.handle().clone();
             let handle_for_server = app.handle().clone();
