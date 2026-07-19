@@ -486,18 +486,23 @@ pub fn run() {
                                 }
 
                                  // Check if it is a request to show the main window from a second instance
-                                 if req_str.starts_with("POST /show-main") || req_str.contains("POST /show-main") {
-                                     if let Some(main_win) = app_handle.get_webview_window("main") {
-                                         let _ = main_win.show();
-                                         let _ = main_win.set_focus();
-                                     }
-                                     let response = "HTTP/1.1 200 OK\r\n\
-                                                     Access-Control-Allow-Origin: *\r\n\
-                                                     Content-Type: text/plain\r\n\r\n\
-                                                     ok";
-                                     let _ = stream.write_all(response.as_bytes()).await;
-                                     return;
-                                 }
+                                  if req_str.starts_with("POST /show-main") || req_str.contains("POST /show-main") {
+                                      if let Some(main_win) = app_handle.get_webview_window("main") {
+                                          let _ = main_win.show();
+                                          let _ = main_win.set_focus();
+                                          #[cfg(target_os = "linux")]
+                                          {
+                                              let _ = main_win.set_resizable(false);
+                                              let _ = main_win.set_resizable(true);
+                                          }
+                                      }
+                                      let response = "HTTP/1.1 200 OK\r\n\
+                                                      Access-Control-Allow-Origin: *\r\n\
+                                                      Content-Type: text/plain\r\n\r\n\
+                                                      ok";
+                                      let _ = stream.write_all(response.as_bytes()).await;
+                                      return;
+                                  }
 
                                  // Check if it is a POST to /download
                                  if req_str.starts_with("POST /download") || req_str.contains("POST /download") {

@@ -1,9 +1,10 @@
 # CHANGELOG
 
-## [0.2.3] – 2026-07-19
+## [0.2.5] – 2026-07-19
 
 ### Fixed
-- Resolved window button freeze on Linux (Wayland) by disabling window transparency (`"transparent": false` in `tauri.conf.json`) to prevent GTK input region mapping issues.
+- Fixed window button freeze when unhiding the background daemon window on Wayland by briefly toggling the `resizable` window property on reshow (forces GTK to rebuild input mapping regions without any visual flash).
+- Resolved cold-start window button freeze on Linux (Wayland) by disabling window transparency (`"transparent": false` in `tauri.conf.json`) to prevent GTK input region mapping issues.
 - Removed the temporary `nudge_window` maximize/unmaximize workaround from the frontend and backend.
 - Resolved window button freeze by fixing ABBA deadlock in `engine.rs` (app_handle/tasks lock order).
 - Fixed download tasks not syncing/displaying in the Tauri app UI.
