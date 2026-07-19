@@ -717,10 +717,12 @@ impl DownloadManager {
 
             tasks.insert(id.to_string(), updated_task.clone());
 
+            let theme_val = self.theme_mode.lock().await.clone();
             let manager_clone = Arc::new(Self {
                 tasks: RwLock::new(tasks.clone()),
                 app_handle: Mutex::new(app_handle_opt),
                 client: self.client.clone(),
+                theme_mode: Mutex::new(theme_val),
             });
 
             tokio::spawn(async move {
@@ -899,10 +901,12 @@ impl DownloadManager {
 
             tasks.insert(id.to_string(), updated_task.clone());
 
+            let theme_val = self.theme_mode.lock().await.clone();
             let manager_clone = Arc::new(Self {
                 tasks: RwLock::new(tasks.clone()),
                 app_handle: Mutex::new(app_handle_opt),
                 client: self.client.clone(),
+                theme_mode: Mutex::new(theme_val),
             });
 
             tokio::spawn(async move {
