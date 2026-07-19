@@ -1,6 +1,32 @@
 // Service worker for Impressive Download Manager Extension
 const PORT = 9600;
 
+let extensionEnabled = true;
+
+// Initialize state
+chrome.storage.local.get("extensionEnabled", (data) => {
+  if (data.extensionEnabled !== undefined) {
+    extensionEnabled = data.extensionEnabled;
+  } else {
+    chrome.storage.local.set({ extensionEnabled: true });
+  }
+});
+
+// Watch changes
+chrome.storage.onChanged.addListener((changes, area) => {
+  if (area === 'local' && changes.extensionEnabled) {
+    extensionEnabled = changes.extensionEnabled.newValue;
+    if (!extensionEnabled) {
+      chrome.action.setBadgeText({ text: "" });
+    }
+  }
+});
+
+// Reset on startup (browser restart)
+chrome.runtime.onStartup.addListener(() => {
+  chrome.storage.local.set({ extensionEnabled: true });
+});
+
 // Setup context menus
 chrome.runtime.onInstalled.addListener(() => {
   chrome.contextMenus.create({
@@ -8,6 +34,7 @@ chrome.runtime.onInstalled.addListener(() => {
     title: "Send Link to Impressive DM",
     contexts: ["link"]
   });
+  chrome.storage.local.set({ extensionEnabled: true });
 });
 
 // Helper to extract cookie headers for a target URL
@@ -23,6 +50,11 @@ async function getCookiesForUrl(url) {
 
 // Intercept browser downloads automatically (Fallback)
 chrome.downloads.onDeterminingFilename.addListener((downloadItem, suggest) => {
+  if (!extensionEnabled) {
+    suggest();
+    return;
+  }
+
   // Only capture active downloads
   if (downloadItem.state && downloadItem.state !== "in_progress") {
     suggest();
@@ -95,6 +127,7 @@ chrome.downloads.onDeterminingFilename.addListener((downloadItem, suggest) => {
 
 // Context Menu action listener
 chrome.contextMenus.onClicked.addListener(async (info, tab) => {
+  if (!extensionEnabled) return;
   if (info.menuItemId === "send-to-impressive-dm" && info.linkUrl) {
     const filename = extractFilename(info.linkUrl);
     const cookies = await getCookiesForUrl(info.linkUrl);
@@ -106,6 +139,7 @@ chrome.contextMenus.onClicked.addListener(async (info, tab) => {
 // Listen to messages from content scripts (media sniffing)
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (message.type === 'MEDIA_DETECTED') {
+    if (!extensionEnabled) return true;
     (async () => {
       const tabId = sender.tab?.id;
       if (!tabId) return;
@@ -193,6 +227,10 @@ function extractFilename(url) {
 // Export sending logic for popup
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (message.type === 'SEND_TO_DESKTOP') {
+    if (!extensionEnabled) {
+      sendResponse({ success: false });
+      return true;
+    }
     (async () => {
       const cookies = await getCookiesForUrl(message.url);
       const referrer = "";

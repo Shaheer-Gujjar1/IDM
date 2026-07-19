@@ -30,6 +30,25 @@ document.addEventListener('DOMContentLoaded', async () => {
 
   // 2. Fetch and list captured items for current tab
   async function loadCapturedLinks() {
+    const state = await chrome.storage.local.get('extensionEnabled');
+    const isEnabled = state.extensionEnabled !== false;
+
+    if (!isEnabled) {
+      linkList.innerHTML = `
+        <div class="empty-state" style="color: #64748b;">
+          Interception is temporarily paused.<br>Turn it on to resume capturing.
+        </div>
+      `;
+      btnAddCurrent.disabled = true;
+      btnAddCurrent.style.opacity = '0.5';
+      btnAddCurrent.style.cursor = 'not-allowed';
+      return;
+    }
+
+    btnAddCurrent.disabled = false;
+    btnAddCurrent.style.opacity = '1';
+    btnAddCurrent.style.cursor = 'pointer';
+
     const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
     if (!tab) return;
 
@@ -118,6 +137,9 @@ document.addEventListener('DOMContentLoaded', async () => {
 
   // 3. Send current tab directly
   btnAddCurrent.addEventListener('click', async () => {
+    const state = await chrome.storage.local.get('extensionEnabled');
+    if (state.extensionEnabled === false) return;
+
     const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
     if (!tab || !tab.url) return;
 
@@ -146,7 +168,35 @@ document.addEventListener('DOMContentLoaded', async () => {
     });
   });
 
+  // Power switch toggle handling
+  const powerCard = document.getElementById('power-card');
+  const powerStatus = document.getElementById('power-status');
+  const powerToggleBtn = document.getElementById('power-toggle-btn');
+
+  function updatePowerUI(enabled) {
+    if (enabled) {
+      powerCard.classList.remove('disabled');
+      powerStatus.textContent = 'Active';
+      powerStatus.style.color = '#00f0ff';
+    } else {
+      powerCard.classList.add('disabled');
+      powerStatus.textContent = 'Paused Temporary';
+      powerStatus.style.color = '#64748b';
+    }
+  }
+
+  // Bind click toggle
+  powerToggleBtn.addEventListener('click', async () => {
+    const current = await chrome.storage.local.get('extensionEnabled');
+    const newState = current.extensionEnabled === false ? true : false;
+    await chrome.storage.local.set({ extensionEnabled: newState });
+    updatePowerUI(newState);
+    await loadCapturedLinks();
+  });
+
   // Run checks
+  const initialState = await chrome.storage.local.get('extensionEnabled');
+  updatePowerUI(initialState.extensionEnabled !== false);
   await checkAppConnection();
   await loadCapturedLinks();
 });

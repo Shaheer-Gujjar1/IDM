@@ -218,6 +218,86 @@
       font-size: 12px;
       font-weight: 800;
     }
+    
+    /* Modern Power Card Style */
+    .power-card {
+      background: linear-gradient(135deg, rgba(20, 24, 35, 0.6) 0%, rgba(10, 12, 18, 0.6) 100%);
+      border: 1px solid rgba(0, 240, 255, 0.15);
+      border-radius: 12px;
+      padding: 12px 16px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      margin-bottom: 16px;
+      box-shadow: 0 4px 20px rgba(0, 0, 0, 0.3), inset 0 1px 0 rgba(255, 255, 255, 0.05);
+      transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+    }
+    
+    .power-card.disabled {
+      border-color: rgba(255, 255, 255, 0.08);
+      opacity: 0.75;
+    }
+    
+    .power-info {
+      display: flex;
+      flex-direction: column;
+      gap: 2px;
+    }
+    
+    .power-title {
+      font-size: 11px;
+      font-weight: 700;
+      color: #94a3b8;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+    }
+    
+    .power-status {
+      font-size: 14px;
+      font-weight: 700;
+      color: #00f0ff;
+      text-shadow: 0 0 10px rgba(0, 240, 255, 0.3);
+      transition: all 0.3s ease;
+    }
+    
+    .power-card.disabled .power-status {
+      color: #64748b;
+      text-shadow: none;
+    }
+    
+    .power-toggle-btn {
+      width: 32px;
+      height: 32px;
+      border-radius: 50%;
+      border: none;
+      background: linear-gradient(135deg, #00f0ff, #8b5cf6);
+      color: #06070a;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      box-shadow: 0 0 12px rgba(0, 240, 255, 0.35);
+      transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+    }
+    
+    .power-toggle-btn:hover {
+      transform: scale(1.05);
+      filter: brightness(1.15);
+    }
+    
+    .power-toggle-btn svg {
+      transition: transform 0.3s ease;
+    }
+    
+    .power-toggle-btn:active svg {
+      transform: scale(0.9);
+    }
+    
+    .power-card.disabled .power-toggle-btn {
+      background: rgba(255, 255, 255, 0.1);
+      color: #64748b;
+      box-shadow: none;
+    }
   </style>
 </head>
 <body>
@@ -230,6 +310,19 @@
       <span class="status-dot" id="status-dot"></span>
       <span id="status-text">Checking app...</span>
     </div>
+  </div>
+
+  <div class="power-card" id="power-card">
+    <div class="power-info">
+      <span class="power-title">Interception Engine</span>
+      <span class="power-status" id="power-status">Active</span>
+    </div>
+    <button class="power-toggle-btn" id="power-toggle-btn" aria-label="Toggle Engine">
+      <svg viewBox="0 0 24 24" width="16" height="16" stroke="currentColor" stroke-width="2.5" fill="none" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M18.36 6.64a9 9 0 1 1-12.73 0"></path>
+        <line x1="12" y1="2" x2="12" y2="12"></line>
+      </svg>
+    </button>
   </div>
 
   <div style="font-size: 11px; text-transform: uppercase; color: #475569; font-weight: 700; margin-bottom: 10px; letter-spacing: 0.5px;">
