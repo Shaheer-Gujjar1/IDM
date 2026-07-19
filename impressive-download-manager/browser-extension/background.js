@@ -1,6 +1,34 @@
 // Service worker for Impressive Download Manager Extension
 const PORT = 9600;
 
+let extensionEnabled = true;
+
+// Initialize state
+chrome.storage.local.get("extensionEnabled", (data) => {
+  if (data.extensionEnabled !== undefined) {
+    extensionEnabled = data.extensionEnabled;
+  } else {
+    chrome.storage.local.set({ extensionEnabled: true });
+  }
+});
+
+// Watch changes
+chrome.storage.onChanged.addListener((changes, area) => {
+  if (area === 'local' && changes.extensionEnabled) {
+    extensionEnabled = changes.extensionEnabled.newValue;
+  }
+});
+
+// Reset on startup (browser restart)
+chrome.runtime.onStartup.addListener(() => {
+  chrome.storage.local.set({ extensionEnabled: true });
+});
+
+// Setup hook on install
+chrome.runtime.onInstalled.addListener(() => {
+  chrome.storage.local.set({ extensionEnabled: true });
+});
+
 // Helper to extract cookie headers for a target URL
 async function getCookiesForUrl(url) {
   try {
@@ -14,6 +42,11 @@ async function getCookiesForUrl(url) {
 
 // Intercept browser downloads automatically (Fallback)
 chrome.downloads.onDeterminingFilename.addListener((downloadItem, suggest) => {
+  if (!extensionEnabled) {
+    suggest();
+    return;
+  }
+
   // Only capture active downloads
   if (downloadItem.state && downloadItem.state !== "in_progress") {
     suggest();
@@ -84,45 +117,6 @@ chrome.downloads.onDeterminingFilename.addListener((downloadItem, suggest) => {
   }
 });
 
-// Listen to messages from content scripts (media sniffing)
-chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
-  if (message.type === 'MEDIA_DETECTED') {
-    (async () => {
-      const tabId = sender.tab?.id;
-      if (!tabId) return;
-
-      const storeKey = `captured_tab_${tabId}`;
-      const data = await chrome.storage.local.get(storeKey);
-      const existing = data[storeKey] || [];
-
-      const updated = [...existing];
-      message.urls.forEach(url => {
-        if (!updated.some(item => item.url === url)) {
-          updated.push({
-            url,
-            filename: extractFilename(url),
-            timestamp: Date.now()
-          });
-        }
-      });
-
-      await chrome.storage.local.set({ [storeKey]: updated });
-      
-      if (updated.length > 0) {
-        await chrome.action.setBadgeText({
-          tabId: tabId,
-          text: String(updated.length)
-        });
-        await chrome.action.setBadgeBackgroundColor({
-          tabId: tabId,
-          color: "#00f0ff"
-        });
-      }
-    })();
-  }
-  return true;
-});
-
 const recentInterceptions = new Map();
 
 // Helper to send payloads to our Tauri backend port 9600
@@ -174,6 +168,10 @@ function extractFilename(url) {
 // Export sending logic for popup
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (message.type === 'SEND_TO_DESKTOP') {
+    if (!extensionEnabled) {
+      sendResponse({ success: false });
+      return true;
+    }
     (async () => {
       const cookies = await getCookiesForUrl(message.url);
       const referrer = "";

@@ -25,8 +25,6 @@
       --power-card-border: rgba(59, 130, 246, 0.15);
       --power-status-active: #60a5fa;
       --power-status-glow: rgba(96, 165, 250, 0.35);
-
-      --scrollbar-thumb: rgba(255, 255, 255, 0.15);
     }
     
     @media (prefers-color-scheme: light) {
@@ -50,14 +48,12 @@
         --power-card-border: rgba(37, 99, 235, 0.15);
         --power-status-active: #2563eb;
         --power-status-glow: rgba(37, 99, 235, 0.15);
-
-        --scrollbar-thumb: rgba(0, 0, 0, 0.15);
       }
     }
     
     body {
       font-family: 'Outfit', sans-serif;
-      width: 340px;
+      width: 320px;
       margin: 0;
       padding: 16px;
       background: var(--bg-primary);
@@ -115,171 +111,6 @@
     .status-dot.connected {
       background: #10b981;
       box-shadow: 0 0 8px rgba(16, 185, 129, 0.5);
-    }
-    
-    .link-list {
-      display: flex;
-      flex-direction: column;
-      gap: 10px;
-      max-height: 240px;
-      overflow-y: auto;
-      padding-right: 2px;
-    }
-
-    .link-list::-webkit-scrollbar {
-      width: 4px;
-    }
-    .link-list::-webkit-scrollbar-track {
-      background: transparent;
-    }
-    .link-list::-webkit-scrollbar-thumb {
-      background: var(--scrollbar-thumb);
-      border-radius: 10px;
-    }
-    
-    .link-item {
-      background: var(--bg-card);
-      border: 1px solid var(--border-color);
-      border-radius: 10px;
-      padding: 10px 12px;
-      display: flex;
-      align-items: center;
-      justify-content: space-between;
-      gap: 12px;
-      box-shadow: 0 2px 6px rgba(0, 0, 0, 0.05);
-      transition: all 0.2s ease;
-    }
-    
-    .link-item:hover {
-      border-color: var(--border-hover);
-      background: var(--bg-card-hover);
-      box-shadow: 0 4px 12px rgba(0, 0, 0, 0.08);
-    }
-    
-    .link-info {
-      display: flex;
-      flex-direction: column;
-      gap: 4px;
-      min-width: 0;
-      flex: 1;
-    }
-    
-    .link-name {
-      font-size: 12px;
-      font-weight: 600;
-      color: var(--text-primary);
-      white-space: nowrap;
-      overflow: hidden;
-      text-overflow: ellipsis;
-    }
-    
-    .link-type {
-      font-size: 10px;
-      color: var(--accent-color);
-      text-transform: uppercase;
-      font-weight: 700;
-      letter-spacing: 0.3px;
-    }
-    
-    .btn-send {
-      background: var(--accent-color);
-      border: none;
-      color: var(--accent-foreground);
-      border-radius: 6px;
-      padding: 6px 12px;
-      font-size: 11px;
-      font-weight: 700;
-      cursor: pointer;
-      display: flex;
-      align-items: center;
-      gap: 4px;
-      box-shadow: 0 2px 6px var(--accent-shadow);
-      transition: all 0.2s ease;
-    }
-    
-    .btn-send:hover {
-      background: var(--accent-hover);
-      box-shadow: 0 4px 10px var(--accent-shadow);
-    }
-    
-    .empty-state {
-      text-align: center;
-      padding: 30px 10px;
-      color: var(--text-secondary);
-      font-size: 12px;
-      line-height: 1.5;
-    }
-    
-    .btn-add-manually {
-      width: 100%;
-      background: var(--bg-secondary);
-      border: 1px solid var(--border-color);
-      border-radius: 10px;
-      color: var(--text-primary);
-      padding: 10px;
-      font-size: 12px;
-      font-weight: 700;
-      cursor: pointer;
-      margin-top: 14px;
-      box-shadow: 0 2px 6px rgba(0, 0, 0, 0.03);
-      transition: all 0.2s ease;
-    }
-    
-    .btn-add-manually:hover {
-      background: var(--bg-card-hover);
-      border-color: var(--border-hover);
-      box-shadow: 0 4px 12px rgba(0, 0, 0, 0.05);
-    }
-    
-    .liquid-progress-container {
-      width: 28px;
-      height: 28px;
-      border-radius: 50%;
-      background: var(--bg-secondary);
-      border: 1px solid var(--border-color);
-      position: relative;
-      overflow: hidden;
-      box-shadow: inset 0 2px 6px rgba(0,0,0,0.15);
-      flex-shrink: 0;
-    }
-    .liquid-fill {
-      position: absolute;
-      bottom: 0; left: 0; right: 0; height: 100%;
-      background: var(--accent-color);
-      transform-origin: bottom;
-      transition: transform 0.2s linear, background 0.3s;
-      transform: translateY(100%);
-    }
-    .liquid-fill::before, .liquid-fill::after {
-      content: "";
-      position: absolute;
-      width: 250%; height: 250%;
-      top: 0; left: 50%;
-      transform: translateX(-50%);
-    }
-    .liquid-fill::before {
-      border-radius: 45%;
-      background: inherit;
-      opacity: 0.5;
-      animation: liquidRotate 3s linear infinite;
-    }
-    .liquid-fill::after {
-      border-radius: 40%;
-      background: inherit;
-      opacity: 0.8;
-      animation: liquidRotate 4s linear infinite;
-    }
-    @keyframes liquidRotate {
-      0% { transform: translateX(-50%) rotate(0deg); }
-      100% { transform: translateX(-50%) rotate(360deg); }
-    }
-    .liquid-icon {
-      position: absolute;
-      top: 0; left: 0; right: 0; bottom: 0;
-      display: flex; align-items: center; justify-content: center;
-      font-size: 12px;
-      font-weight: 800;
-      color: var(--text-primary);
     }
     
     /* Modern Power Card Style */
@@ -362,6 +193,25 @@
       color: var(--text-secondary);
       box-shadow: none;
     }
+
+    .btn-add-manually {
+      width: 100%;
+      background: var(--accent-color);
+      border: 1px solid var(--border-color);
+      border-radius: 10px;
+      color: var(--accent-foreground);
+      padding: 12px;
+      font-size: 13px;
+      font-weight: 700;
+      cursor: pointer;
+      box-shadow: 0 4px 12px var(--accent-shadow);
+      transition: all 0.2s ease;
+    }
+    
+    .btn-add-manually:hover {
+      background: var(--accent-hover);
+      box-shadow: 0 6px 16px var(--accent-shadow);
+    }
   </style>
 </head>
 <body>
@@ -389,15 +239,7 @@
     </button>
   </div>
 
-  <div style="font-size: 11px; text-transform: uppercase; color: var(--text-secondary); font-weight: 700; margin-bottom: 10px; letter-spacing: 0.5px;">
-    Captured Media Links
-  </div>
-
-  <div class="link-list" id="link-list">
-    <!-- Links populated dynamically -->
-  </div>
-
-  <button class="btn-add-manually" id="btn-add-manually">Send Current Tab to App</button>
+  <button class="btn-add-manually" id="btn-add-manually">Download this page as HTML</button>
   
   <script src="popup.js"></script>
 </body>
