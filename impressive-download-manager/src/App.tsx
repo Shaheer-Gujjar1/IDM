@@ -306,36 +306,36 @@ function App() {
     return () => clearInterval(interval);
   }, [popupMode]);
 
-  // Dedicated polling loop for the progress popup window (bypasses all event/closure issues)
+  // Dedicated event listener for the progress popup window (instant zero-delay updates)
   useEffect(() => {
     if (popupMode !== "progress" || !popupTaskId) return;
 
-    const id = popupTaskId;
-    let stopped = false;
+    let unlisten: (() => void) | undefined;
 
-    const poll = async () => {
-      while (!stopped) {
-        try {
-          const prog = await invoke<DownloadProgress | null>("get_download_progress", { id });
-          if (prog) {
-            setPopupProgress(prog);
-            // Trigger popup 3 and close this window when completed
-            if (prog.status === "Completed") {
-              stopped = true;
-              await invoke("open_complete_window", { filename: prog.filename, savePath: prog.save_path || "" });
-              await invoke("close_window");
-              return;
-            }
-          }
-        } catch (e) {
-          console.error("Progress poll error:", e);
-        }
-        await new Promise<void>((res) => setTimeout(res, 500));
+    const setupPopupProgress = async () => {
+      // 1. Initial fetch
+      try {
+        const prog = await invoke<DownloadProgress | null>("get_download_progress", { id: popupTaskId });
+        if (prog) setPopupProgress(prog);
+      } catch (e) {
+        console.error("Failed initial progress fetch:", e);
       }
+
+      // 2. Real-time event push listener (no delay)
+      unlisten = await listen<DownloadProgress>("download-progress", async (event) => {
+        if (event.payload.id === popupTaskId) {
+          setPopupProgress(event.payload);
+          if (event.payload.status === "Completed") {
+            if (unlisten) unlisten();
+            await invoke("open_complete_window", { filename: event.payload.filename, savePath: event.payload.save_path || "" });
+            await invoke("close_window");
+          }
+        }
+      });
     };
 
-    poll();
-    return () => { stopped = true; };
+    setupPopupProgress();
+    return () => { if (unlisten) unlisten(); };
   }, [popupMode, popupTaskId]);
 
   // Event listener: only handles main-dashboard updates + browser intercept
