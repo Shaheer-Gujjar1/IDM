@@ -51,7 +51,8 @@
         "languages": ["English"],
         "installerIcon": "icons/icon.ico",
         "headerImage": "icons/128x128.png",
-        "sidebarImage": "icons/128x128@2x.png"
+        "sidebarImage": "icons/128x128@2x.png",
+        "runAfterFinish": true
       }
     }
   }
