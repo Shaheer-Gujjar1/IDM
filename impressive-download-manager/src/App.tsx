@@ -880,16 +880,22 @@ function App() {
       <div className="main-canvas">
         {/* Spotlight Search Header */}
         <header className="topbar-v2">
-           <div className="spotlight-search-container">
-             <Search size={18} className="spotlight-icon" />
-             <input
-               type="text"
-               placeholder="Search downloads..."
-               className="spotlight-input"
-               value={searchQuery}
-               onChange={(e) => setSearchQuery(e.target.value)}
-             />
-           </div>
+          {activeCategory !== "settings" ? (
+             <div className="spotlight-search-container">
+               <Search size={18} className="spotlight-icon" />
+               <input
+                 type="text"
+                 placeholder="Search downloads..."
+                 className="spotlight-input"
+                 value={searchQuery}
+                 onChange={(e) => setSearchQuery(e.target.value)}
+               />
+             </div>
+          ) : (
+             <div style={{ fontSize: "1rem", fontWeight: 600, color: "var(--text-primary)" }}>
+               Settings
+             </div>
+          )}
         </header>
 
         {/* Content Area */}
@@ -976,7 +982,11 @@ function App() {
                       type="checkbox" 
                       className="switch-input"
                       checked={autostart}
-                      onChange={(e) => setAutostart(e.target.checked)}
+                      onChange={(e) => {
+                        const val = e.target.checked;
+                        setAutostart(val);
+                        invoke("toggle_autostart", { enabled: val }).catch(console.error);
+                      }}
                     />
                     <span className="switch-slider"></span>
                   </label>

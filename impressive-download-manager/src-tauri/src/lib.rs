@@ -207,6 +207,74 @@ async fn get_default_download_dir() -> Result<String, String> {
 }
 
 #[tauri::command]
+async fn toggle_autostart(enabled: bool) -> Result<(), String> {
+    #[cfg(target_os = "linux")]
+    {
+        if let Ok(home) = std::env::var("HOME") {
+            let desktop_path = std::path::Path::new(&home)
+                .join(".config")
+                .join("autostart")
+                .join("impressive-download-manager.desktop");
+            if enabled {
+                if let Ok(current_exe) = std::env::current_exe().and_then(|p| p.canonicalize()) {
+                    let exe_str = current_exe.to_string_lossy().to_string();
+                    let desktop_content = format!(
+                        "[Desktop Entry]\n\
+                         Type=Application\n\
+                         Exec=\"{}\" --background\n\
+                         Hidden=false\n\
+                         NoDisplay=false\n\
+                         X-GNOME-Autostart-enabled=true\n\
+                         Name=Impressive Download Manager\n\
+                         Comment=Start Impressive Download Manager in the background\n",
+                        exe_str
+                    );
+                    if std::fs::write(&desktop_path, desktop_content).is_ok() {
+                        use std::os::unix::fs::PermissionsExt;
+                        let _ = std::fs::set_permissions(&desktop_path, std::fs::Permissions::from_mode(0o755));
+                    }
+                }
+            } else {
+                let _ = std::fs::remove_file(desktop_path);
+            }
+        }
+    }
+    #[cfg(target_os = "windows")]
+    {
+        if enabled {
+            if let Ok(current_exe) = std::env::current_exe() {
+                let exe_str = current_exe.to_string_lossy().to_string();
+                let cmd_str = format!("\"{}\" --background", exe_str);
+                let _ = std::process::Command::new("reg")
+                    .args(&[
+                        "add",
+                        "HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Run",
+                        "/v",
+                        "ImpressiveDownloadManager",
+                        "/t",
+                        "REG_SZ",
+                        "/d",
+                        &cmd_str,
+                        "/f"
+                    ])
+                    .spawn();
+            }
+        } else {
+            let _ = std::process::Command::new("reg")
+                .args(&[
+                    "delete",
+                    "HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Run",
+                    "/v",
+                    "ImpressiveDownloadManager",
+                    "/f"
+                ])
+                .spawn();
+        }
+    }
+    Ok(())
+}
+
+#[tauri::command]
 async fn open_progress_window(app_handle: tauri::AppHandle, id: String) -> Result<(), String> {
     let progress_url = format!("/index.html?popup=progress&id={}", id);
     
@@ -432,7 +500,7 @@ pub fn run() {
                 #[cfg(target_os = "linux")]
                 {
                     if let Ok(home) = std::env::var("HOME") {
-                        if let Ok(current_exe) = std::env::current_exe() {
+                        if let Ok(current_exe) = std::env::current_exe().and_then(|p| p.canonicalize()) {
                             let exe_str = current_exe.to_string_lossy().to_string();
                             let autostart_dir = std::path::Path::new(&home).join(".config").join("autostart");
                             let _ = std::fs::create_dir_all(&autostart_dir);
@@ -448,8 +516,33 @@ pub fn run() {
                                  Comment=Start Impressive Download Manager in the background\n",
                                 exe_str
                             );
-                            let _ = std::fs::write(desktop_path, desktop_content);
+                            if std::fs::write(&desktop_path, desktop_content).is_ok() {
+                                use std::os::unix::fs::PermissionsExt;
+                                let _ = std::fs::set_permissions(&desktop_path, std::fs::Permissions::from_mode(0o755));
+                            }
                         }
+                    }
+                }
+
+                // Add Windows Run Registry key automatically for Windows startup in background
+                #[cfg(target_os = "windows")]
+                {
+                    if let Ok(current_exe) = std::env::current_exe() {
+                        let exe_str = current_exe.to_string_lossy().to_string();
+                        let cmd_str = format!("\"{}\" --background", exe_str);
+                        let _ = std::process::Command::new("reg")
+                            .args(&[
+                                "add",
+                                "HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Run",
+                                "/v",
+                                "ImpressiveDownloadManager",
+                                "/t",
+                                "REG_SZ",
+                                "/d",
+                                &cmd_str,
+                                "/f"
+                            ])
+                            .spawn();
                     }
                 }
             });
@@ -747,6 +840,7 @@ pub fn run() {
             open_file_dir,
             select_folder,
             get_default_download_dir,
+            toggle_autostart,
             open_progress_window,
             open_complete_window,
             close_window,
