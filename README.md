@@ -23,7 +23,7 @@ Ready-to-use release binaries for **Windows** and **Linux** are available in the
 
 ### Download Options
 - **Windows**: Download `Impressive.Download.Manager_x64-setup.exe` (NSIS Installer) or `.msi` package.
-- **Linux**: Download `.deb` or `.AppImage` package.
+- **Linux**: Download `.deb` , `.rpm` or `.AppImage` package.
 
 Simply run the installer for your operating system and enjoy fast, effortless downloads!
 
@@ -34,7 +34,7 @@ Simply run the installer for your operating system and enjoy fast, effortless do
 To capture downloads directly from your web browser:
 1. Open Chrome/Brave/Edge and navigate to `chrome://extensions`.
 2. Enable **Developer Mode** (top-right toggle).
-3. Click **Load Unpacked** and select the `browser-extension` folder included with IDM.
+3. Click **Load Unpacked** and select the `browser-extension` folder included with IDM (also available in releases).
 
 ---
 
