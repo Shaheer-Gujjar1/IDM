@@ -196,6 +196,17 @@ async fn select_folder() -> Result<String, String> {
 }
 
 #[tauri::command]
+async fn get_default_download_dir() -> Result<String, String> {
+    if let Some(dir) = dirs::download_dir() {
+        Ok(dir.to_string_lossy().to_string())
+    } else if let Some(home) = dirs::home_dir() {
+        Ok(home.join("Downloads").to_string_lossy().to_string())
+    } else {
+        Ok("Downloads".to_string())
+    }
+}
+
+#[tauri::command]
 async fn open_progress_window(app_handle: tauri::AppHandle, id: String) -> Result<(), String> {
     let progress_url = format!("/index.html?popup=progress&id={}", id);
     
@@ -735,6 +746,7 @@ pub fn run() {
             refresh_download_link,
             open_file_dir,
             select_folder,
+            get_default_download_dir,
             open_progress_window,
             open_complete_window,
             close_window,

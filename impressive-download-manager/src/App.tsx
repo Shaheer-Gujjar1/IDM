@@ -73,13 +73,13 @@ function App() {
   const [showAddModal, setShowAddModal] = useState(false);
   const [inputUrl, setInputUrl] = useState("");
   const [customFilename, setCustomFilename] = useState("");
-  const [savePath, setSavePath] = useState("/home/shaheer/Downloads/");
+  const [savePath, setSavePath] = useState(() => localStorage.getItem("default_save_dir") || "");
 
   // Drawer State
   const [selectedTask, setSelectedTask] = useState<DownloadProgress | null>(null);
 
   // Settings State
-  const [defaultSaveDir, setDefaultSaveDir] = useState("/home/shaheer/Downloads");
+  const [defaultSaveDir, setDefaultSaveDir] = useState(() => localStorage.getItem("default_save_dir") || "");
   const [autostart, setAutostart] = useState(true);
   const [minimizeToTray, setMinimizeToTray] = useState(true);
   const [maxChunks, setMaxChunks] = useState(8);
@@ -221,10 +221,29 @@ function App() {
     const size = params.get("size") || "0";
     const taskId = params.get("id") || null;
 
+    // Fetch OS default download directory if no custom saved path exists
+    const savedDir = localStorage.getItem("default_save_dir");
+    if (!savedDir) {
+      invoke<string>("get_default_download_dir")
+        .then((dir) => {
+          if (dir) {
+            setDefaultSaveDir(dir);
+            setSavePath(dir);
+          }
+        })
+        .catch(console.error);
+    } else {
+      setDefaultSaveDir(savedDir);
+      setSavePath(savedDir);
+    }
+
     if (mode) {
       setPopupMode(mode);
       setPopupUrl(url);
       setPopupFilename(decodeURIComponent(filename));
+      if (savePath) {
+        setSavePath(decodeURIComponent(savePath));
+      }
       setPopupSavePath(decodeURIComponent(savePath));
       setPopupCookie(cookie);
       setPopupReferrer(referrer);
@@ -250,6 +269,24 @@ function App() {
         .catch(console.error);
     }
   }, []);
+
+  // Handler for setting default download directory in settings
+  const handleUpdateDefaultSaveDir = (newDir: string) => {
+    setDefaultSaveDir(newDir);
+    setSavePath(newDir);
+    localStorage.setItem("default_save_dir", newDir);
+  };
+
+  const handlePickDefaultFolder = async () => {
+    try {
+      const chosen = await invoke<string>("select_folder");
+      if (chosen) {
+        handleUpdateDefaultSaveDir(chosen);
+      }
+    } catch (e) {
+      console.warn("Folder picker cancelled or failed:", e);
+    }
+  };
 
 
 
@@ -866,12 +903,23 @@ function App() {
                 </div>
                 <div className="form-group">
                   <span className="form-label">Default Downloads Directory</span>
-                  <input
-                    type="text"
-                    className="form-input"
-                    value={defaultSaveDir}
-                    onChange={(e) => setDefaultSaveDir(e.target.value)}
-                  />
+                  <div style={{ display: "flex", gap: "10px", alignItems: "center" }}>
+                    <input
+                      type="text"
+                      className="form-input"
+                      style={{ flex: 1 }}
+                      value={defaultSaveDir}
+                      onChange={(e) => handleUpdateDefaultSaveDir(e.target.value)}
+                    />
+                    <button 
+                      type="button" 
+                      className="hover-action-btn" 
+                      style={{ width: "auto", padding: "0 18px", height: "42px", flexShrink: 0 }} 
+                      onClick={handlePickDefaultFolder}
+                    >
+                      Browse
+                    </button>
+                  </div>
                 </div>
                 <div className="form-group" style={{ position: "relative" }}>
                   <span className="form-label">Theme Mode</span>

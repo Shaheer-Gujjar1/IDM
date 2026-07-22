@@ -48,7 +48,10 @@
         "language": "en-US"
       },
       "nsis": {
-        "languages": ["English"]
+        "languages": ["English"],
+        "installerIcon": "icons/icon.ico",
+        "headerImage": "icons/128x128.png",
+        "sidebarImage": "icons/128x128@2x.png"
       }
     }
   }
