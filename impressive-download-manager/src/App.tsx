@@ -209,6 +209,9 @@ function App() {
     }
   };
 
+  // Diagnostic Error Banner State
+  const [initError, setInitError] = useState<string | null>(null);
+
   // Initialization query-param routing & initial loading
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
@@ -231,7 +234,10 @@ function App() {
             setSavePath(dir);
           }
         })
-        .catch(console.error);
+        .catch((err) => {
+          console.error("get_default_download_dir error:", err);
+          setInitError(`Failed to get default download directory: ${err?.message || err}`);
+        });
     } else {
       setDefaultSaveDir(savedDir);
       setSavePath(savedDir);
@@ -256,7 +262,10 @@ function App() {
           .then((prog) => {
             if (prog) setPopupProgress(prog);
           })
-          .catch(console.error);
+          .catch((err) => {
+            console.error("get_download_progress error:", err);
+            setInitError(`Failed to get download progress (ID: ${taskId}): ${err?.message || err}`);
+          });
       } else if (mode === "complete") {
         setPopupFilename(params.get("filename") || "");
       }
@@ -266,7 +275,10 @@ function App() {
         .then((list) => {
           if (list) setDownloads(list);
         })
-        .catch(console.error);
+        .catch((err) => {
+          console.error("get_all_downloads error:", err);
+          setInitError(`IPC Connection Error (get_all_downloads): ${err?.message || err}`);
+        });
     }
   }, []);
 
@@ -877,6 +889,39 @@ function App() {
 
       {/* Main Container */}
       <div className="main-canvas">
+        {initError && (
+          <div style={{
+            background: "rgba(239, 68, 68, 0.15)",
+            border: "1px solid #ef4444",
+            color: "#fca5a5",
+            padding: "12px 16px",
+            margin: "16px 16px 0 16px",
+            borderRadius: "10px",
+            fontSize: "0.85rem",
+            display: "flex",
+            justifyContent: "space-between",
+            alignItems: "center",
+            boxShadow: "0 4px 12px rgba(239, 68, 68, 0.2)"
+          }}>
+            <div>
+              <strong style={{ color: "#ef4444" }}>⚠️ Diagnostic Alert:</strong> {initError}
+            </div>
+            <button
+              onClick={() => setInitError(null)}
+              style={{
+                background: "none",
+                border: "none",
+                color: "#fca5a5",
+                cursor: "pointer",
+                padding: "4px 8px",
+                fontSize: "1rem"
+              }}
+            >
+              ✕
+            </button>
+          </div>
+        )}
+
         {/* Spotlight Search Header */}
         <header className="topbar-v2">
           {activeCategory !== "settings" ? (

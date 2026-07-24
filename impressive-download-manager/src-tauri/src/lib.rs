@@ -112,7 +112,7 @@ async fn refresh_download_link(
                 .spawn();
         }
 
-        let refresh_url = format!("/index.html?popup=refresh&id={}", id);
+        let refresh_url = format!("index.html?popup=refresh&id={}", id);
         let _ = tauri::WebviewWindowBuilder::new(
             &app_handle,
             format!("popup-refresh-{}", id),
@@ -276,7 +276,7 @@ async fn toggle_autostart(enabled: bool) -> Result<(), String> {
 
 #[tauri::command]
 async fn open_progress_window(app_handle: tauri::AppHandle, id: String) -> Result<(), String> {
-    let progress_url = format!("/index.html?popup=progress&id={}", id);
+    let progress_url = format!("index.html?popup=progress&id={}", id);
     
     // Spawn the progress window
     let _ = tauri::WebviewWindowBuilder::new(
@@ -299,7 +299,7 @@ async fn open_progress_window(app_handle: tauri::AppHandle, id: String) -> Resul
 #[tauri::command]
 async fn open_complete_window(app_handle: tauri::AppHandle, filename: String, save_path: String) -> Result<(), String> {
     let complete_url = format!(
-        "/index.html?popup=complete&filename={}&save_path={}",
+        "index.html?popup=complete&filename={}&save_path={}",
         urlencoding::encode(&filename),
         urlencoding::encode(&save_path),
     );
@@ -765,7 +765,7 @@ pub fn run() {
                                                 }
 
                                                 // Open progress window
-                                                let progress_url = format!("/index.html?popup=progress&id={}", id);
+                                                let progress_url = format!("index.html?popup=progress&id={}", id);
                                                 let _ = tauri::WebviewWindowBuilder::new(
                                                     &app_handle,
                                                     format!("popup-progress-{}", id),
@@ -785,7 +785,7 @@ pub fn run() {
 
                                             // Default: Spawn native popup-add window pre-filled with payload
                                             let add_url = format!(
-                                                "/index.html?popup=add&url={}&filename={}&cookie={}&referrer={}&size={}",
+                                                "index.html?popup=add&url={}&filename={}&cookie={}&referrer={}&size={}",
                                                 urlencoding::encode(&payload.url),
                                                 urlencoding::encode(&filename),
                                                 urlencoding::encode(&payload.cookie.unwrap_or_default()),

@@ -9,7 +9,8 @@
 - **Popup Responsiveness on Low-Spec Systems**: Replaced 500ms progress polling loop with real-time zero-delay Tauri IPC event pushing (`download-progress`) and removed heavy GPU `backdrop-filter` blurs on popup windows.
 - **Background Autostart (Windows & Linux)**: Added automatic Windows Registry startup registration (`HKCU\Software\Microsoft\Windows\CurrentVersion\Run`) with `--background` mode, canonicalized Linux `.desktop` paths with `0o755` permissions, and connected the "Launch on Startup" toggle in Settings to a new `toggle_autostart` backend command.
 - **Clean Settings Top Bar**: Hidden the "Search downloads..." input in the fixed topbar header when viewing the Settings panel.
-- **Nala-Styled Windows Installer Script (`install_dependencies.bat`)**: Completely redesigned the Windows setup script into a step-by-step interactive CLI tool with ANSI color formatting. Added automatic detection for `winget` and `chocolatey` (with user preference selection), Visual Studio C++ Build Tools validation, official `rustup-init.exe` installer handling, Node.js LTS, NSIS, WiX Toolset, optional Docker Desktop installation, and an environment status checklist.
+- **Standalone Popup Window Navigation Fix**: Fixed relative URL path resolution in Rust backend (`src-tauri/src/lib.rs`). Replaced absolute leading slashes (`/index.html?...`) with relative paths (`index.html?...`) in `tauri::WebviewUrl::App(...)` constructor calls across popup builders (`open_progress_window`, `open_complete_window`, `refresh_download_link`, and `popup-add`), resolving "Could not connect to localhost: Connection refused" blank screen errors.
+- **User-Focused Documentation (`README.md`)**: Restructured `README.md` to focus entirely on end-user features, installation instructions pointing directly to pre-compiled binaries in the GitHub Releases section, and browser extension setup. Removed legacy developer/compilation instructions.
 
 ## [0.2.5] – 2026-07-19
 
