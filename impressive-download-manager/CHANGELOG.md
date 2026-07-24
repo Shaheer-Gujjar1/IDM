@@ -3,8 +3,12 @@
 ## [0.4.1] – 2026-07-24
 
 ### Added
-- **In-App Secure Software Updater**: Integrated cryptographic key-pair signed auto-updates (`tauri-plugin-updater` & `@tauri-apps/plugin-updater`).
-- **Silent Background & Manual Update Checks**: App automatically checks for signed updates on startup in the background, and includes a "Check for Updates" button at the bottom of the Settings view.
+- **In-App Secure Software Updater**: Integrated cryptographic key-pair signed auto-updates (`tauri-plugin-updater` & `@tauri-apps/plugin-updater`). Configured signed updater endpoints in `src-tauri/tauri.conf.json` (`latest.json`), registered updater plugin in Rust backend (`src-tauri/src/lib.rs`), and added a manual "Check for Updates" UI button at the bottom of Settings.
+- **Silent Background & Manual Update Checks**: App automatically checks for signed updates on startup in the background and stages updates seamlessly.
+
+### Fixed
+- **Standalone Popup Window Navigation Fix**: Fixed relative URL path resolution in Rust backend (`src-tauri/src/lib.rs`). Replaced absolute leading slashes (`/index.html?...`) with relative paths (`index.html?...`) in `tauri::WebviewUrl::App(...)` constructor calls across popup builders (`open_progress_window`, `open_complete_window`, `refresh_download_link`, and `popup-add`), resolving "Could not connect to localhost: Connection refused" blank screen errors.
+- **User-Focused Documentation (`README.md`)**: Restructured `README.md` to focus entirely on end-user features, installation instructions pointing directly to pre-compiled binaries in the GitHub Releases section, and browser extension setup.
 
 ## [0.3.3] – 2026-07-22
 
@@ -12,12 +16,9 @@
 - **OS-Native Default Downloads Location**: Resolved issue where default download folder path was fixed to hardcoded user paths. Integrated `dirs::download_dir()` in Rust backend to dynamically detect standard system Downloads locations across Windows, Linux, and macOS.
 - **GUI Directory Picker in Settings**: Added a "Browse" button alongside the Default Downloads Directory input in Settings, triggering native folder selection (`rfd::AsyncFileDialog`).
 - **NSIS Setup Icon**: Configured `installerIcon`, `headerImage`, and `sidebarImage` under `bundle.windows.nsis` in `tauri.conf.json` so NSIS Windows setup executables render the application icon.
-- **Popup Responsiveness on Low-Spec Systems**: Replaced 500ms progress polling loop with real-time zero-delay Tauri IPC event pushing (`download-progress`) and removed heavy GPU `backdrop-filter` blurs on popup windows.
+- **Popup Responsiveness & Aesthetics**: Configured progress popup polling loop to a fast 200ms interval for immediate responsiveness without UI state drops, and preserved full glassmorphic popup styling.
 - **Background Autostart (Windows & Linux)**: Added automatic Windows Registry startup registration (`HKCU\Software\Microsoft\Windows\CurrentVersion\Run`) with `--background` mode, canonicalized Linux `.desktop` paths with `0o755` permissions, and connected the "Launch on Startup" toggle in Settings to a new `toggle_autostart` backend command.
 - **Clean Settings Top Bar**: Hidden the "Search downloads..." input in the fixed topbar header when viewing the Settings panel.
-- **Standalone Popup Window Navigation Fix**: Fixed relative URL path resolution in Rust backend (`src-tauri/src/lib.rs`). Replaced absolute leading slashes (`/index.html?...`) with relative paths (`index.html?...`) in `tauri::WebviewUrl::App(...)` constructor calls across popup builders (`open_progress_window`, `open_complete_window`, `refresh_download_link`, and `popup-add`), resolving "Could not connect to localhost: Connection refused" blank screen errors.
-- **In-App Secure Software Updater**: Integrated `tauri-plugin-updater` and `@tauri-apps/plugin-updater`. Configured signed updater endpoints in `src-tauri/tauri.conf.json` (`latest.json`), registered updater plugin in Rust backend (`src-tauri/src/lib.rs`), added a silent background check on startup that automatically downloads and stages updates, and added a manual "Check for Updates" UI section under Settings.
-- **User-Focused Documentation (`README.md`)**: Restructured `README.md` to focus entirely on end-user features, installation instructions pointing directly to pre-compiled binaries in the GitHub Releases section, and browser extension setup. Removed legacy developer/compilation instructions.
 
 ## [0.2.5] – 2026-07-19
 
