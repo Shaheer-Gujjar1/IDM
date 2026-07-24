@@ -29,4 +29,5 @@ uuid = { version = "1.8", features = ["v4"] }
 urlencoding = "2.1"
 rfd = "0.14"
 dirs = "5.0"
+tauri-plugin-updater = "2"
 

@@ -54,5 +54,13 @@
         "sidebarImage": "icons/128x128@2x.png"
       }
     }
+  },
+  "plugins": {
+    "updater": {
+      "pubkey": "DWN_PUBLIC_KEY_PLACEHOLDER",
+      "endpoints": [
+        "https://github.com/Shaheer-Gujjar1/IDM/releases/latest/download/latest.json"
+      ]
+    }
   }
 }

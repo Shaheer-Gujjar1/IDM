@@ -453,6 +453,7 @@ pub fn run() {
     tauri::Builder::default()
         .manage(download_manager)
         .plugin(tauri_plugin_opener::init())
+        .plugin(tauri_plugin_updater::Builder::new().build())
         .on_window_event(|window, event| {
             if let tauri::WindowEvent::CloseRequested { api, .. } = event {
                 let label = window.label().to_string();

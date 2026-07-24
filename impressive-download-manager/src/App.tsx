@@ -28,6 +28,7 @@ import {
 import { listen } from "@tauri-apps/api/event";
 import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
+import { check as checkUpdate } from "@tauri-apps/plugin-updater";
 import "./App.css";
 
 type DownloadStatus = "Queued" | "Downloading" | "Paused" | "Completed" | { Failed: string } | "Trash";
@@ -88,10 +89,45 @@ function App() {
   const [interceptDownloads, setInterceptDownloads] = useState(true);
   const [integrationPort, setIntegrationPort] = useState(9600);
   
-  // Remove Task Modal States
-  const [showRemoveConfirm, setShowRemoveConfirm] = useState(false);
-  const [taskToRemove, setTaskToRemove] = useState<DownloadProgress | null>(null);
-  const [deleteFileFromDisk, setDeleteFileFromDisk] = useState(false);
+  // Updater State
+  const [checkingUpdate, setCheckingUpdate] = useState(false);
+  const [updateStatus, setUpdateStatus] = useState<string | null>(null);
+
+  const handleCheckForUpdates = async () => {
+    setCheckingUpdate(true);
+    setUpdateStatus("Checking for updates...");
+    try {
+      const update = await checkUpdate();
+      if (update && update.available) {
+        setUpdateStatus(`New version ${update.version} available! Downloading update...`);
+        let downloaded = 0;
+        let contentLength = 0;
+        await update.downloadAndInstall((event) => {
+          switch (event.event) {
+            case 'Started':
+              contentLength = event.data.contentLength || 0;
+              setUpdateStatus(`Downloading update... (${formatBytes(contentLength)})`);
+              break;
+            case 'Progress':
+              downloaded += event.data.chunkLength;
+              setUpdateStatus(`Downloading: ${formatBytes(downloaded)} / ${formatBytes(contentLength)}`);
+              break;
+            case 'Finished':
+              setUpdateStatus("Update downloaded! Relaunching application...");
+              break;
+          }
+        });
+        setUpdateStatus("Update installed! Please restart application.");
+      } else {
+        setUpdateStatus("You are running the latest version!");
+      }
+    } catch (e: any) {
+      console.error("Update check error:", e);
+      setUpdateStatus(`Update check failed: ${e?.message || e}`);
+    } finally {
+      setCheckingUpdate(false);
+    }
+  };
 
   // Scheduler State
   const [schedulerEnabled, setSchedulerEnabled] = useState(false);
@@ -1132,6 +1168,37 @@ function App() {
                     value={integrationPort}
                     onChange={(e) => setIntegrationPort(parseInt(e.target.value))}
                   />
+                </div>
+              </div>
+
+              <div className="settings-card">
+                <div className="settings-section-header">
+                  <RefreshCw size={18} />
+                  <span className="settings-section-title">Software Updates</span>
+                </div>
+                <div className="settings-control-row" style={{ flexDirection: "column", alignItems: "flex-start", gap: "12px" }}>
+                  <div className="settings-info-col">
+                    <span className="settings-title">In-App Software Updater</span>
+                    <span className="settings-desc">Check for signed application updates directly from GitHub Releases.</span>
+                  </div>
+                  {updateStatus && (
+                    <div style={{
+                      fontSize: "0.85rem",
+                      color: updateStatus.includes("failed") ? "#ef4444" : "var(--accent-cyan)",
+                      fontWeight: 600
+                    }}>
+                      {updateStatus}
+                    </div>
+                  )}
+                  <button
+                    type="button"
+                    className="accent-pill"
+                    style={{ padding: "10px 24px", borderRadius: "100px", fontWeight: 700, fontSize: "0.9rem" }}
+                    onClick={handleCheckForUpdates}
+                    disabled={checkingUpdate}
+                  >
+                    {checkingUpdate ? "Checking..." : "Check for Updates"}
+                  </button>
                 </div>
               </div>
 
