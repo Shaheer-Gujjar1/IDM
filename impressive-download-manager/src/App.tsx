@@ -52,6 +52,14 @@ interface Category {
   icon: React.ReactNode;
 }
 
+const formatBytes = (bytes: number): string => {
+  if (!bytes || bytes === 0) return "0 Bytes";
+  const k = 1024;
+  const sizes = ["Bytes", "KB", "MB", "GB", "TB"];
+  const i = Math.floor(Math.log(bytes) / Math.log(k));
+  return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + " " + sizes[i];
+};
+
 function App() {
   // Query routing state
   const [popupMode, setPopupMode] = useState<string | null>(null);
@@ -89,6 +97,11 @@ function App() {
   const [interceptDownloads, setInterceptDownloads] = useState(true);
   const [integrationPort, setIntegrationPort] = useState(9600);
   
+  // Remove Task Modal States
+  const [showRemoveConfirm, setShowRemoveConfirm] = useState(false);
+  const [taskToRemove, setTaskToRemove] = useState<DownloadProgress | null>(null);
+  const [deleteFileFromDisk, setDeleteFileFromDisk] = useState(false);
+
   // Updater State
   const [checkingUpdate, setCheckingUpdate] = useState(false);
   const [updateStatus, setUpdateStatus] = useState<string | null>(null);
@@ -102,19 +115,16 @@ function App() {
         setUpdateStatus(`New version ${update.version} available! Downloading update...`);
         let downloaded = 0;
         let contentLength = 0;
-        await update.downloadAndInstall((event) => {
-          switch (event.event) {
-            case 'Started':
-              contentLength = event.data.contentLength || 0;
-              setUpdateStatus(`Downloading update... (${formatBytes(contentLength)})`);
-              break;
-            case 'Progress':
-              downloaded += event.data.chunkLength;
-              setUpdateStatus(`Downloading: ${formatBytes(downloaded)} / ${formatBytes(contentLength)}`);
-              break;
-            case 'Finished':
-              setUpdateStatus("Update downloaded! Relaunching application...");
-              break;
+        await update.downloadAndInstall((event: any) => {
+          if (!event) return;
+          if (event.event === 'Started') {
+            contentLength = event.data?.contentLength || 0;
+            setUpdateStatus(`Downloading update... (${formatBytes(contentLength)})`);
+          } else if (event.event === 'Progress') {
+            downloaded += event.data?.chunkLength || 0;
+            setUpdateStatus(`Downloading: ${formatBytes(downloaded)} / ${formatBytes(contentLength)}`);
+          } else if (event.event === 'Finished') {
+            setUpdateStatus("Update downloaded! Relaunching application...");
           }
         });
         setUpdateStatus("Update installed! Please restart application.");
@@ -315,6 +325,21 @@ function App() {
           console.error("get_all_downloads error:", err);
           setInitError(`IPC Connection Error (get_all_downloads): ${err?.message || err}`);
         });
+
+      // Background silent update check on application startup
+      checkUpdate()
+        .then(async (update: any) => {
+          if (update && update.available) {
+            console.log(`[Auto-Update] New version ${update.version} found! Downloading in background...`);
+            setUpdateStatus(`Background updating to v${update.version}...`);
+            await update.downloadAndInstall(() => {});
+            setUpdateStatus(`Update v${update.version} ready! Restart to apply.`);
+          }
+        })
+        .catch((err: any) => {
+          // Silently handle background update check failures (e.g. offline or no release yet)
+          console.log("[Auto-Update] Startup check:", err?.message || err);
+        });
     }
   }, []);
 
@@ -500,7 +525,7 @@ function App() {
   };
 
   // Controls bindings
-  const handlePause = async (e: React.MouseEvent | null, id: String) => {
+  const handlePause = async (e: React.MouseEvent | null, id: string) => {
     if (e) e.stopPropagation();
     try {
       await invoke("pause_download", { id });
@@ -616,14 +641,6 @@ function App() {
   };
 
   // Helpers
-  const formatBytes = (bytes: number): string => {
-    if (bytes === 0) return "0 Bytes";
-    const k = 1024;
-    const sizes = ["Bytes", "KB", "MB", "GB", "TB"];
-    const i = Math.floor(Math.log(bytes) / Math.log(k));
-    return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + " " + sizes[i];
-  };
-
   const getFileIcon = (filename: string) => {
     const ext = filename.split(".").pop()?.toLowerCase();
     if (!ext) return <File size={22} />;
@@ -982,6 +999,37 @@ function App() {
         <main className="content-area-v2">
           {activeCategory === "settings" ? (
             <div className="settings-container">
+              <div className="settings-card" style={{ border: "1px solid rgba(59, 130, 246, 0.3)" }}>
+                <div className="settings-section-header">
+                  <RefreshCw size={18} style={{ color: "var(--accent-cyan)" }} />
+                  <span className="settings-section-title">Software Updates</span>
+                </div>
+                <div className="settings-control-row" style={{ flexDirection: "column", alignItems: "flex-start", gap: "12px" }}>
+                  <div className="settings-info-col">
+                    <span className="settings-title">In-App Software Updater</span>
+                    <span className="settings-desc">Check for signed application updates directly from GitHub Releases.</span>
+                  </div>
+                  {updateStatus && (
+                    <div style={{
+                      fontSize: "0.85rem",
+                      color: updateStatus.includes("failed") ? "#ef4444" : "var(--accent-cyan)",
+                      fontWeight: 600
+                    }}>
+                      {updateStatus}
+                    </div>
+                  )}
+                  <button
+                    type="button"
+                    className="accent-pill"
+                    style={{ padding: "10px 24px", borderRadius: "100px", fontWeight: 700, fontSize: "0.9rem" }}
+                    onClick={handleCheckForUpdates}
+                    disabled={checkingUpdate}
+                  >
+                    {checkingUpdate ? "Checking..." : "Check for Updates"}
+                  </button>
+                </div>
+              </div>
+
               <div className="settings-card">
                 <div className="settings-section-header">
                   <Sliders size={18} />
@@ -1168,37 +1216,6 @@ function App() {
                     value={integrationPort}
                     onChange={(e) => setIntegrationPort(parseInt(e.target.value))}
                   />
-                </div>
-              </div>
-
-              <div className="settings-card">
-                <div className="settings-section-header">
-                  <RefreshCw size={18} />
-                  <span className="settings-section-title">Software Updates</span>
-                </div>
-                <div className="settings-control-row" style={{ flexDirection: "column", alignItems: "flex-start", gap: "12px" }}>
-                  <div className="settings-info-col">
-                    <span className="settings-title">In-App Software Updater</span>
-                    <span className="settings-desc">Check for signed application updates directly from GitHub Releases.</span>
-                  </div>
-                  {updateStatus && (
-                    <div style={{
-                      fontSize: "0.85rem",
-                      color: updateStatus.includes("failed") ? "#ef4444" : "var(--accent-cyan)",
-                      fontWeight: 600
-                    }}>
-                      {updateStatus}
-                    </div>
-                  )}
-                  <button
-                    type="button"
-                    className="accent-pill"
-                    style={{ padding: "10px 24px", borderRadius: "100px", fontWeight: 700, fontSize: "0.9rem" }}
-                    onClick={handleCheckForUpdates}
-                    disabled={checkingUpdate}
-                  >
-                    {checkingUpdate ? "Checking..." : "Check for Updates"}
-                  </button>
                 </div>
               </div>
 
