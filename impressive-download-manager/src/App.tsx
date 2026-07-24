@@ -999,37 +999,6 @@ function App() {
         <main className="content-area-v2">
           {activeCategory === "settings" ? (
             <div className="settings-container">
-              <div className="settings-card" style={{ border: "1px solid rgba(59, 130, 246, 0.3)" }}>
-                <div className="settings-section-header">
-                  <RefreshCw size={18} style={{ color: "var(--accent-cyan)" }} />
-                  <span className="settings-section-title">Software Updates</span>
-                </div>
-                <div className="settings-control-row" style={{ flexDirection: "column", alignItems: "flex-start", gap: "12px" }}>
-                  <div className="settings-info-col">
-                    <span className="settings-title">In-App Software Updater</span>
-                    <span className="settings-desc">Check for signed application updates directly from GitHub Releases.</span>
-                  </div>
-                  {updateStatus && (
-                    <div style={{
-                      fontSize: "0.85rem",
-                      color: updateStatus.includes("failed") ? "#ef4444" : "var(--accent-cyan)",
-                      fontWeight: 600
-                    }}>
-                      {updateStatus}
-                    </div>
-                  )}
-                  <button
-                    type="button"
-                    className="accent-pill"
-                    style={{ padding: "10px 24px", borderRadius: "100px", fontWeight: 700, fontSize: "0.9rem" }}
-                    onClick={handleCheckForUpdates}
-                    disabled={checkingUpdate}
-                  >
-                    {checkingUpdate ? "Checking..." : "Check for Updates"}
-                  </button>
-                </div>
-              </div>
-
               <div className="settings-card">
                 <div className="settings-section-header">
                   <Sliders size={18} />
@@ -1280,6 +1249,37 @@ function App() {
                     </div>
                   </div>
                 )}
+              </div>
+
+              <div className="settings-card">
+                <div className="settings-section-header">
+                  <RefreshCw size={18} />
+                  <span className="settings-section-title">Software Updates</span>
+                </div>
+                <div className="settings-control-row" style={{ flexDirection: "column", alignItems: "flex-start", gap: "12px" }}>
+                  <div className="settings-info-col">
+                    <span className="settings-title">In-App Software Updater</span>
+                    <span className="settings-desc">Check for signed application updates directly from GitHub Releases.</span>
+                  </div>
+                  {updateStatus && (
+                    <div style={{
+                      fontSize: "0.85rem",
+                      color: updateStatus.includes("failed") ? "#ef4444" : "var(--accent-cyan)",
+                      fontWeight: 600
+                    }}>
+                      {updateStatus}
+                    </div>
+                  )}
+                  <button
+                    type="button"
+                    className="accent-pill"
+                    style={{ padding: "10px 24px", borderRadius: "100px", fontWeight: 700, fontSize: "0.9rem" }}
+                    onClick={handleCheckForUpdates}
+                    disabled={checkingUpdate}
+                  >
+                    {checkingUpdate ? "Checking..." : "Check for Updates"}
+                  </button>
+                </div>
               </div>
             </div>
           ) : (

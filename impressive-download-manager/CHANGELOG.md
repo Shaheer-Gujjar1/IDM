@@ -1,5 +1,11 @@
 # CHANGELOG
 
+## [0.4.1] – 2026-07-24
+
+### Added
+- **In-App Secure Software Updater**: Integrated cryptographic key-pair signed auto-updates (`tauri-plugin-updater` & `@tauri-apps/plugin-updater`).
+- **Silent Background & Manual Update Checks**: App automatically checks for signed updates on startup in the background, and includes a "Check for Updates" button at the bottom of the Settings view.
+
 ## [0.3.3] – 2026-07-22
 
 ### Fixed
