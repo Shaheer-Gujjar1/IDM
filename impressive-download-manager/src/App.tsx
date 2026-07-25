@@ -1,17 +1,17 @@
 import { useState, useEffect, useRef } from "react";
-import { 
-  Download, 
-  Search, 
-  Plus, 
-  Layers, 
-  Activity, 
-  CheckCircle2, 
-  Clock, 
-  Trash2, 
-  Film, 
-  Music, 
-  FileText, 
-  Archive, 
+import {
+  Download,
+  Search,
+  Plus,
+  Layers,
+  Activity,
+  CheckCircle2,
+  Clock,
+  Trash2,
+  Film,
+  Music,
+  FileText,
+  Archive,
   Settings,
   Pause,
   Play,
@@ -106,7 +106,7 @@ function App() {
     return val !== null ? val === "true" : true;
   });
   const [integrationPort, setIntegrationPort] = useState(9600);
-  
+
   // Remove Task Modal States
   const [showRemoveConfirm, setShowRemoveConfirm] = useState(false);
   const [taskToRemove, setTaskToRemove] = useState<DownloadProgress | null>(null);
@@ -192,7 +192,7 @@ function App() {
 
   useEffect(() => {
     localStorage.setItem("theme_mode", themeMode);
-    
+
     const applyTheme = () => {
       let resolvedTheme = "dark";
       if (themeMode === "system") {
@@ -202,7 +202,7 @@ function App() {
         resolvedTheme = themeMode;
       }
       document.documentElement.setAttribute("data-theme", resolvedTheme);
-      
+
       invoke("sync_theme_mode", { theme_mode: resolvedTheme }).catch(console.error);
     };
 
@@ -332,7 +332,7 @@ function App() {
       setPopupReferrer(referrer);
       setPopupTaskId(taskId);
       setPopupSize(size);
-      
+
       // Fetch progress state immediately from Rust backend to prevent Connecting... freeze
       if (mode === "progress" && taskId) {
         invoke<DownloadProgress | null>("get_download_progress", { id: taskId })
@@ -363,7 +363,7 @@ function App() {
           if (update && update.available) {
             console.log(`[Auto-Update] New version ${update.version} found! Downloading in background...`);
             setUpdateStatus(`Background updating to v${update.version}...`);
-            await update.downloadAndInstall(() => {});
+            await update.downloadAndInstall(() => { });
             setUpdateStatus(`Update v${update.version} ready! Restart to apply.`);
           }
         })
@@ -606,7 +606,7 @@ function App() {
     if (e) e.stopPropagation();
     try {
       await invoke("cancel_download", { id });
-      
+
       // If we are cancel-closing the standalone progress or refresh window, close this window
       if (popupMode === "progress" || popupMode === "refresh") {
         await handleClosePopup();
@@ -636,14 +636,14 @@ function App() {
     if (!taskToRemove) return;
     const id = taskToRemove.id;
     const isAlreadyTrash = getStatusText(taskToRemove.status) === "Trash";
-    
+
     try {
       if (isAlreadyTrash) {
         await invoke("delete_task", { id });
         setDownloads((prev) => prev.filter((d) => d.id !== id));
       } else {
         await invoke("trash_task", { id, deleteFile: deleteFileFromDisk });
-        setDownloads((prev) => 
+        setDownloads((prev) =>
           prev.map((d) => d.id === id ? { ...d, status: "Trash" } : d)
         );
       }
@@ -706,7 +706,7 @@ function App() {
     const statusText = getStatusText(d.status);
     if (activeCategory === "trash") return statusText === "Trash";
     if (statusText === "Trash") return false; // Exclude from all other categories
-    
+
     if (activeCategory === "all") return true;
     if (activeCategory === "downloading") return statusText === "Downloading" || statusText === "Queued";
     if (activeCategory === "completed") return statusText === "Completed";
@@ -747,7 +747,7 @@ function App() {
   if (popupMode === "add") {
     return (
       <div className="modal-content-v2" style={{ height: "100vh", overflowY: "auto", animation: "none", boxShadow: "none", border: "none", padding: "16px" }}>
-        
+
         <div className="modal-body-v2" style={{ display: "flex", flexDirection: "column", gap: "10px", padding: 0 }}>
           <div className="form-group-v2">
             <span className="form-label-v2" style={{ fontSize: "0.75rem", marginBottom: "4px" }}>Source URL</span>
@@ -783,11 +783,11 @@ function App() {
 
   if (popupMode === "progress") {
     const isCompleted = popupProgress?.status === "Completed";
-    const progressPercent = isCompleted 
-      ? 100 
-      : (popupProgress && popupProgress.total_size > 0 
-          ? Math.min(100, Math.floor((popupProgress.downloaded / popupProgress.total_size) * 100))
-          : 0);
+    const progressPercent = isCompleted
+      ? 100
+      : (popupProgress && popupProgress.total_size > 0
+        ? Math.min(100, Math.floor((popupProgress.downloaded / popupProgress.total_size) * 100))
+        : 0);
     const isPaused = popupProgress && (
       popupProgress.status === "Paused" ||
       JSON.stringify(popupProgress.status) === JSON.stringify("Paused")
@@ -796,11 +796,11 @@ function App() {
 
     return (
       <div className="modal-content-v2" style={{ height: "100vh", animation: "none", boxShadow: "none", border: "none", alignItems: "center", justifyContent: "center", position: "relative" }}>
-        
+
         <div className="liquid-progress-container" style={{ width: "100px", height: "100px", marginBottom: "16px" }}>
-          <div 
-            className={`liquid-fill ${isPaused ? "paused" : ""} ${isCompleted ? "completed" : ""} ${catClass}`} 
-            style={{ transform: `translateY(${100 - progressPercent}%)` }} 
+          <div
+            className={`liquid-fill ${isPaused ? "paused" : ""} ${isCompleted ? "completed" : ""} ${catClass}`}
+            style={{ transform: `translateY(${100 - progressPercent}%)` }}
           />
           <div style={{ position: "absolute", inset: 0, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", zIndex: 10 }}>
             <span style={{ fontSize: "1.8rem", fontWeight: 800, color: "#fff", textShadow: "0 1px 3px rgba(0,0,0,0.9), 0 0 2px rgba(0,0,0,0.9)", lineHeight: 1 }}>{progressPercent}%</span>
@@ -812,13 +812,13 @@ function App() {
           <div className="file-display-box" style={{ background: "rgba(255,255,255,0.05)", border: "none", fontSize: "0.85rem", padding: "8px 12px", marginBottom: "12px", borderRadius: "8px", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }} title={popupProgress?.filename}>
             {popupProgress?.filename || "Loading..."}
           </div>
-          
+
           {popupProgress && (
             <div style={{ display: "flex", justifyContent: "space-between", background: "rgba(0,0,0,0.2)", borderRadius: "12px", padding: "10px", border: "1px solid rgba(255,255,255,0.03)" }}>
               <div style={{ display: "flex", flexDirection: "column", flex: 1 }}>
                 <span style={{ fontSize: "0.65rem", color: "var(--text-secondary)", textTransform: "uppercase", letterSpacing: "0.5px" }}>Downloaded</span>
                 <span style={{ fontSize: "0.85rem", fontWeight: 700 }}>
-                  {formatBytes(popupProgress.downloaded)} 
+                  {formatBytes(popupProgress.downloaded)}
                   <span style={{ fontSize: "0.65rem", color: "var(--text-secondary)", fontWeight: 500, marginLeft: "4px" }}>
                     / {popupProgress.total_size > 0 ? formatBytes(popupProgress.total_size) : "???"}
                   </span>
@@ -890,7 +890,7 @@ function App() {
         <div className="file-display-box" style={{ background: "rgba(255,255,255,0.03)", border: "1px solid rgba(255,255,255,0.06)", fontSize: "0.95rem", padding: "12px 20px", width: "90%", textAlign: "center", marginBottom: "32px", borderRadius: "12px", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }} title={popupFilename}>
           {popupFilename}
         </div>
-        
+
         <div style={{ position: "absolute", bottom: "24px", left: "24px", right: "24px", display: "flex", gap: "12px" }}>
           {popupSavePath && (
             <button
@@ -923,8 +923,8 @@ function App() {
         </div>
 
         <nav className="sidebar-menu-v2">
-          <button 
-            className="menu-pill accent-pill" 
+          <button
+            className="menu-pill accent-pill"
             onClick={handleOpenAddModal}
             onMouseEnter={(e) => showTooltip("Add Download", e)}
             onMouseLeave={hideTooltip}
@@ -961,9 +961,9 @@ function App() {
           ))}
 
           <div style={{ marginTop: 'auto' }} />
-          
-          <div 
-            className={`menu-pill ${activeCategory === "settings" ? "active" : ""}`} 
+
+          <div
+            className={`menu-pill ${activeCategory === "settings" ? "active" : ""}`}
             onClick={() => setActiveCategory("settings")}
             onMouseEnter={(e) => showTooltip("Settings", e)}
             onMouseLeave={hideTooltip}
@@ -1011,20 +1011,20 @@ function App() {
         {/* Spotlight Search Header */}
         <header className="topbar-v2">
           {activeCategory !== "settings" ? (
-             <div className="spotlight-search-container">
-               <Search size={18} className="spotlight-icon" />
-               <input
-                 type="text"
-                 placeholder="Search downloads..."
-                 className="spotlight-input"
-                 value={searchQuery}
-                 onChange={(e) => setSearchQuery(e.target.value)}
-               />
-             </div>
+            <div className="spotlight-search-container">
+              <Search size={18} className="spotlight-icon" />
+              <input
+                type="text"
+                placeholder="Search downloads..."
+                className="spotlight-input"
+                value={searchQuery}
+                onChange={(e) => setSearchQuery(e.target.value)}
+              />
+            </div>
           ) : (
-             <div style={{ fontSize: "1rem", fontWeight: 600, color: "var(--text-primary)" }}>
-               Settings
-             </div>
+            <div style={{ fontSize: "1rem", fontWeight: 600, color: "var(--text-primary)" }}>
+              Settings
+            </div>
           )}
         </header>
 
@@ -1047,10 +1047,10 @@ function App() {
                       value={defaultSaveDir}
                       onChange={(e) => handleUpdateDefaultSaveDir(e.target.value)}
                     />
-                    <button 
-                      type="button" 
-                      className="hover-action-btn" 
-                      style={{ width: "auto", padding: "0 18px", height: "42px", flexShrink: 0 }} 
+                    <button
+                      type="button"
+                      className="hover-action-btn"
+                      style={{ width: "auto", padding: "0 18px", height: "42px", flexShrink: 0 }}
                       onClick={handlePickDefaultFolder}
                     >
                       Browse
@@ -1060,9 +1060,9 @@ function App() {
                 <div className="form-group" style={{ position: "relative" }}>
                   <span className="form-label">Theme Mode</span>
                   <div className="custom-dropdown-container" ref={themeDropdownRef}>
-                    <button 
-                      type="button" 
-                      className="form-input custom-dropdown-trigger" 
+                    <button
+                      type="button"
+                      className="form-input custom-dropdown-trigger"
                       onClick={() => setIsThemeDropdownOpen(!isThemeDropdownOpen)}
                     >
                       {themeMode === "dark" && "Dark Theme"}
@@ -1071,7 +1071,7 @@ function App() {
                     </button>
                     {isThemeDropdownOpen && (
                       <div className="custom-dropdown-menu">
-                        <div 
+                        <div
                           className={`custom-dropdown-item ${themeMode === "dark" ? "selected" : ""}`}
                           onClick={() => {
                             setThemeMode("dark");
@@ -1080,7 +1080,7 @@ function App() {
                         >
                           Dark Theme
                         </div>
-                        <div 
+                        <div
                           className={`custom-dropdown-item ${themeMode === "light" ? "selected" : ""}`}
                           onClick={() => {
                             setThemeMode("light");
@@ -1089,7 +1089,7 @@ function App() {
                         >
                           Light Theme
                         </div>
-                        <div 
+                        <div
                           className={`custom-dropdown-item ${themeMode === "system" ? "selected" : ""}`}
                           onClick={() => {
                             setThemeMode("system");
@@ -1108,8 +1108,8 @@ function App() {
                     <span className="settings-desc">Automatically launch Impressive Download Manager when your computer starts.</span>
                   </div>
                   <label className="switch-container">
-                    <input 
-                      type="checkbox" 
+                    <input
+                      type="checkbox"
                       className="switch-input"
                       checked={autostart}
                       onChange={(e) => {
@@ -1128,8 +1128,8 @@ function App() {
                     <span className="settings-desc">Close button hides the window to system tray instead of exiting the process.</span>
                   </div>
                   <label className="switch-container">
-                    <input 
-                      type="checkbox" 
+                    <input
+                      type="checkbox"
                       className="switch-input"
                       checked={minimizeToTray}
                       onChange={(e) => setMinimizeToTray(e.target.checked)}
@@ -1149,10 +1149,10 @@ function App() {
                     <span className="settings-title">Max Segment Connections ({maxChunks})</span>
                     <span className="settings-desc">The maximum number of parallel range threads to split download files into in Rust.</span>
                   </div>
-                  <input 
-                    type="range" 
-                    min="1" 
-                    max="32" 
+                  <input
+                    type="range"
+                    min="1"
+                    max="32"
                     className="range-slider"
                     value={maxChunks}
                     onChange={(e) => setMaxChunks(parseInt(e.target.value))}
@@ -1164,8 +1164,8 @@ function App() {
                     <span className="settings-desc">Prevent downloads from consuming the entire network bandwidth.</span>
                   </div>
                   <label className="switch-container">
-                    <input 
-                      type="checkbox" 
+                    <input
+                      type="checkbox"
                       className="switch-input"
                       checked={speedLimitEnabled}
                       onChange={(e) => {
@@ -1244,8 +1244,8 @@ function App() {
                     <span className="settings-desc">Enable connection socket to capture video links and documents from browser extensions.</span>
                   </div>
                   <label className="switch-container">
-                    <input 
-                      type="checkbox" 
+                    <input
+                      type="checkbox"
                       className="switch-input"
                       checked={interceptDownloads}
                       onChange={(e) => {
@@ -1280,8 +1280,8 @@ function App() {
                     <span className="settings-desc">Schedule download files to trigger or pause within specific daily intervals.</span>
                   </div>
                   <label className="switch-container">
-                    <input 
-                      type="checkbox" 
+                    <input
+                      type="checkbox"
                       className="switch-input"
                       checked={schedulerEnabled}
                       onChange={(e) => setSchedulerEnabled(e.target.checked)}
@@ -1293,18 +1293,18 @@ function App() {
                   <div className="settings-grid">
                     <div className="form-group">
                       <span className="form-label">Start Time</span>
-                      <input 
-                        type="time" 
-                        className="form-input" 
+                      <input
+                        type="time"
+                        className="form-input"
                         value={startTime}
                         onChange={(e) => setStartTime(e.target.value)}
                       />
                     </div>
                     <div className="form-group">
                       <span className="form-label">End Time</span>
-                      <input 
-                        type="time" 
-                        className="form-input" 
+                      <input
+                        type="time"
+                        className="form-input"
                         value={endTime}
                         onChange={(e) => setEndTime(e.target.value)}
                       />
@@ -1314,8 +1314,8 @@ function App() {
                       <div className="days-grid">
                         {daysOfWeek.map((day) => (
                           <div key={day} style={{ flex: 1 }}>
-                            <input 
-                              type="checkbox" 
+                            <input
+                              type="checkbox"
                               id={`day-${day}`}
                               className="day-checkbox-input"
                               checked={activeDays.includes(day)}
@@ -1380,50 +1380,50 @@ function App() {
                     const isCompleted = statusText === "Completed";
                     const isFailed = statusText.startsWith("Failed");
                     const isTrash = statusText === "Trash";
-                    
-                    const progressPercent = isCompleted 
-                      ? 100 
-                      : (d.total_size > 0 
-                          ? Math.min(100, Math.floor((d.downloaded / d.total_size) * 100))
-                          : 0);
+
+                    const progressPercent = isCompleted
+                      ? 100
+                      : (d.total_size > 0
+                        ? Math.min(100, Math.floor((d.downloaded / d.total_size) * 100))
+                        : 0);
                     const catClass = `cat-${getFileCategory(d.filename)}`;
 
                     return (
-                      <div 
-                        className="download-card-v2" 
+                      <div
+                        className="download-card-v2"
                         key={d.id.toString()}
                         onClick={() => setSelectedTask(d)}
                       >
                         <div className="card-left-v2">
-                           <div className="liquid-progress-container">
-                             <div 
-                               className={`liquid-fill ${isPaused ? "paused" : ""} ${isCompleted ? "completed" : ""} ${catClass}`} 
-                               style={{ transform: `translateY(${100 - progressPercent}%)` }} 
-                             />
-                             <div className="circular-icon-inner">
-                               {getFileIcon(d.filename)}
-                             </div>
-                           </div>
+                          <div className="liquid-progress-container">
+                            <div
+                              className={`liquid-fill ${isPaused ? "paused" : ""} ${isCompleted ? "completed" : ""} ${catClass}`}
+                              style={{ transform: `translateY(${100 - progressPercent}%)` }}
+                            />
+                            <div className="circular-icon-inner">
+                              {getFileIcon(d.filename)}
+                            </div>
+                          </div>
                         </div>
 
                         <div className="card-middle-v2">
-                           <h3 className="file-name-v2" title={d.filename}>{d.filename}</h3>
-                           <div className="file-meta-v2">
-                              <span className={`status-pill-v2 status-${statusText.toLowerCase()}`}>{statusText}</span>
-                              <span className="meta-divider">•</span>
-                              <span>{formatBytes(d.downloaded)} / {d.total_size > 0 ? formatBytes(d.total_size) : "Unknown size"}</span>
-                              {isDownloading && (
-                                <>
-                                  <span className="meta-divider">•</span>
-                                  <span className="speed-text-v2">
-                                    {formatBytes(d.speed)}/s
-                                    {d.speed_limited && <span style={{ color: "var(--accent-orange)", fontSize: "0.65rem", background: "rgba(245, 158, 11, 0.15)", padding: "1px 5px", borderRadius: "4px", marginLeft: "6px", fontWeight: 700 }}>LIMITED</span>}
-                                  </span>
-                                  <span className="meta-divider">•</span>
-                                  <span>{d.eta}</span>
-                                </>
-                              )}
-                           </div>
+                          <h3 className="file-name-v2" title={d.filename}>{d.filename}</h3>
+                          <div className="file-meta-v2">
+                            <span className={`status-pill-v2 status-${statusText.toLowerCase()}`}>{statusText}</span>
+                            <span className="meta-divider">•</span>
+                            <span>{formatBytes(d.downloaded)} / {d.total_size > 0 ? formatBytes(d.total_size) : "Unknown size"}</span>
+                            {isDownloading && (
+                              <>
+                                <span className="meta-divider">•</span>
+                                <span className="speed-text-v2">
+                                  {formatBytes(d.speed)}/s
+                                  {d.speed_limited && <span style={{ color: "var(--accent-orange)", fontSize: "0.65rem", background: "rgba(245, 158, 11, 0.15)", padding: "1px 5px", borderRadius: "4px", marginLeft: "6px", fontWeight: 700 }}>LIMITED</span>}
+                                </span>
+                                <span className="meta-divider">•</span>
+                                <span>{d.eta}</span>
+                              </>
+                            )}
+                          </div>
                         </div>
 
                         <div className="card-right-hover-actions">
@@ -1543,8 +1543,8 @@ function App() {
               <button className="hover-action-btn" style={{ width: "auto", padding: "0 24px" }} onClick={() => setShowAddModal(false)}>
                 Cancel
               </button>
-              <button 
-                className="accent-pill" 
+              <button
+                className="accent-pill"
                 style={{ padding: "12px 32px", borderRadius: "100px", fontWeight: 700, fontSize: "1rem" }}
                 onClick={handleStartDownload}
                 disabled={!inputUrl}
@@ -1602,7 +1602,7 @@ function App() {
                   const status = getStatusText(selectedTask.status);
                   const isCompleted = status === "Completed";
                   const isDownloading = status === "Downloading";
-                  
+
                   let blockClass = "";
                   if (isCompleted) blockClass = "completed";
                   else if (isDownloading) {
@@ -1611,8 +1611,8 @@ function App() {
                   }
 
                   return (
-                    <div 
-                      key={idx} 
+                    <div
+                      key={idx}
                       className={`segment-block ${blockClass}`}
                       title={`Segment ${idx + 1}`}
                     />
@@ -1635,8 +1635,8 @@ function App() {
               {getStatusText(selectedTask.status) === "Trash" ? (
                 <>
                   {!selectedTask.file_exists && (
-                    <button 
-                      className="action-btn" 
+                    <button
+                      className="action-btn"
                       style={{ flex: 1, color: "var(--accent-green)", borderColor: "rgba(16, 185, 129, 0.2)", background: "rgba(16, 185, 129, 0.05)" }}
                       onClick={(e) => handleRedownload(e, selectedTask.id)}
                     >
@@ -1664,9 +1664,9 @@ function App() {
                     </button>
                   )}
                   {(getStatusText(selectedTask.status).startsWith("Failed") || getStatusText(selectedTask.status) === "Paused") && (
-                    <button 
-                      className="action-btn" 
-                      style={{ flex: 1, color: "var(--accent-orange)", borderColor: "rgba(245, 158, 11, 0.2)", background: "rgba(245, 158, 11, 0.05)" }} 
+                    <button
+                      className="action-btn"
+                      style={{ flex: 1, color: "var(--accent-orange)", borderColor: "rgba(245, 158, 11, 0.2)", background: "rgba(245, 158, 11, 0.05)" }}
                       onClick={(e) => handleRefreshLink(e, selectedTask.id)}
                     >
                       <RefreshCw size={14} />
@@ -1674,8 +1674,8 @@ function App() {
                     </button>
                   )}
                   {getStatusText(selectedTask.status) === "Completed" && (
-                    <button 
-                      className="action-btn" 
+                    <button
+                      className="action-btn"
                       style={{ flex: 1, color: "var(--accent-green)", borderColor: "rgba(16, 185, 129, 0.2)", background: "rgba(16, 185, 129, 0.05)" }}
                       onClick={(e) => handleOpenFileDir(e, selectedTask.save_path || "")}
                     >
@@ -1712,10 +1712,10 @@ function App() {
                 <X size={20} />
               </button>
             </div>
-            
+
             <div className="modal-body-v2">
               <p style={{ fontSize: "1rem", color: "var(--text-primary)", lineHeight: "1.6", margin: 0, fontWeight: 500 }}>
-                {getStatusText(taskToRemove.status) === "Trash" 
+                {getStatusText(taskToRemove.status) === "Trash"
                   ? `You are about to permanently delete "${taskToRemove.filename}". This action cannot be undone.`
                   : `Are you sure you want to move "${taskToRemove.filename}" to the Trash?`
                 }
@@ -1723,9 +1723,9 @@ function App() {
 
               {getStatusText(taskToRemove.status) === "Completed" && (
                 <label className="custom-checkbox-container" style={{ marginTop: "12px", padding: "16px", background: "rgba(255,255,255,0.03)", borderRadius: "12px", border: "1px solid rgba(255,255,255,0.05)" }}>
-                  <input 
-                    type="checkbox" 
-                    checked={deleteFileFromDisk} 
+                  <input
+                    type="checkbox"
+                    checked={deleteFileFromDisk}
                     onChange={(e) => setDeleteFileFromDisk(e.target.checked)}
                   />
                   <span className="custom-checkbox-checkmark"></span>
@@ -1738,8 +1738,8 @@ function App() {
               <button className="hover-action-btn" style={{ width: "auto", padding: "0 24px" }} onClick={() => { setShowRemoveConfirm(false); setTaskToRemove(null); }}>
                 Cancel
               </button>
-              <button 
-                className="accent-pill danger-pill" 
+              <button
+                className="accent-pill danger-pill"
                 onClick={confirmRemoveTask}
               >
                 Confirm Delete
@@ -1750,7 +1750,7 @@ function App() {
       )}
 
       {activeTooltip && (
-        <div 
+        <div
           className="global-tooltip-v2"
           style={{
             left: `${activeTooltip.x}px`,
