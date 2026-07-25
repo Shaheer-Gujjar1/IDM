@@ -89,7 +89,10 @@ function App() {
 
   // Settings State
   const [defaultSaveDir, setDefaultSaveDir] = useState(() => localStorage.getItem("default_save_dir") || "");
-  const [autostart, setAutostart] = useState(true);
+  const [autostart, setAutostart] = useState(() => {
+    const saved = localStorage.getItem("autostart");
+    return saved !== null ? saved === "true" : true;
+  });
   const [minimizeToTray, setMinimizeToTray] = useState(true);
   const [maxChunks, setMaxChunks] = useState(8);
   const [speedLimitEnabled, setSpeedLimitEnabled] = useState(false);
@@ -288,6 +291,11 @@ function App() {
       setDefaultSaveDir(savedDir);
       setSavePath(savedDir);
     }
+
+    // Sync autostart settings to OS registry / desktop entry
+    const savedAutostart = localStorage.getItem("autostart");
+    const isAutostartEnabled = savedAutostart !== null ? savedAutostart === "true" : true;
+    invoke("toggle_autostart", { enabled: isAutostartEnabled }).catch(console.error);
 
     if (mode) {
       setPopupMode(mode);
@@ -1082,6 +1090,7 @@ function App() {
                       onChange={(e) => {
                         const val = e.target.checked;
                         setAutostart(val);
+                        localStorage.setItem("autostart", String(val));
                         invoke("toggle_autostart", { enabled: val }).catch(console.error);
                       }}
                     />

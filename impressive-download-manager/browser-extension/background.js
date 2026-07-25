@@ -89,8 +89,10 @@ chrome.downloads.onDeterminingFilename.addListener((downloadItem, suggest) => {
   }
 
   if (downloadItem.url && !downloadItem.byExtensionId) {
-    // Cancel download immediately to prevent browser's save dialogue from showing up
-    chrome.downloads.cancel(downloadItem.id);
+    // ALWAYS cancel browser download immediately so IDM handles 100% of downloads
+    try {
+      chrome.downloads.cancel(downloadItem.id);
+    } catch (e) {}
     suggest();
 
     const filename = downloadItem.filename 
@@ -110,6 +112,7 @@ chrome.downloads.onDeterminingFilename.addListener((downloadItem, suggest) => {
           console.warn("Failed to fetch fallback tab referrer:", err);
         }
       }
+      
       await sendToDesktopApp(downloadItem.url, filename, cookies, referrer);
     })();
   } else {
@@ -123,11 +126,10 @@ const recentInterceptions = new Map();
 async function sendToDesktopApp(url, filename, cookie = "", referrer = "") {
   const now = Date.now();
   const lastIntercept = recentInterceptions.get(url);
-  if (lastIntercept && (now - lastIntercept) < 6000) {
+  if (lastIntercept && (now - lastIntercept) < 2500) {
     console.log("De-duplicated download popup trigger for URL:", url);
     return false;
   }
-  recentInterceptions.set(url, now);
 
   // Periodic cleanup
   for (const [key, time] of recentInterceptions.entries()) {
@@ -145,11 +147,15 @@ async function sendToDesktopApp(url, filename, cookie = "", referrer = "") {
       mode: 'cors',
       body: JSON.stringify({ url, filename, cookie, referrer })
     });
-    const result = await response.json();
-    console.log("Desktop app response:", result);
-    return true;
+    if (response.ok) {
+      recentInterceptions.set(url, now);
+      const result = await response.json();
+      console.log("Desktop app response:", result);
+      return true;
+    }
+    return false;
   } catch (err) {
-    console.error("Failed to connect to Impressive Download Manager app:", err);
+    console.warn("Desktop app connection error on port 9600:", err);
     return false;
   }
 }

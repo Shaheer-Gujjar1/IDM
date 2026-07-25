@@ -7,6 +7,8 @@
 - **Silent Background & Manual Update Checks**: App automatically checks for signed updates on startup in the background and stages updates seamlessly.
 
 ### Fixed
+- **Strict 100% IDM Download Interception**: Configured browser extension to unconditionally cancel standard browser downloads immediately and pass 100% of download payloads to Impressive Download Manager background engine on port 9600.
+- **Fast Retry Tuning**: Reduced link capture deduplication window from 6000ms to 2500ms so rapid manual re-clicks work instantly.
 - **Standalone Popup Window Navigation Fix**: Fixed relative URL path resolution in Rust backend (`src-tauri/src/lib.rs`). Replaced absolute leading slashes (`/index.html?...`) with relative paths (`index.html?...`) in `tauri::WebviewUrl::App(...)` constructor calls across popup builders (`open_progress_window`, `open_complete_window`, `refresh_download_link`, and `popup-add`), resolving "Could not connect to localhost: Connection refused" blank screen errors.
 - **User-Focused Documentation (`README.md`)**: Restructured `README.md` to focus entirely on end-user features, installation instructions pointing directly to pre-compiled binaries in the GitHub Releases section, and browser extension setup.
 
