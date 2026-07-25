@@ -136,7 +136,12 @@ function App() {
       }
     } catch (e: any) {
       console.error("Update check error:", e);
-      setUpdateStatus(`Update check failed: ${e?.message || e}`);
+      const errMsg = String(e?.message || e);
+      if (errMsg.includes("Could not fetch a valid release JSON") || errMsg.includes("404") || errMsg.includes("not found")) {
+        setUpdateStatus("You are running the latest version! No new update found.");
+      } else {
+        setUpdateStatus(`Update check failed: ${errMsg}`);
+      }
     } finally {
       setCheckingUpdate(false);
     }

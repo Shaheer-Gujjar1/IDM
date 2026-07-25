@@ -6,6 +6,7 @@
 - **100% Mandatory IDM Background Capture**: Configured browser extension to unconditionally cancel native browser downloads immediately and pass 100% of download payloads directly to Impressive Download Manager background engine on port 9600.
 - **Background Autostart Sync**: Enhanced startup initialization in frontend (`App.tsx`) and backend (`lib.rs`) to persist autostart preference in `localStorage` and register system startup entries across Windows Registry (`HKCU\Software\Microsoft\Windows\CurrentVersion\Run`) and Linux (`~/.config/autostart`).
 - **Updater Plugin ACL Permission Fix**: Granted `"updater:default"` permission in `src-tauri/capabilities/default.json` so the frontend webview is authorized to invoke updater IPC commands (`plugin:updater|check` and `plugin:updater|download_and_install`).
+- **User-Friendly Updater Diagnostics**: Intercepted `Could not fetch a valid release JSON` remote fetch errors (which occur when no new release JSON exists on GitHub yet) and mapped them to a clean user message: `"You are running the latest version! No new update found."`
 - **Fast Retry Tuning**: Reduced link capture deduplication window to 2500ms so rapid manual link re-clicks work instantly.
 
 ## [0.4.1] – 2026-07-24
