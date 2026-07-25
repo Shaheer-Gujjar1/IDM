@@ -95,9 +95,15 @@ function App() {
   });
   const [minimizeToTray, setMinimizeToTray] = useState(true);
   const [maxChunks, setMaxChunks] = useState(8);
-  const [speedLimitEnabled, setSpeedLimitEnabled] = useState(false);
-  const [speedLimitKb, setSpeedLimitKb] = useState(2048);
-  const [interceptDownloads, setInterceptDownloads] = useState(true);
+  const [speedLimitEnabled, setSpeedLimitEnabled] = useState(() => localStorage.getItem("speed_limit_enabled") === "true");
+  const [speedLimitKb, setSpeedLimitKb] = useState(() => {
+    const val = localStorage.getItem("speed_limit_kb");
+    return val ? parseInt(val) : 2048;
+  });
+  const [interceptDownloads, setInterceptDownloads] = useState(() => {
+    const val = localStorage.getItem("intercept_downloads");
+    return val !== null ? val === "true" : true;
+  });
   const [integrationPort, setIntegrationPort] = useState(9600);
   
   // Remove Task Modal States
@@ -301,6 +307,17 @@ function App() {
     const savedAutostart = localStorage.getItem("autostart");
     const isAutostartEnabled = savedAutostart !== null ? savedAutostart === "true" : true;
     invoke("toggle_autostart", { enabled: isAutostartEnabled }).catch(console.error);
+
+    // Sync speed limit settings to backend engine
+    const isSpeedLimitEnabled = localStorage.getItem("speed_limit_enabled") === "true";
+    const savedSpeedLimitKb = parseInt(localStorage.getItem("speed_limit_kb") || "2048");
+    const limitBps = isSpeedLimitEnabled ? savedSpeedLimitKb * 1024 : 0;
+    invoke("set_speed_limit", { limitBps }).catch(console.error);
+
+    // Sync intercept downloads setting to backend engine
+    const savedIntercept = localStorage.getItem("intercept_downloads");
+    const isInterceptEnabled = savedIntercept !== null ? savedIntercept === "true" : true;
+    invoke("set_intercept_downloads", { enabled: isInterceptEnabled }).catch(console.error);
 
     if (mode) {
       setPopupMode(mode);
@@ -807,7 +824,9 @@ function App() {
                 </span>
               </div>
               <div style={{ display: "flex", flexDirection: "column", flex: 1 }}>
-                <span style={{ fontSize: "0.65rem", color: "var(--text-secondary)", textTransform: "uppercase", letterSpacing: "0.5px" }}>Speed</span>
+                <span style={{ fontSize: "0.65rem", color: "var(--text-secondary)", textTransform: "uppercase", letterSpacing: "0.5px" }}>
+                  Speed {popupProgress.speed_limited && <span style={{ color: "var(--accent-orange)", fontSize: "0.6rem", background: "rgba(245, 158, 11, 0.15)", padding: "1px 4px", borderRadius: "4px", marginLeft: "4px", fontWeight: 700 }}>LIMITED</span>}
+                </span>
                 <span className="accent-cyan" style={{ fontSize: "0.85rem", fontWeight: 700 }}>{formatBytes(popupProgress.speed)}/s</span>
               </div>
               <div style={{ display: "flex", flexDirection: "column", flex: 1 }}>
@@ -1148,25 +1167,67 @@ function App() {
                       type="checkbox" 
                       className="switch-input"
                       checked={speedLimitEnabled}
-                      onChange={(e) => setSpeedLimitEnabled(e.target.checked)}
+                      onChange={(e) => {
+                        const val = e.target.checked;
+                        setSpeedLimitEnabled(val);
+                        localStorage.setItem("speed_limit_enabled", String(val));
+                        const limitBps = val ? speedLimitKb * 1024 : 0;
+                        invoke("set_speed_limit", { limitBps }).catch(console.error);
+                      }}
                     />
                     <span className="switch-slider"></span>
                   </label>
                 </div>
                 {speedLimitEnabled && (
-                  <div className="settings-control-row" style={{ alignItems: "flex-start", flexDirection: "column", gap: "10px" }}>
-                    <div className="settings-info-col">
-                      <span className="settings-title">Speed Limit Threshold ({formatBytes(speedLimitKb * 1024)}/s)</span>
+                  <div className="settings-control-row" style={{ alignItems: "flex-start", flexDirection: "column", gap: "12px", background: "rgba(0,0,0,0.15)", padding: "16px", borderRadius: "12px", border: "1px solid rgba(255,255,255,0.04)" }}>
+                    <div style={{ display: "flex", justifyContent: "space-between", width: "100%", alignItems: "center" }}>
+                      <span className="settings-title">Maximum Speed Threshold</span>
+                      <div style={{ display: "flex", alignItems: "center", gap: "6px" }}>
+                        <input
+                          type="number"
+                          min="64"
+                          max="1024000"
+                          step="128"
+                          className="spotlight-input"
+                          style={{ width: "110px", padding: "6px 10px", textAlign: "right", fontSize: "0.9rem", fontWeight: 700, color: "var(--accent-cyan)" }}
+                          value={speedLimitKb}
+                          onChange={(e) => {
+                            const val = Math.max(64, parseInt(e.target.value) || 128);
+                            setSpeedLimitKb(val);
+                            localStorage.setItem("speed_limit_kb", String(val));
+                            invoke("set_speed_limit", { limitBps: val * 1024 }).catch(console.error);
+                          }}
+                        />
+                        <span style={{ fontSize: "0.85rem", fontWeight: 600, color: "var(--text-secondary)" }}>KB/s</span>
+                      </div>
                     </div>
-                    <input 
-                      type="range" 
-                      min="128" 
-                      max="102400" 
-                      step="128"
-                      className="range-slider"
-                      value={speedLimitKb}
-                      onChange={(e) => setSpeedLimitKb(parseInt(e.target.value))}
-                    />
+
+                    <div style={{ display: "flex", gap: "8px", width: "100%", flexWrap: "wrap" }}>
+                      {[512, 1024, 2048, 5120, 10240].map((preset) => (
+                        <button
+                          key={preset}
+                          type="button"
+                          className="hover-action-btn"
+                          style={{
+                            flex: 1,
+                            padding: "6px 12px",
+                            fontSize: "0.8rem",
+                            fontWeight: 600,
+                            borderRadius: "8px",
+                            background: speedLimitKb === preset ? "rgba(6, 182, 212, 0.2)" : "rgba(255,255,255,0.04)",
+                            color: speedLimitKb === preset ? "var(--accent-cyan)" : "var(--text-primary)",
+                            borderColor: speedLimitKb === preset ? "var(--accent-cyan)" : "transparent"
+                          }}
+                          onClick={() => {
+                            setSpeedLimitKb(preset);
+                            localStorage.setItem("speed_limit_kb", String(preset));
+                            invoke("set_speed_limit", { limitBps: preset * 1024 }).catch(console.error);
+                          }}
+                        >
+                          {formatBytes(preset * 1024)}/s
+                        </button>
+                      ))}
+                    </div>
                   </div>
                 )}
               </div>
@@ -1186,7 +1247,12 @@ function App() {
                       type="checkbox" 
                       className="switch-input"
                       checked={interceptDownloads}
-                      onChange={(e) => setInterceptDownloads(e.target.checked)}
+                      onChange={(e) => {
+                        const val = e.target.checked;
+                        setInterceptDownloads(val);
+                        localStorage.setItem("intercept_downloads", String(val));
+                        invoke("set_intercept_downloads", { enabled: val }).catch(console.error);
+                      }}
                     />
                     <span className="switch-slider"></span>
                   </label>
@@ -1348,7 +1414,10 @@ function App() {
                               {isDownloading && (
                                 <>
                                   <span className="meta-divider">•</span>
-                                  <span className="speed-text-v2">{formatBytes(d.speed)}/s</span>
+                                  <span className="speed-text-v2">
+                                    {formatBytes(d.speed)}/s
+                                    {d.speed_limited && <span style={{ color: "var(--accent-orange)", fontSize: "0.65rem", background: "rgba(245, 158, 11, 0.15)", padding: "1px 5px", borderRadius: "4px", marginLeft: "6px", fontWeight: 700 }}>LIMITED</span>}
+                                  </span>
                                   <span className="meta-divider">•</span>
                                   <span>{d.eta}</span>
                                 </>

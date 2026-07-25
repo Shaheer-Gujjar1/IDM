@@ -138,26 +138,51 @@ async function sendToDesktopApp(url, filename, cookie = "", referrer = "") {
     }
   }
 
-  try {
-    const response = await fetch(`http://127.0.0.1:${PORT}/download`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json'
-      },
-      mode: 'cors',
-      body: JSON.stringify({ url, filename, cookie, referrer })
-    });
-    if (response.ok) {
-      recentInterceptions.set(url, now);
-      const result = await response.json();
-      console.log("Desktop app response:", result);
-      return true;
+  // Try sending payload to desktop app
+  for (let attempt = 1; attempt <= 2; attempt++) {
+    try {
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 1200);
+
+      const response = await fetch(`http://127.0.0.1:${PORT}/download`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json'
+        },
+        mode: 'cors',
+        signal: controller.signal,
+        body: JSON.stringify({ url, filename, cookie, referrer })
+      });
+      clearTimeout(timeoutId);
+
+      if (response.ok) {
+        recentInterceptions.set(url, now);
+        const result = await response.json();
+        console.log("Desktop app response:", result);
+        return true;
+      } else if (response.status === 403) {
+        console.log("Download interception is toggled OFF in desktop app settings.");
+        return false;
+      }
+    } catch (err) {
+      if (attempt === 1) {
+        console.warn("Desktop app offline on port 9600. Sending background wakeup signal...");
+        // Wakeup signal via idm:// scheme or opening hidden background tab/frame
+        try {
+          chrome.tabs.create({ url: "idm://wakeup", active: false }, (tab) => {
+            if (tab && tab.id) {
+              setTimeout(() => {
+                chrome.tabs.remove(tab.id, () => {});
+              }, 400);
+            }
+          });
+        } catch (e) {}
+        // Short pause to allow background engine daemon to initialize
+        await new Promise(r => setTimeout(r, 800));
+      }
     }
-    return false;
-  } catch (err) {
-    console.warn("Desktop app connection error on port 9600:", err);
-    return false;
   }
+  return false;
 }
 
 // Extractor helper

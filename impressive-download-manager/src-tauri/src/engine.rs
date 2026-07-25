@@ -36,6 +36,7 @@ pub struct DownloadProgress {
     pub eta: String,
     pub status: DownloadStatus,
     pub file_exists: bool,
+    pub speed_limited: bool,
 }
 
 pub struct DownloadTask {
@@ -73,6 +74,8 @@ pub struct DownloadManager {
     pub app_handle: Mutex<Option<tauri::AppHandle>>,
     pub client: reqwest::Client,
     pub theme_mode: Mutex<String>,
+    pub speed_limit_bps: AtomicU64,
+    pub intercept_downloads: std::sync::atomic::AtomicBool,
 }
 
 impl DownloadManager {
@@ -90,6 +93,8 @@ impl DownloadManager {
             app_handle: Mutex::new(None),
             client,
             theme_mode: Mutex::new("dark".to_string()),
+            speed_limit_bps: AtomicU64::new(0),
+            intercept_downloads: std::sync::atomic::AtomicBool::new(true),
         }
     }
 
@@ -375,6 +380,9 @@ impl DownloadManager {
                         let status = status_ref.lock().unwrap().clone();
                         *task_eta.lock().unwrap() = eta.clone();
 
+                        let current_limit = manager_for_reporting.speed_limit_bps.load(Ordering::Relaxed);
+                        let is_speed_limited = current_limit > 0 && speed > 0.0;
+
                         let progress = DownloadProgress {
                             id: id_clone.clone(),
                             filename: filename_clone.clone(),
@@ -385,6 +393,7 @@ impl DownloadManager {
                             eta,
                             status: status.clone(),
                             file_exists: std::path::Path::new(&save_path_clone).exists(),
+                            speed_limited: is_speed_limited,
                         };
 
                         if let Some(ref handle) = app_handle_opt {
@@ -533,6 +542,18 @@ impl DownloadManager {
 
                                     net_buffer.extend_from_slice(bytes_to_add);
 
+                                    // --- Global Speed Limiter Throttle ---
+                                    let limit_bps = manager_for_save.speed_limit_bps.load(Ordering::Relaxed);
+                                    if limit_bps > 0 {
+                                        let per_worker_limit = limit_bps / (num_chunks as u64);
+                                        if per_worker_limit > 0 {
+                                            let expected_millis = (bytes_to_add.len() as u64 * 1000) / per_worker_limit;
+                                            if expected_millis > 0 {
+                                                tokio::time::sleep(Duration::from_millis(expected_millis.min(500))).await;
+                                            }
+                                        }
+                                    }
+
                                     // Flush to writer thread every 512 KB
                                     if net_buffer.len() >= 512 * 1024 {
                                         let write_pos = chunk.start + local_downloaded;
@@ -632,6 +653,7 @@ impl DownloadManager {
                 eta: "0s".to_string(),
                 status: final_status,
                 file_exists: std::path::Path::new(&task.save_path).exists(),
+                speed_limited: false,
             };
             if let Some(ref handle) = self.app_handle.lock().await.clone() {
                 use tauri::Emitter;
@@ -669,6 +691,7 @@ impl DownloadManager {
                 eta: "---".to_string(),
                 status: DownloadStatus::Paused,
                 file_exists: std::path::Path::new(&task.save_path).exists(),
+                speed_limited: false,
             };
             if let Some(ref handle) = app_handle_opt {
                 use tauri::Emitter;
@@ -744,7 +767,9 @@ impl DownloadManager {
                 let _ = tx.send(());
             }
             
-            *task.status.lock().unwrap() = DownloadStatus::Failed("Cancelled by user".to_string());
+            *task.status.lock().unwrap() = DownloadStatus::Paused;
+            *task.speed.lock().unwrap() = 0.0;
+            *task.eta.lock().unwrap() = "Paused".to_string();
             
             let progress = DownloadProgress {
                 id: task.id.clone(),
@@ -753,9 +778,10 @@ impl DownloadManager {
                 total_size: task.total_size.load(Ordering::Relaxed),
                 downloaded: task.downloaded.load(Ordering::Relaxed),
                 speed: 0.0,
-                eta: "---".to_string(),
-                status: DownloadStatus::Failed("Cancelled by user".to_string()),
+                eta: "Paused".to_string(),
+                status: DownloadStatus::Paused,
                 file_exists: std::path::Path::new(&task.save_path).exists(),
+                speed_limited: false,
             };
             if let Some(ref handle) = app_handle_opt {
                 use tauri::Emitter;
@@ -810,6 +836,7 @@ impl DownloadManager {
                 eta: "---".to_string(),
                 status: DownloadStatus::Trash,
                 file_exists: std::path::Path::new(&task.save_path).exists(),
+                speed_limited: false,
             };
             if let Some(ref handle) = app_handle_opt {
                 use tauri::Emitter;
@@ -852,6 +879,7 @@ impl DownloadManager {
                 eta: "---".to_string(),
                 status: final_status,
                 file_exists: std::path::Path::new(&task.save_path).exists(),
+                speed_limited: false,
             };
             if let Some(ref handle) = app_handle_opt {
                 use tauri::Emitter;
@@ -921,6 +949,9 @@ impl DownloadManager {
             let eta = task.eta.lock().unwrap().clone();
             let status = task.status.lock().unwrap().clone();
             
+            let current_limit = self.speed_limit_bps.load(Ordering::Relaxed);
+            let is_speed_limited = current_limit > 0 && speed > 0.0;
+
             Some(DownloadProgress {
                 id: task.id.clone(),
                 filename: task.filename.clone(),
@@ -931,6 +962,7 @@ impl DownloadManager {
                 eta,
                 status,
                 file_exists: std::path::Path::new(&task.save_path).exists(),
+                speed_limited: is_speed_limited,
             })
         } else {
             None
@@ -940,11 +972,13 @@ impl DownloadManager {
     pub async fn get_all_progress(&self) -> Vec<DownloadProgress> {
         let tasks = self.tasks.read().await;
         let mut list = vec![];
+        let current_limit = self.speed_limit_bps.load(Ordering::Relaxed);
         for task in tasks.values() {
             let current_bytes = task.downloaded.load(Ordering::Relaxed);
             let status = task.status.lock().unwrap().clone();
             let speed = *task.speed.lock().unwrap();
             let eta = task.eta.lock().unwrap().clone();
+            let is_speed_limited = current_limit > 0 && speed > 0.0;
             list.push(DownloadProgress {
                 id: task.id.clone(),
                 filename: task.filename.clone(),
@@ -955,6 +989,7 @@ impl DownloadManager {
                 eta,
                 status,
                 file_exists: std::path::Path::new(&task.save_path).exists(),
+                speed_limited: is_speed_limited,
             });
         }
         list

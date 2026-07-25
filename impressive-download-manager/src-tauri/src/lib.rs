@@ -275,6 +275,24 @@ async fn toggle_autostart(enabled: bool) -> Result<(), String> {
 }
 
 #[tauri::command]
+async fn set_speed_limit(
+    manager: tauri::State<'_, Arc<DownloadManager>>,
+    limit_bps: u64,
+) -> Result<(), String> {
+    manager.speed_limit_bps.store(limit_bps, std::sync::atomic::Ordering::Relaxed);
+    Ok(())
+}
+
+#[tauri::command]
+async fn set_intercept_downloads(
+    manager: tauri::State<'_, Arc<DownloadManager>>,
+    enabled: bool,
+) -> Result<(), String> {
+    manager.intercept_downloads.store(enabled, std::sync::atomic::Ordering::Relaxed);
+    Ok(())
+}
+
+#[tauri::command]
 async fn open_progress_window(app_handle: tauri::AppHandle, id: String) -> Result<(), String> {
     let progress_url = format!("index.html?popup=progress&id={}", id);
     
@@ -611,7 +629,16 @@ pub fn run() {
 
                                  // Check if it is a POST to /download
                                  if req_str.starts_with("POST /download") || req_str.contains("POST /download") {
-                                    if let Some(body_start) = req_str.find("\r\n\r\n") {
+                                     if !manager.intercept_downloads.load(std::sync::atomic::Ordering::Relaxed) {
+                                         let response = "HTTP/1.1 403 Forbidden\r\n\
+                                                         Access-Control-Allow-Origin: *\r\n\
+                                                         Content-Type: text/plain\r\n\r\n\
+                                                         disabled";
+                                         let _ = stream.write_all(response.as_bytes()).await;
+                                         return;
+                                     }
+
+                                     if let Some(body_start) = req_str.find("\r\n\r\n") {
                                         let body = &req_str[body_start + 4..];
                                         
                                         #[derive(serde::Deserialize, serde::Serialize, Clone, Debug)]
@@ -847,7 +874,9 @@ pub fn run() {
             close_window,
             get_download_progress,
             get_all_downloads,
-            sync_theme_mode
+            sync_theme_mode,
+            set_speed_limit,
+            set_intercept_downloads
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

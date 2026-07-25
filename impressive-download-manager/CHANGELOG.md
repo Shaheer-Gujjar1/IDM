@@ -1,5 +1,14 @@
 # CHANGELOG
 
+## [0.4.9] – 2026-07-25
+
+### Fixed
+- **Tauri App "Intercept Browser Downloads" Toggle**: Connected the "Intercept Browser Downloads" toggle in app Settings to a new Rust backend command (`set_intercept_downloads`). When turned OFF in app settings, the backend returns HTTP 403 Forbidden to the browser extension, cleanly bypassing IDM download capture until manually turned back on.
+- **Browser Extension Background App Wakeup**: Updated browser extension `sendToDesktopApp` helper. If port 9600 is unreachable (because the Tauri app daemon was closed), the extension emits a silent protocol wakeup signal (`idm://wakeup`) and retries delivery after 800ms.
+- **Backend Bandwidth Speed Limiter**: Implemented a global atomic speed limiter in Rust download engine (`set_speed_limit`). Segments dynamically throttle chunk reading speed to enforce exact target bandwidth caps (e.g. 512 KB/s, 1024 KB/s, 2048 KB/s).
+- **Interactive Speed Limit UX & UI Badges**: Replaced impractical range sliders in Settings with a crisp numerical input field + quick preset buttons (512 KB/s, 1 MB/s, 2 MB/s, 5 MB/s, 10 MB/s). Added a highlighted `LIMITED` badge indicator on progress popups and dashboard item cards when bandwidth throttling is active.
+- **Non-Destructive Popup Cancel / Close**: Fixed progress popup `Cancel` button so closing/cancelling a download pauses it in state rather than failing or losing the task. Cancelled downloads remain saved in the dashboard history list for easy resuming.
+
 ## [0.4.4] – 2026-07-25
 
 ### Fixed
