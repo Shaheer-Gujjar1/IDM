@@ -23,22 +23,7 @@ let latestJson = {
   platforms: {}
 };
 
-// 1. Linux Standard Target (AppImage for native in-place updates)
-const appimageDir = path.join(bundleDir, 'appimage');
-if (fs.existsSync(appimageDir)) {
-  const files = fs.readdirSync(appimageDir);
-  const file = files.find(f => f.endsWith('.AppImage'));
-  const sig = files.find(f => f.endsWith('.AppImage.sig'));
-  if (file && sig) {
-    const signature = fs.readFileSync(path.join(appimageDir, sig), 'utf-8').trim();
-    latestJson.platforms['linux-x86_64'] = {
-      signature,
-      url: `${baseUrl}/${file}`
-    };
-  }
-}
-
-// 2. Linux DEB Target
+// 1. Linux DEB Target (Default for linux-x86_64)
 const debDir = path.join(bundleDir, 'deb');
 if (fs.existsSync(debDir)) {
   const files = fs.readdirSync(debDir);
@@ -46,13 +31,10 @@ if (fs.existsSync(debDir)) {
   const sig = files.find(f => f.endsWith('.deb.sig'));
   if (file && sig) {
     const signature = fs.readFileSync(path.join(debDir, sig), 'utf-8').trim();
-    // Also attach to linux-x86_64 if AppImage is not built
-    if (!latestJson.platforms['linux-x86_64']) {
-      latestJson.platforms['linux-x86_64'] = {
-        signature,
-        url: `${baseUrl}/${file}`
-      };
-    }
+    latestJson.platforms['linux-x86_64'] = {
+      signature,
+      url: `${baseUrl}/${file}`
+    };
     latestJson.platforms['linux-x86_64-deb'] = {
       signature,
       url: `${baseUrl}/${file}`
@@ -60,7 +42,7 @@ if (fs.existsSync(debDir)) {
   }
 }
 
-// 3. Linux RPM Target
+// 2. Linux RPM Target (Fedora / RHEL / CentOS / openSUSE)
 const rpmDir = path.join(bundleDir, 'rpm');
 if (fs.existsSync(rpmDir)) {
   const files = fs.readdirSync(rpmDir);
@@ -69,6 +51,21 @@ if (fs.existsSync(rpmDir)) {
   if (file && sig) {
     const signature = fs.readFileSync(path.join(rpmDir, sig), 'utf-8').trim();
     latestJson.platforms['linux-x86_64-rpm'] = {
+      signature,
+      url: `${baseUrl}/${file}`
+    };
+  }
+}
+
+// 3. Arch Linux Pacman Target (.pkg.tar.zst)
+const pacmanDir = path.join(bundleDir, 'pacman');
+if (fs.existsSync(pacmanDir)) {
+  const files = fs.readdirSync(pacmanDir);
+  const file = files.find(f => f.endsWith('.pkg.tar.zst') || f.endsWith('.tar.zst') || f.endsWith('.tar.xz'));
+  const sig = files.find(f => f.endsWith('.sig'));
+  if (file && sig) {
+    const signature = fs.readFileSync(path.join(pacmanDir, sig), 'utf-8').trim();
+    latestJson.platforms['linux-x86_64-pacman'] = {
       signature,
       url: `${baseUrl}/${file}`
     };
