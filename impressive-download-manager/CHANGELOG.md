@@ -1,5 +1,12 @@
 # CHANGELOG
 
+## [0.4.4] – 2026-07-25
+
+### Fixed
+- **100% Mandatory IDM Background Capture**: Configured browser extension to unconditionally cancel native browser downloads immediately and pass 100% of download payloads directly to Impressive Download Manager background engine on port 9600.
+- **Background Autostart Sync**: Enhanced startup initialization in frontend (`App.tsx`) and backend (`lib.rs`) to persist autostart preference in `localStorage` and register system startup entries across Windows Registry (`HKCU\Software\Microsoft\Windows\CurrentVersion\Run`) and Linux (`~/.config/autostart`).
+- **Fast Retry Tuning**: Reduced link capture deduplication window to 2500ms so rapid manual link re-clicks work instantly.
+
 ## [0.4.1] – 2026-07-24
 
 ### Added
