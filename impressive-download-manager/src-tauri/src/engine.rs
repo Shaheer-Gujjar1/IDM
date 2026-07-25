@@ -317,6 +317,7 @@ impl DownloadManager {
         let task_speed = task.speed.clone();
         let task_eta = task.eta.clone();
         let manager_for_save = self.clone();
+        let manager_for_reporting = self.clone();
         let task_for_reporting = task.clone();
 
         // Speed & Progress reporting loop
@@ -470,6 +471,7 @@ impl DownloadManager {
             let mut task_abort_rx = abort_tx.subscribe();
             let client = self.client.clone();
             let tx_clone = tx.clone();
+            let manager_for_worker = self.clone();
 
             let worker = tokio::spawn(async move {
                 let start_offset = chunk.start + chunk.downloaded;
@@ -543,7 +545,7 @@ impl DownloadManager {
                                     net_buffer.extend_from_slice(bytes_to_add);
 
                                     // --- Global Speed Limiter Throttle ---
-                                    let limit_bps = manager_for_save.speed_limit_bps.load(Ordering::Relaxed);
+                                    let limit_bps = manager_for_worker.speed_limit_bps.load(Ordering::Relaxed);
                                     if limit_bps > 0 {
                                         let per_worker_limit = limit_bps / (num_chunks as u64);
                                         if per_worker_limit > 0 {
