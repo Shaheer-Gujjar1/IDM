@@ -44,6 +44,7 @@ interface DownloadProgress {
   url?: string;
   save_path?: string;
   file_exists?: boolean;
+  speed_limited?: boolean;
 }
 
 interface Category {
