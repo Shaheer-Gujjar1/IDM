@@ -7,7 +7,9 @@
     "dev": "vite",
     "build": "tsc && vite build",
     "preview": "vite preview",
-    "tauri": "tauri"
+    "tauri": "tauri",
+    "postbuild-release": "node scripts/generate_latest_json.js",
+    "release": "TAURI_SIGNING_PRIVATE_KEY=\"$(cat ~/.tauri/idm.key)\" tauri build && node scripts/generate_latest_json.js"
   },
   "dependencies": {
     "@tauri-apps/api": "^2",
