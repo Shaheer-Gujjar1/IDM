@@ -26,7 +26,9 @@ import {
   FolderOpen,
   Sparkles,
   Zap,
-  Gauge
+  Gauge,
+  ShieldCheck,
+  ShieldAlert
 } from "lucide-react";
 import { listen } from "@tauri-apps/api/event";
 import { invoke } from "@tauri-apps/api/core";
@@ -123,18 +125,40 @@ function App() {
   const [taskToRemove, setTaskToRemove] = useState<DownloadProgress | null>(null);
   const [deleteFileFromDisk, setDeleteFileFromDisk] = useState(false);
 
-  // Updater State
+  // Updater State & Metrics
   const CURRENT_APP_VERSION = "0.5.6";
   const [checkingUpdate, setCheckingUpdate] = useState(false);
   const [updateStatus, setUpdateStatus] = useState<string | null>(null);
   const [pendingRelaunch, setPendingRelaunch] = useState(false);
-  const [showUpdateSuccessModal, setShowUpdateSuccessModal] = useState(() => {
-    const lastVersion = localStorage.getItem("last_seen_version");
-    return lastVersion !== null && lastVersion !== CURRENT_APP_VERSION;
+  const [isDownloadingUpdate, setIsDownloadingUpdate] = useState(false);
+  const [updatedFromVersion, setUpdatedFromVersion] = useState<string | null>(null);
+  const [showUpdateSuccessModal, setShowUpdateSuccessModal] = useState(false);
+
+  const [updateProgressInfo, setUpdateProgressInfo] = useState<{
+    downloaded: number;
+    total: number;
+    percent: number;
+    speed: number;
+    eta: string;
+    status: "idle" | "checking" | "downloading" | "installing" | "waiting_auth" | "ready" | "error";
+    version: string;
+  }>({
+    downloaded: 0,
+    total: 0,
+    percent: 0,
+    speed: 0,
+    eta: "---",
+    status: "idle",
+    version: ""
   });
 
   useEffect(() => {
-    localStorage.setItem("last_seen_version", CURRENT_APP_VERSION);
+    const savedVersion = localStorage.getItem("installed_app_version");
+    if (savedVersion && savedVersion !== CURRENT_APP_VERSION) {
+      setUpdatedFromVersion(savedVersion);
+      setShowUpdateSuccessModal(true);
+    }
+    localStorage.setItem("installed_app_version", CURRENT_APP_VERSION);
   }, []);
 
   // Watcher effect: Relaunches app when ongoing downloads complete
@@ -167,39 +191,117 @@ function App() {
     }
   };
 
+  const executeUpdateInstallation = async (update: any) => {
+    setIsDownloadingUpdate(true);
+    setUpdateProgressInfo({
+      downloaded: 0,
+      total: 0,
+      percent: 0,
+      speed: 0,
+      eta: "Calculating...",
+      status: "downloading",
+      version: update.version
+    });
+    setUpdateStatus(`Downloading update: v${update.version}...`);
+
+    let downloaded = 0;
+    let contentLength = 0;
+    let lastTime = Date.now();
+    let lastDownloaded = 0;
+
+    try {
+      await update.downloadAndInstall((event: any) => {
+        if (!event) return;
+        const now = Date.now();
+
+        if (event.event === 'Started') {
+          contentLength = event.data?.contentLength || 0;
+          lastTime = now;
+          lastDownloaded = 0;
+          setUpdateProgressInfo((prev) => ({
+            ...prev,
+            total: contentLength,
+            status: "downloading"
+          }));
+        } else if (event.event === 'Progress') {
+          downloaded += event.data?.chunkLength || 0;
+          const timeDiff = (now - lastTime) / 1000;
+          let currentSpeed = 0;
+          if (timeDiff >= 0.4) {
+            const bytesDiff = downloaded - lastDownloaded;
+            currentSpeed = bytesDiff / timeDiff;
+            lastTime = now;
+            lastDownloaded = downloaded;
+          }
+
+          const pct = contentLength > 0 ? Math.min(100, Math.floor((downloaded / contentLength) * 100)) : 0;
+          const remainingBytes = contentLength > downloaded ? contentLength - downloaded : 0;
+          const etaSecs = currentSpeed > 0 ? Math.ceil(remainingBytes / currentSpeed) : 0;
+          const etaStr = etaSecs > 0 ? `${etaSecs}s` : "---";
+
+          setUpdateProgressInfo((prev) => ({
+            ...prev,
+            downloaded,
+            total: contentLength,
+            percent: pct,
+            speed: currentSpeed > 0 ? currentSpeed : prev.speed,
+            eta: etaStr,
+            status: "downloading"
+          }));
+
+          setUpdateStatus(`Downloading v${update.version}: ${formatBytes(downloaded)} / ${formatBytes(contentLength)} (${formatBytes(currentSpeed)}/s)`);
+        } else if (event.event === 'Finished') {
+          setUpdateProgressInfo((prev) => ({
+            ...prev,
+            percent: 100,
+            status: "installing"
+          }));
+          setUpdateStatus("System installation starting. Please enter your Superuser (sudo) password in system prompt.");
+        }
+      });
+
+      setIsDownloadingUpdate(false);
+      setUpdateProgressInfo((prev) => ({
+        ...prev,
+        percent: 100,
+        status: "ready"
+      }));
+
+      await triggerRelaunchOrWait();
+    } catch (err: any) {
+      setIsDownloadingUpdate(false);
+      const errMsg = String(err?.message || err);
+      setUpdateProgressInfo((prev) => ({
+        ...prev,
+        status: "error"
+      }));
+      setUpdateStatus(`Update check failed: ${errMsg}`);
+    }
+  };
+
   const handleCheckForUpdates = async () => {
+    if (checkingUpdate || isDownloadingUpdate) return;
     setCheckingUpdate(true);
     setUpdateStatus("Checking for updates...");
+    setUpdateProgressInfo((prev) => ({ ...prev, status: "checking" }));
     try {
       const update = await checkUpdate();
       if (update && update.available) {
-        setUpdateStatus(`New version ${update.version} available! Downloading update...`);
-        let downloaded = 0;
-        let contentLength = 0;
-        await update.downloadAndInstall((event: any) => {
-          if (!event) return;
-          if (event.event === 'Started') {
-            contentLength = event.data?.contentLength || 0;
-            setUpdateStatus(`Downloading update... (${formatBytes(contentLength)})`);
-          } else if (event.event === 'Progress') {
-            downloaded += event.data?.chunkLength || 0;
-            setUpdateStatus(`Downloading: ${formatBytes(downloaded)} / ${formatBytes(contentLength)}`);
-          } else if (event.event === 'Finished') {
-            setUpdateStatus("Update downloaded! Installing...");
-          }
-        });
-        await triggerRelaunchOrWait();
+        await executeUpdateInstallation(update);
       } else {
         setUpdateStatus("You are running the latest version!");
+        setUpdateProgressInfo((prev) => ({ ...prev, status: "idle" }));
       }
     } catch (e: any) {
       console.error("Update check error:", e);
+      setIsDownloadingUpdate(false);
       const errMsg = String(e?.message || e);
       if (errMsg.includes("Could not fetch a valid release JSON") || errMsg.includes("404") || errMsg.includes("not found")) {
         setUpdateStatus("You are running the latest version! No new update found.");
       } else {
         setUpdateStatus(`Update check failed: ${errMsg}`);
       }
+      setUpdateProgressInfo((prev) => ({ ...prev, status: "error" }));
     } finally {
       setCheckingUpdate(false);
     }
@@ -415,12 +517,11 @@ function App() {
         .then(async (update: any) => {
           if (update && update.available) {
             console.log(`[Auto-Update] New version ${update.version} found! Downloading in background...`);
-            setUpdateStatus(`Background updating to v${update.version}...`);
-            await update.downloadAndInstall(() => { });
-            await triggerRelaunchOrWait();
+            await executeUpdateInstallation(update);
           }
         })
         .catch((err: any) => {
+          setIsDownloadingUpdate(false);
           // Silently handle background update check failures (e.g. offline or no release yet)
           console.log("[Auto-Update] Startup check:", err?.message || err);
         });
@@ -1264,7 +1365,17 @@ function App() {
                         />
                         <select
                           className="spotlight-input"
-                          style={{ padding: "6px 10px", fontSize: "0.85rem", fontWeight: 700, color: "var(--accent-cyan)", cursor: "pointer", background: "rgba(0,0,0,0.3)", borderRadius: "8px" }}
+                          style={{
+                            padding: "6px 10px",
+                            fontSize: "0.85rem",
+                            fontWeight: 700,
+                            color: "var(--accent-cyan)",
+                            cursor: "pointer",
+                            background: "var(--bg-secondary, rgba(0,0,0,0.3))",
+                            colorScheme: themeMode === "light" ? "light" : "dark",
+                            borderRadius: "8px",
+                            border: "1px solid rgba(255,255,255,0.1)"
+                          }}
                           value={speedLimitUnit}
                           onChange={(e) => {
                             const unit = e.target.value as "KB" | "MB" | "GB";
@@ -1274,9 +1385,9 @@ function App() {
                             invoke("set_speed_limit", { limitBps }).catch(console.error);
                           }}
                         >
-                          <option value="KB">KB/s</option>
-                          <option value="MB">MB/s</option>
-                          <option value="GB">GB/s</option>
+                          <option value="KB" style={{ background: themeMode === "light" ? "#ffffff" : "#1a1b26", color: themeMode === "light" ? "#000000" : "#ffffff" }}>KB/s</option>
+                          <option value="MB" style={{ background: themeMode === "light" ? "#ffffff" : "#1a1b26", color: themeMode === "light" ? "#000000" : "#ffffff" }}>MB/s</option>
+                          <option value="GB" style={{ background: themeMode === "light" ? "#ffffff" : "#1a1b26", color: themeMode === "light" ? "#000000" : "#ffffff" }}>GB/s</option>
                         </select>
                       </div>
                     </div>
@@ -1422,33 +1533,100 @@ function App() {
                 )}
               </div>
 
-              <div className="settings-card">
-                <div className="settings-section-header">
-                  <RefreshCw size={18} />
-                  <span className="settings-section-title">Software Updates</span>
-                </div>
-                <div className="settings-control-row" style={{ flexDirection: "column", alignItems: "flex-start", gap: "12px" }}>
-                  <div className="settings-info-col">
-                    <span className="settings-title">In-App Software Updater</span>
-                    <span className="settings-desc">Check for signed application updates directly from GitHub Releases.</span>
+              <div className="visual-updater-card">
+                <div className="visual-updater-header">
+                  <div className="visual-updater-title">
+                    <RefreshCw size={20} className={checkingUpdate || isDownloadingUpdate ? "animate-spin" : ""} style={{ color: "var(--accent-cyan)" }} />
+                    <span>Software Updates</span>
                   </div>
-                  {updateStatus && (
-                    <div style={{
-                      fontSize: "0.85rem",
-                      color: updateStatus.includes("failed") ? "#ef4444" : "var(--accent-cyan)",
-                      fontWeight: 600
-                    }}>
-                      {updateStatus}
+                  <span style={{ padding: "4px 12px", borderRadius: "100px", background: "rgba(6, 182, 212, 0.15)", color: "var(--accent-cyan)", fontWeight: 700, fontSize: "0.85rem", border: "1px solid rgba(6, 182, 212, 0.3)" }}>
+                    v{CURRENT_APP_VERSION}
+                  </span>
+                </div>
+
+                <div className="settings-info-col">
+                  <span className="settings-title">In-App Software Updater</span>
+                  <span className="settings-desc">Check for signed application updates directly from GitHub Releases.</span>
+                </div>
+
+                {(isDownloadingUpdate || updateProgressInfo.status === "downloading" || updateProgressInfo.status === "installing") && (
+                  <div style={{ display: "flex", flexDirection: "column", gap: "12px", width: "100%" }}>
+                    {/* Liquid Flow Progress Bar */}
+                    <div className="visual-updater-progress-track">
+                      <div
+                        className="visual-updater-progress-fill"
+                        style={{ width: `${updateProgressInfo.percent}%` }}
+                      />
                     </div>
-                  )}
+
+                    {/* Metrics Grid */}
+                    <div className="visual-updater-metrics">
+                      <div className="updater-metric-box">
+                        <span className="updater-metric-label">Downloaded</span>
+                        <span className="updater-metric-value">{formatBytes(updateProgressInfo.downloaded)} / {formatBytes(updateProgressInfo.total)}</span>
+                      </div>
+                      <div className="updater-metric-box">
+                        <span className="updater-metric-label">Speed</span>
+                        <span className="updater-metric-value">{updateProgressInfo.speed > 0 ? `${formatBytes(updateProgressInfo.speed)}/s` : "---"}</span>
+                      </div>
+                      <div className="updater-metric-box">
+                        <span className="updater-metric-label">Progress</span>
+                        <span className="updater-metric-value">{updateProgressInfo.percent}%</span>
+                      </div>
+                      <div className="updater-metric-box">
+                        <span className="updater-metric-label">ETA</span>
+                        <span className="updater-metric-value">{updateProgressInfo.eta}</span>
+                      </div>
+                    </div>
+                  </div>
+                )}
+
+                {/* OS-Sensitive Administrator / Superuser Privilege Banner */}
+                {(updateProgressInfo.status === "installing" || updateProgressInfo.status === "waiting_auth") && (
+                  <div className="superuser-warning-banner">
+                    <ShieldAlert size={22} style={{ color: "var(--accent-orange)", flexShrink: 0, marginTop: "2px" }} />
+                    <div className="superuser-warning-text">
+                      <div className="superuser-warning-title">
+                        {typeof navigator !== "undefined" && navigator.userAgent.toLowerCase().includes("win")
+                          ? "Administrator Permission Required"
+                          : "Administrator Privileges Required"
+                        }
+                      </div>
+                      {typeof navigator !== "undefined" && navigator.userAgent.toLowerCase().includes("win")
+                        ? <span>Windows User Account Control (UAC) is requesting administrator permission to complete the update. Please click <strong>'Yes'</strong> in the system prompt.</span>
+                        : <span>Your operating system is requesting authorization to install the system package update. Please enter your <strong>Superuser (sudo) password</strong> in the system prompt to authorize installation.</span>
+                      }
+                    </div>
+                  </div>
+                )}
+
+                {updateStatus && (
+                  <div style={{
+                    fontSize: "0.85rem",
+                    color: updateStatus.includes("failed") ? "#ef4444" : "var(--accent-cyan)",
+                    fontWeight: 600,
+                    background: "rgba(0,0,0,0.2)",
+                    padding: "10px 14px",
+                    borderRadius: "10px",
+                    width: "100%",
+                    display: "flex",
+                    alignItems: "center",
+                    gap: "8px"
+                  }}>
+                    <Activity size={16} />
+                    <span>{updateStatus}</span>
+                  </div>
+                )}
+
+                <div style={{ display: "flex", justifyContent: "flex-end", width: "100%" }}>
                   <button
                     type="button"
                     className="accent-pill"
                     style={{ padding: "10px 24px", borderRadius: "100px", fontWeight: 700, fontSize: "0.9rem" }}
                     onClick={handleCheckForUpdates}
-                    disabled={checkingUpdate}
+                    disabled={checkingUpdate || isDownloadingUpdate}
                   >
-                    {checkingUpdate ? "Checking..." : "Check for Updates"}
+                    {checkingUpdate ? "Checking..." : (isDownloadingUpdate ? "Downloading Update..." : "Check for Updates")}
                   </button>
                 </div>
               </div>
@@ -1839,61 +2017,68 @@ function App() {
         </div>
       )}
 
-      {/* Update Success Celebration Modal */}
+      {/* Update Success Celebration Upgrade Modal */}
       {showUpdateSuccessModal && (
         <div className="modal-backdrop-v2" onClick={() => setShowUpdateSuccessModal(false)}>
-          <div className="modal-content-v2" style={{ maxWidth: "480px", border: "1px solid rgba(6, 182, 212, 0.4)", boxShadow: "0 20px 50px rgba(0,0,0,0.6), 0 0 30px rgba(6, 182, 212, 0.2)" }} onClick={(e) => e.stopPropagation()}>
-            <div className="modal-header-v2" style={{ borderBottom: "1px solid rgba(255,255,255,0.06)", paddingBottom: "12px" }}>
-              <div style={{ display: "flex", alignItems: "center", gap: "10px" }}>
-                <Sparkles size={24} style={{ color: "var(--accent-cyan)" }} />
-                <span className="modal-title-v2" style={{ fontSize: "1.2rem", fontWeight: 800, background: "linear-gradient(135deg, #06b6d4, #3b82f6)", WebkitBackgroundClip: "text", WebkitTextFillColor: "transparent" }}>
-                  Updated to v{CURRENT_APP_VERSION}!
-                </span>
+          <div className="celebration-modal-dialog" onClick={(e) => e.stopPropagation()}>
+            <div className="celebration-badge-header">
+              <div className="celebration-icon-wrapper">
+                <Sparkles size={28} />
               </div>
-              <button className="modal-close-btn-v2" onClick={() => setShowUpdateSuccessModal(false)}>
-                <X size={20} />
-              </button>
-            </div>
-
-            <div className="modal-body-v2" style={{ paddingTop: "16px", gap: "14px" }}>
-              <p style={{ margin: 0, fontSize: "0.95rem", color: "var(--text-secondary)", lineHeight: "1.5" }}>
-                Impressive Download Manager has been updated with high-performance engine improvements!
-              </p>
-
-              <div style={{ background: "rgba(0,0,0,0.25)", padding: "14px 16px", borderRadius: "12px", border: "1px solid rgba(255,255,255,0.05)", display: "flex", flexDirection: "column", gap: "12px" }}>
-                <div style={{ display: "flex", alignItems: "flex-start", gap: "10px" }}>
-                  <Zap size={18} style={{ color: "var(--accent-cyan)", marginTop: "2px", flexShrink: 0 }} />
-                  <div>
-                    <div style={{ fontWeight: 700, fontSize: "0.88rem", color: "#fff" }}>Full Wire-Speed Downloads</div>
-                    <div style={{ fontSize: "0.8rem", color: "var(--text-secondary)" }}>Optimized TCP socket buffers with zero thread lock contention.</div>
-                  </div>
+              <div>
+                <div className="celebration-title-text" style={{ fontSize: "1.2rem", lineHeight: "1.35" }}>
+                  {updatedFromVersion
+                    ? `🎉 v${updatedFromVersion} is history. v${CURRENT_APP_VERSION} is live now with fresh upgrades and smoother vibes!`
+                    : `🎉 v${CURRENT_APP_VERSION} is live now with fresh upgrades and smoother vibes!`
+                  }
                 </div>
-
-                <div style={{ display: "flex", alignItems: "flex-start", gap: "10px" }}>
-                  <Clock size={18} style={{ color: "var(--accent-cyan)", marginTop: "2px", flexShrink: 0 }} />
-                  <div>
-                    <div style={{ fontWeight: 700, fontSize: "0.88rem", color: "#fff" }}>Instant Window Transitions</div>
-                    <div style={{ fontSize: "0.8rem", color: "var(--text-secondary)" }}>Popup windows open in &lt;50ms while network resolution runs in background.</div>
-                  </div>
-                </div>
-
-                <div style={{ display: "flex", alignItems: "flex-start", gap: "10px" }}>
-                  <Gauge size={18} style={{ color: "var(--accent-cyan)", marginTop: "2px", flexShrink: 0 }} />
-                  <div>
-                    <div style={{ fontWeight: 700, fontSize: "0.88rem", color: "#fff" }}>Enhanced Speed Limiter</div>
-                    <div style={{ fontSize: "0.8rem", color: "var(--text-secondary)" }}>Free manual input + KB/s, MB/s, GB/s unit selector dropdown & 512 KB default.</div>
-                  </div>
+                <div style={{ fontSize: "0.88rem", color: "var(--text-secondary)", marginTop: "2px" }}>
+                  Impressive Download Manager has been upgraded with major engine enhancements!
                 </div>
               </div>
             </div>
 
-            <div className="modal-actions-v2" style={{ marginTop: "16px", justifyContent: "flex-end" }}>
+            <div style={{ display: "flex", flexDirection: "column", gap: "10px" }}>
+              <div className="celebration-feature-card">
+                <Zap size={20} style={{ color: "var(--accent-cyan)", flexShrink: 0, marginTop: "2px" }} />
+                <div>
+                  <div style={{ fontWeight: 800, fontSize: "0.92rem", color: "var(--text-primary)" }}>Full Wire-Speed Download Engine</div>
+                  <div style={{ fontSize: "0.82rem", color: "var(--text-secondary)", marginTop: "2px" }}>Multi-threaded connection engine with zero lock contention and TCP socket nodelay tuning for maximum throughput.</div>
+                </div>
+              </div>
+
+              <div className="celebration-feature-card">
+                <Clock size={20} style={{ color: "var(--accent-cyan)", flexShrink: 0, marginTop: "2px" }} />
+                <div>
+                  <div style={{ fontWeight: 800, fontSize: "0.92rem", color: "var(--text-primary)" }}>Instant Popup Capture (&lt; 50ms)</div>
+                  <div style={{ fontSize: "0.82rem", color: "var(--text-secondary)", marginTop: "2px" }}>Download popups open instantly while network HEAD probes and 302 redirect tracking run asynchronously in background.</div>
+                </div>
+              </div>
+
+              <div className="celebration-feature-card">
+                <Gauge size={20} style={{ color: "var(--accent-cyan)", flexShrink: 0, marginTop: "2px" }} />
+                <div>
+                  <div style={{ fontWeight: 800, fontSize: "0.92rem", color: "var(--text-primary)" }}>Precision Bandwidth Limiter</div>
+                  <div style={{ fontSize: "0.82rem", color: "var(--text-secondary)", marginTop: "2px" }}>Free text speed entry + KB/s, MB/s, GB/s unit selector dropdown & token bucket sliding window algorithm.</div>
+                </div>
+              </div>
+
+              <div className="celebration-feature-card">
+                <ShieldCheck size={20} style={{ color: "var(--accent-cyan)", flexShrink: 0, marginTop: "2px" }} />
+                <div>
+                  <div style={{ fontWeight: 800, fontSize: "0.92rem", color: "var(--text-primary)" }}>Protected Auto-Restart Queue</div>
+                  <div style={{ fontSize: "0.82rem", color: "var(--text-secondary)", marginTop: "2px" }}>Updates download seamlessly in background and automatically queue restart until active downloads complete.</div>
+                </div>
+              </div>
+            </div>
+
+            <div style={{ display: "flex", justifyContent: "flex-end", marginTop: "6px" }}>
               <button
                 className="accent-pill"
-                style={{ padding: "10px 28px", borderRadius: "100px", fontWeight: 700, fontSize: "0.95rem" }}
+                style={{ padding: "12px 32px", borderRadius: "100px", fontWeight: 800, fontSize: "0.95rem", background: "linear-gradient(135deg, #06b6d4, #3b82f6)", boxShadow: "0 4px 20px rgba(6, 182, 212, 0.4)" }}
                 onClick={() => setShowUpdateSuccessModal(false)}
               >
-                Awesome! Let's Go
+                Explore v{CURRENT_APP_VERSION} 🚀
               </button>
             </div>
           </div>
