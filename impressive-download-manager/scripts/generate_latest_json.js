@@ -14,7 +14,7 @@ const tag = `v${version}`;
 const bundleDir = path.join(rootDir, 'src-tauri', 'target', 'release', 'bundle');
 const baseUrl = `https://github.com/Shaheer-Gujjar1/IDM/releases/download/${tag}`;
 
-// Clean latest.json manifest output (strictly DEB, RPM, NSIS EXE - NO AppImage 'linux-x86_64' key)
+// Clean latest.json manifest output (DEB for linux-x86_64 & linux-x86_64-deb, RPM for linux-x86_64-rpm, EXE for windows-x86_64)
 const outPath = path.join(bundleDir, 'latest.json');
 let latestJson = {
   version: version,
@@ -43,10 +43,14 @@ const findPackageFile = (dir, ext) => {
   return { file: target, signature };
 };
 
-// 1. Linux DEB Target (Debian / Ubuntu / Deepin / Mint) -> 'linux-x86_64-deb'
+// 1. Linux DEB Target (Debian / Ubuntu / Deepin / Mint) -> 'linux-x86_64' & 'linux-x86_64-deb' (DEB installer)
 const debDir = path.join(bundleDir, 'deb');
 const debMatch = findPackageFile(debDir, '.deb');
 if (debMatch) {
+  latestJson.platforms['linux-x86_64'] = {
+    signature: debMatch.signature,
+    url: `${baseUrl}/${debMatch.file}`
+  };
   latestJson.platforms['linux-x86_64-deb'] = {
     signature: debMatch.signature,
     url: `${baseUrl}/${debMatch.file}`
@@ -92,6 +96,6 @@ if (macMatch) {
 // Write generated manifest to bundleDir
 fs.writeFileSync(outPath, JSON.stringify(latestJson, null, 2));
 
-console.log(`\n✅ Successfully generated clean latest.json for ${tag} (strictly no AppImage key):`);
+console.log(`\n✅ Successfully generated latest.json manifest for ${tag}:`);
 console.log(outPath);
 console.log(JSON.stringify(latestJson, null, 2));

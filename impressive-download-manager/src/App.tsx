@@ -110,7 +110,10 @@ function App() {
     return saved !== null ? saved === "true" : true;
   });
   const [minimizeToTray, setMinimizeToTray] = useState(true);
-  const [maxChunks, setMaxChunks] = useState(8);
+  const [maxChunks, setMaxChunks] = useState(() => {
+    const saved = localStorage.getItem("max_chunks");
+    return saved ? Math.min(32, Math.max(1, parseInt(saved, 10) || 8)) : 8;
+  });
   const [speedLimitEnabled, setSpeedLimitEnabled] = useState(() => localStorage.getItem("speed_limit_enabled") === "true");
   const [speedLimitVal, setSpeedLimitVal] = useState(() => localStorage.getItem("speed_limit_val") || "512");
   const [speedLimitUnit, setSpeedLimitUnit] = useState<"KB" | "MB" | "GB">(() => (localStorage.getItem("speed_limit_unit") as "KB" | "MB" | "GB") || "KB");
@@ -126,7 +129,7 @@ function App() {
   const [deleteFileFromDisk, setDeleteFileFromDisk] = useState(false);
 
   // Updater State & Metrics
-  const CURRENT_APP_VERSION = "0.5.17";
+  const CURRENT_APP_VERSION = "0.6.0";
   const [checkingUpdate, setCheckingUpdate] = useState(false);
   const [updateStatus, setUpdateStatus] = useState<string | null>(null);
   const [pendingRelaunch, setPendingRelaunch] = useState(false);
@@ -296,10 +299,10 @@ function App() {
       console.error("Update check error:", e);
       setIsDownloadingUpdate(false);
       const errMsg = String(e?.message || e);
-      if (errMsg.includes("Could not fetch a valid release JSON") || errMsg.includes("404") || errMsg.includes("not found")) {
+      if (errMsg.includes("Could not fetch a valid release JSON") || errMsg.includes("404")) {
         setUpdateStatus("You are running the latest version! No new update found.");
       } else {
-        setUpdateStatus(`Update check failed: ${errMsg}`);
+        setUpdateStatus(`Update check error: ${errMsg}`);
       }
       setUpdateProgressInfo((prev) => ({ ...prev, status: "error" }));
     } finally {
@@ -474,6 +477,11 @@ function App() {
     const savedIntercept = localStorage.getItem("intercept_downloads");
     const isInterceptEnabled = savedIntercept !== null ? savedIntercept === "true" : true;
     invoke("set_intercept_downloads", { enabled: isInterceptEnabled }).catch(console.error);
+
+    // Sync max segment connections setting to backend engine
+    const savedMaxChunks = localStorage.getItem("max_chunks") || "8";
+    const maxChunksVal = Math.min(32, Math.max(1, parseInt(savedMaxChunks, 10) || 8));
+    invoke("set_max_chunks", { maxChunks: maxChunksVal }).catch(console.error);
 
     if (mode) {
       setPopupMode(mode);
@@ -1314,7 +1322,12 @@ function App() {
                     max="32"
                     className="range-slider"
                     value={maxChunks}
-                    onChange={(e) => setMaxChunks(parseInt(e.target.value))}
+                    onChange={(e) => {
+                      const val = parseInt(e.target.value, 10);
+                      setMaxChunks(val);
+                      localStorage.setItem("max_chunks", String(val));
+                      invoke("set_max_chunks", { maxChunks: val }).catch(console.error);
+                    }}
                   />
                 </div>
                 <div className="settings-control-row">
@@ -1352,7 +1365,17 @@ function App() {
                         <input
                           type="text"
                           className="spotlight-input"
-                          style={{ width: "90px", padding: "6px 10px", textAlign: "right", fontSize: "0.9rem", fontWeight: 700, color: "var(--accent-cyan)" }}
+                          style={{
+                            width: "90px",
+                            padding: "6px 10px",
+                            textAlign: "right",
+                            fontSize: "0.9rem",
+                            fontWeight: 700,
+                            color: "var(--accent-cyan)",
+                            background: themeMode === "light" ? "#ffffff" : "rgba(0, 0, 0, 0.25)",
+                            borderRadius: "8px",
+                            border: themeMode === "light" ? "1px solid rgba(0, 0, 0, 0.12)" : "1px solid rgba(255, 255, 255, 0.08)"
+                          }}
                           value={speedLimitVal}
                           placeholder="512"
                           onChange={(e) => {
@@ -1371,10 +1394,10 @@ function App() {
                             fontWeight: 700,
                             color: "var(--accent-cyan)",
                             cursor: "pointer",
-                            background: "var(--bg-secondary, rgba(0,0,0,0.3))",
+                            background: themeMode === "light" ? "#ffffff" : "rgba(0, 0, 0, 0.25)",
                             colorScheme: themeMode === "light" ? "light" : "dark",
                             borderRadius: "8px",
-                            border: "1px solid rgba(255,255,255,0.1)"
+                            border: themeMode === "light" ? "1px solid rgba(0, 0, 0, 0.12)" : "1px solid rgba(255, 255, 255, 0.08)"
                           }}
                           value={speedLimitUnit}
                           onChange={(e) => {
@@ -1385,9 +1408,9 @@ function App() {
                             invoke("set_speed_limit", { limitBps }).catch(console.error);
                           }}
                         >
-                          <option value="KB" style={{ background: themeMode === "light" ? "#ffffff" : "#1a1b26", color: themeMode === "light" ? "#000000" : "#ffffff" }}>KB/s</option>
-                          <option value="MB" style={{ background: themeMode === "light" ? "#ffffff" : "#1a1b26", color: themeMode === "light" ? "#000000" : "#ffffff" }}>MB/s</option>
-                          <option value="GB" style={{ background: themeMode === "light" ? "#ffffff" : "#1a1b26", color: themeMode === "light" ? "#000000" : "#ffffff" }}>GB/s</option>
+                          <option value="KB" style={{ background: themeMode === "light" ? "#ffffff" : "#0d1117", color: themeMode === "light" ? "#000000" : "#ffffff" }}>KB/s</option>
+                          <option value="MB" style={{ background: themeMode === "light" ? "#ffffff" : "#0d1117", color: themeMode === "light" ? "#000000" : "#ffffff" }}>MB/s</option>
+                          <option value="GB" style={{ background: themeMode === "light" ? "#ffffff" : "#0d1117", color: themeMode === "light" ? "#000000" : "#ffffff" }}>GB/s</option>
                         </select>
                       </div>
                     </div>

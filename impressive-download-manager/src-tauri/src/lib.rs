@@ -293,6 +293,16 @@ async fn set_intercept_downloads(
 }
 
 #[tauri::command]
+async fn set_max_chunks(
+    manager: tauri::State<'_, Arc<DownloadManager>>,
+    max_chunks: u64,
+) -> Result<(), String> {
+    let clamped = max_chunks.clamp(1, 32);
+    manager.max_chunks.store(clamped, std::sync::atomic::Ordering::Relaxed);
+    Ok(())
+}
+
+#[tauri::command]
 async fn open_progress_window(app_handle: tauri::AppHandle, id: String) -> Result<(), String> {
     let progress_url = format!("index.html?popup=progress&id={}", id);
     
@@ -471,7 +481,15 @@ pub fn run() {
     tauri::Builder::default()
         .manage(download_manager)
         .plugin(tauri_plugin_opener::init())
-        .plugin(tauri_plugin_updater::Builder::new().build())
+        .plugin(
+            tauri_plugin_updater::Builder::new()
+                .header(
+                    "User-Agent",
+                    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+                )
+                .expect("valid user-agent header")
+                .build()
+        )
         .plugin(tauri_plugin_process::init())
         .on_window_event(|window, event| {
             if let tauri::WindowEvent::CloseRequested { api, .. } = event {
@@ -881,7 +899,8 @@ pub fn run() {
             get_all_downloads,
             sync_theme_mode,
             set_speed_limit,
-            set_intercept_downloads
+            set_intercept_downloads,
+            set_max_chunks
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

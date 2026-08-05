@@ -1,5 +1,16 @@
 # CHANGELOG
 
+## [0.6.0] – 2026-08-05
+
+### Added
+- **Dynamic Max Segment Connections**: Connected the Settings range slider (1 to 32 parallel range connections, default 8) to a new Rust backend command (`set_max_chunks`). Saves state to `localStorage` and dynamically configures worker threads per task.
+- **Smart IP Rate-Limit Protection**: Implemented automatic rate-limit detection in the Rust download engine. If a server returns `HTTP 429 Too Many Requests`, `HTTP 503 Service Unavailable`, `HTTP 403 Forbidden`, or `HTTP 509 Bandwidth Exceeded`, the engine automatically auto-reduces stream connections to 4 or 2 parallel streams to protect against server bans.
+- **Visual Feast Software Updater UI**: Added an animated liquid wave progress bar (`0% -> 100%`) and a 4-box live metrics grid showing real-time `Downloaded`, `Speed`, `Progress %`, and `ETA`.
+- **OS-Sensitive Privilege Guidance Banner**: Added platform-aware guidance banners explaining WHY system privilege prompts appear during updates (Windows UAC User Account Control vs. Linux Polkit Superuser sudo prompt).
+- **Single System Authorization Guard**: Integrated an atomic download lock (`isDownloadingUpdate`) to prevent duplicate update routines and ensure exactly 1 authorization prompt is requested.
+- **Dark/Light Theme-Sensitive Speed Limiter Dropdown**: Updated `<select>` and `<option>` elements for speed units (`KB/s`, `MB/s`, `GB/s`) to dynamically match active dark and light themes without rendering grey backgrounds in dark mode.
+- **Festive Version Upgrade Celebration Modal**: Replaced plain notification alerts with an interactive celebration modal showcasing new features upon launch (`🎉 v0.4.9 is history. v0.6.0 is live now with fresh upgrades and smoother vibes!`).
+
 ## [0.5.17] – 2026-08-05
 
 ### Added

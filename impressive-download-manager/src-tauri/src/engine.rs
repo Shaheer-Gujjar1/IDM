@@ -75,6 +75,7 @@ pub struct DownloadManager {
     pub client: reqwest::Client,
     pub theme_mode: Mutex<String>,
     pub speed_limit_bps: AtomicU64,
+    pub max_chunks: AtomicU64,
     pub intercept_downloads: std::sync::atomic::AtomicBool,
 }
 
@@ -94,6 +95,7 @@ impl DownloadManager {
             client,
             theme_mode: Mutex::new("dark".to_string()),
             speed_limit_bps: AtomicU64::new(0),
+            max_chunks: AtomicU64::new(8),
             intercept_downloads: std::sync::atomic::AtomicBool::new(true),
         }
     }
@@ -329,7 +331,8 @@ impl DownloadManager {
         *task.status.lock().unwrap() = DownloadStatus::Downloading;
 
         let is_new = task.downloaded.load(Ordering::Relaxed) == 0;
-        let num_chunks = if accept_ranges && task.total_size.load(Ordering::Relaxed) > 0 { 8 } else { 1 };
+        let configured_max = (self.max_chunks.load(Ordering::Relaxed).clamp(1, 32)) as usize;
+        let num_chunks = if accept_ranges && task.total_size.load(Ordering::Relaxed) > 0 { configured_max } else { 1 };
 
         if let Some(parent) = std::path::Path::new(&task.save_path).parent() {
             let _ = tokio::fs::create_dir_all(parent).await;
@@ -355,13 +358,14 @@ impl DownloadManager {
             // Initialize connection chunks
             let mut chunks = vec![];
             if total_size_val > 0 {
-                let chunk_size = total_size_val / num_chunks;
+                let num_chunks_u64 = num_chunks as u64;
+                let chunk_size = total_size_val / num_chunks_u64;
                 for i in 0..num_chunks {
-                    let start = i * chunk_size;
+                    let start = (i as u64) * chunk_size;
                     let end = if i == num_chunks - 1 {
                         total_size_val - 1
                     } else {
-                        (i + 1) * chunk_size - 1
+                        ((i as u64) + 1) * chunk_size - 1
                     };
                     chunks.push(DownloadChunk { start, end, downloaded: 0 });
                 }
@@ -568,7 +572,12 @@ impl DownloadManager {
                 };
 
                 if !res.status().is_success() {
-                    eprintln!("[Rust Engine] Worker HTTP request failed: {}", res.status());
+                    let code = res.status().as_u16();
+                    if code == 429 || code == 503 || code == 403 || code == 509 {
+                        eprintln!("[Smart IP Protection] Server rate-limited stream connections (HTTP {}). Protecting server IP limit...", code);
+                    } else {
+                        eprintln!("[Rust Engine] Worker HTTP request failed: {}", res.status());
+                    }
                     return;
                 }
 
