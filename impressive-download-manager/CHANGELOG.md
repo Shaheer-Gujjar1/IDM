@@ -1,5 +1,14 @@
 # CHANGELOG
 
+## [0.5.17] – 2026-08-05
+
+### Added
+- **Visual Feast Software Updater UI**: Added an animated liquid wave progress bar (`0% -> 100%`) and a 4-box live metrics grid showing real-time `Downloaded`, `Speed`, `Progress %`, and `ETA`.
+- **OS-Sensitive Privilege Guidance Banner**: Added platform-aware guidance banners explaining WHY system privilege prompts appear during updates (Windows UAC User Account Control vs. Linux Polkit Superuser sudo prompt).
+- **Single System Authorization Guard**: Integrated an atomic download lock (`isDownloadingUpdate`) to prevent duplicate update routines and ensure exactly 1 authorization prompt is requested.
+- **Dark/Light Theme-Sensitive Speed Limiter Dropdown**: Updated `<select>` and `<option>` elements for speed units (`KB/s`, `MB/s`, `GB/s`) to dynamically match active dark and light themes without rendering light backgrounds in dark mode.
+- **Festive Version Upgrade Celebration Modal**: Replaced plain notification alerts with an interactive celebration modal showcasing new features upon launch (`🎉 v0.4.9 is history. v0.5.17 is live now with fresh upgrades and smoother vibes!`).
+
 ## [0.5.6] – 2026-08-05
 
 ### Added

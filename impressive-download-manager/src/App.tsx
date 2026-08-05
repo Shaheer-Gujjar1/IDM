@@ -126,7 +126,7 @@ function App() {
   const [deleteFileFromDisk, setDeleteFileFromDisk] = useState(false);
 
   // Updater State & Metrics
-  const CURRENT_APP_VERSION = "0.5.6";
+  const CURRENT_APP_VERSION = "0.5.17";
   const [checkingUpdate, setCheckingUpdate] = useState(false);
   const [updateStatus, setUpdateStatus] = useState<string | null>(null);
   const [pendingRelaunch, setPendingRelaunch] = useState(false);
