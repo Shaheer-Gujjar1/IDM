@@ -23,12 +23,16 @@ import {
   Sliders,
   Calendar,
   RefreshCw,
-  FolderOpen
+  FolderOpen,
+  Sparkles,
+  Zap,
+  Gauge
 } from "lucide-react";
 import { listen } from "@tauri-apps/api/event";
 import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { check as checkUpdate } from "@tauri-apps/plugin-updater";
+import { relaunch } from "@tauri-apps/plugin-process";
 import "./App.css";
 
 type DownloadStatus = "Queued" | "Downloading" | "Paused" | "Completed" | { Failed: string } | "Trash";
@@ -120,8 +124,48 @@ function App() {
   const [deleteFileFromDisk, setDeleteFileFromDisk] = useState(false);
 
   // Updater State
+  const CURRENT_APP_VERSION = "0.5.6";
   const [checkingUpdate, setCheckingUpdate] = useState(false);
   const [updateStatus, setUpdateStatus] = useState<string | null>(null);
+  const [pendingRelaunch, setPendingRelaunch] = useState(false);
+  const [showUpdateSuccessModal, setShowUpdateSuccessModal] = useState(() => {
+    const lastVersion = localStorage.getItem("last_seen_version");
+    return lastVersion !== null && lastVersion !== CURRENT_APP_VERSION;
+  });
+
+  useEffect(() => {
+    localStorage.setItem("last_seen_version", CURRENT_APP_VERSION);
+  }, []);
+
+  // Watcher effect: Relaunches app when ongoing downloads complete
+  useEffect(() => {
+    if (!pendingRelaunch) return;
+    const hasActiveDownloads = downloads.some((d) => {
+      const s = typeof d.status === "string" ? d.status : JSON.stringify(d.status);
+      return s === "Downloading" || s === '"Downloading"';
+    });
+
+    if (!hasActiveDownloads) {
+      setPendingRelaunch(false);
+      setUpdateStatus("Active downloads completed! Relaunching application...");
+      relaunch().catch(console.error);
+    }
+  }, [downloads, pendingRelaunch]);
+
+  const triggerRelaunchOrWait = async () => {
+    const hasActiveDownloads = downloads.some((d) => {
+      const s = typeof d.status === "string" ? d.status : JSON.stringify(d.status);
+      return s === "Downloading" || s === '"Downloading"';
+    });
+
+    if (hasActiveDownloads) {
+      setPendingRelaunch(true);
+      setUpdateStatus("Update installed! Application will restart automatically once active downloads finish.");
+    } else {
+      setUpdateStatus("Update installed! Relaunching application...");
+      await relaunch();
+    }
+  };
 
   const handleCheckForUpdates = async () => {
     setCheckingUpdate(true);
@@ -141,10 +185,10 @@ function App() {
             downloaded += event.data?.chunkLength || 0;
             setUpdateStatus(`Downloading: ${formatBytes(downloaded)} / ${formatBytes(contentLength)}`);
           } else if (event.event === 'Finished') {
-            setUpdateStatus("Update downloaded! Relaunching application...");
+            setUpdateStatus("Update downloaded! Installing...");
           }
         });
-        setUpdateStatus("Update installed! Please restart application.");
+        await triggerRelaunchOrWait();
       } else {
         setUpdateStatus("You are running the latest version!");
       }
@@ -373,7 +417,7 @@ function App() {
             console.log(`[Auto-Update] New version ${update.version} found! Downloading in background...`);
             setUpdateStatus(`Background updating to v${update.version}...`);
             await update.downloadAndInstall(() => { });
-            setUpdateStatus(`Update v${update.version} ready! Restart to apply.`);
+            await triggerRelaunchOrWait();
           }
         })
         .catch((err: any) => {
@@ -1789,6 +1833,67 @@ function App() {
                 onClick={confirmRemoveTask}
               >
                 Confirm Delete
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Update Success Celebration Modal */}
+      {showUpdateSuccessModal && (
+        <div className="modal-backdrop-v2" onClick={() => setShowUpdateSuccessModal(false)}>
+          <div className="modal-content-v2" style={{ maxWidth: "480px", border: "1px solid rgba(6, 182, 212, 0.4)", boxShadow: "0 20px 50px rgba(0,0,0,0.6), 0 0 30px rgba(6, 182, 212, 0.2)" }} onClick={(e) => e.stopPropagation()}>
+            <div className="modal-header-v2" style={{ borderBottom: "1px solid rgba(255,255,255,0.06)", paddingBottom: "12px" }}>
+              <div style={{ display: "flex", alignItems: "center", gap: "10px" }}>
+                <Sparkles size={24} style={{ color: "var(--accent-cyan)" }} />
+                <span className="modal-title-v2" style={{ fontSize: "1.2rem", fontWeight: 800, background: "linear-gradient(135deg, #06b6d4, #3b82f6)", WebkitBackgroundClip: "text", WebkitTextFillColor: "transparent" }}>
+                  Updated to v{CURRENT_APP_VERSION}!
+                </span>
+              </div>
+              <button className="modal-close-btn-v2" onClick={() => setShowUpdateSuccessModal(false)}>
+                <X size={20} />
+              </button>
+            </div>
+
+            <div className="modal-body-v2" style={{ paddingTop: "16px", gap: "14px" }}>
+              <p style={{ margin: 0, fontSize: "0.95rem", color: "var(--text-secondary)", lineHeight: "1.5" }}>
+                Impressive Download Manager has been updated with high-performance engine improvements!
+              </p>
+
+              <div style={{ background: "rgba(0,0,0,0.25)", padding: "14px 16px", borderRadius: "12px", border: "1px solid rgba(255,255,255,0.05)", display: "flex", flexDirection: "column", gap: "12px" }}>
+                <div style={{ display: "flex", alignItems: "flex-start", gap: "10px" }}>
+                  <Zap size={18} style={{ color: "var(--accent-cyan)", marginTop: "2px", flexShrink: 0 }} />
+                  <div>
+                    <div style={{ fontWeight: 700, fontSize: "0.88rem", color: "#fff" }}>Full Wire-Speed Downloads</div>
+                    <div style={{ fontSize: "0.8rem", color: "var(--text-secondary)" }}>Optimized TCP socket buffers with zero thread lock contention.</div>
+                  </div>
+                </div>
+
+                <div style={{ display: "flex", alignItems: "flex-start", gap: "10px" }}>
+                  <Clock size={18} style={{ color: "var(--accent-cyan)", marginTop: "2px", flexShrink: 0 }} />
+                  <div>
+                    <div style={{ fontWeight: 700, fontSize: "0.88rem", color: "#fff" }}>Instant Window Transitions</div>
+                    <div style={{ fontSize: "0.8rem", color: "var(--text-secondary)" }}>Popup windows open in &lt;50ms while network resolution runs in background.</div>
+                  </div>
+                </div>
+
+                <div style={{ display: "flex", alignItems: "flex-start", gap: "10px" }}>
+                  <Gauge size={18} style={{ color: "var(--accent-cyan)", marginTop: "2px", flexShrink: 0 }} />
+                  <div>
+                    <div style={{ fontWeight: 700, fontSize: "0.88rem", color: "#fff" }}>Enhanced Speed Limiter</div>
+                    <div style={{ fontSize: "0.8rem", color: "var(--text-secondary)" }}>Free manual input + KB/s, MB/s, GB/s unit selector dropdown & 512 KB default.</div>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <div className="modal-actions-v2" style={{ marginTop: "16px", justifyContent: "flex-end" }}>
+              <button
+                className="accent-pill"
+                style={{ padding: "10px 28px", borderRadius: "100px", fontWeight: 700, fontSize: "0.95rem" }}
+                onClick={() => setShowUpdateSuccessModal(false)}
+              >
+                Awesome! Let's Go
               </button>
             </div>
           </div>

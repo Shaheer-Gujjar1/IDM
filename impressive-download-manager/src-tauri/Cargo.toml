@@ -30,4 +30,5 @@ urlencoding = "2.1"
 rfd = "0.14"
 dirs = "5.0"
 tauri-plugin-updater = "2"
+tauri-plugin-process = "2"
 
