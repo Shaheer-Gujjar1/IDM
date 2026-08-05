@@ -95,12 +95,11 @@ chrome.downloads.onDeterminingFilename.addListener((downloadItem, suggest) => {
     } catch (e) {}
     suggest();
 
-    const filename = downloadItem.filename 
-      ? downloadItem.filename.split(/[\\/]/).pop() 
-      : extractFilename(downloadItem.url);
+    const targetUrl = downloadItem.finalUrl || downloadItem.url || "";
+    const size = (downloadItem.fileSize && downloadItem.fileSize > 0) ? downloadItem.fileSize : 0;
     
     (async () => {
-      const cookies = await getCookiesForUrl(downloadItem.url);
+      const cookies = await getCookiesForUrl(targetUrl);
       let referrer = downloadItem.referrer || "";
       if (!referrer) {
         try {
@@ -113,7 +112,7 @@ chrome.downloads.onDeterminingFilename.addListener((downloadItem, suggest) => {
         }
       }
       
-      await sendToDesktopApp(downloadItem.url, filename, cookies, referrer);
+      await sendToDesktopApp(targetUrl, filename, cookies, referrer, size);
     })();
   } else {
     suggest();
@@ -123,7 +122,7 @@ chrome.downloads.onDeterminingFilename.addListener((downloadItem, suggest) => {
 const recentInterceptions = new Map();
 
 // Helper to send payloads to our Tauri backend port 9600
-async function sendToDesktopApp(url, filename, cookie = "", referrer = "") {
+async function sendToDesktopApp(url, filename, cookie = "", referrer = "", size = 0) {
   const now = Date.now();
   const lastIntercept = recentInterceptions.get(url);
   if (lastIntercept && (now - lastIntercept) < 2500) {
@@ -151,7 +150,7 @@ async function sendToDesktopApp(url, filename, cookie = "", referrer = "") {
         },
         mode: 'cors',
         signal: controller.signal,
-        body: JSON.stringify({ url, filename, cookie, referrer })
+        body: JSON.stringify({ url, filename, cookie, referrer, size })
       });
       clearTimeout(timeoutId);
 

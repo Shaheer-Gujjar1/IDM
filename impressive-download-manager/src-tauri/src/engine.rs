@@ -586,6 +586,10 @@ impl DownloadManager {
                 let mut local_downloaded = chunk.downloaded;
                 let mut last_saved_downloaded = chunk.downloaded;
 
+                // Rate limiter tracking state per worker
+                let mut limiter_window_start = Instant::now();
+                let mut limiter_window_bytes = 0u64;
+
                 // --- Async network reader --- reads at full line speed, sends to shared writer ---
                 let mut net_buffer = Vec::with_capacity(512 * 1024);
 
@@ -612,15 +616,26 @@ impl DownloadManager {
 
                                     net_buffer.extend_from_slice(bytes_to_add);
 
-                                    // --- Global Speed Limiter Throttle ---
+                                    // --- Precision Sliding Window Rate Limiter ---
                                     let limit_bps = manager_for_worker.speed_limit_bps.load(Ordering::Relaxed);
                                     if limit_bps > 0 {
-                                        let per_worker_limit = limit_bps / (num_chunks as u64);
-                                        if per_worker_limit > 0 {
-                                            let expected_millis = (bytes_to_add.len() as u64 * 1000) / per_worker_limit;
-                                            if expected_millis > 0 {
-                                                tokio::time::sleep(Duration::from_millis(expected_millis.min(500))).await;
+                                        let per_worker_limit = (limit_bps / (num_chunks as u64)).max(1024);
+                                        limiter_window_bytes += bytes_to_add.len() as u64;
+
+                                        let elapsed_sec = limiter_window_start.elapsed().as_secs_f64();
+                                        let allowed_bytes = (per_worker_limit as f64 * elapsed_sec) as u64;
+
+                                        if limiter_window_bytes > allowed_bytes {
+                                            let excess_bytes = limiter_window_bytes - allowed_bytes;
+                                            let sleep_sec = excess_bytes as f64 / per_worker_limit as f64;
+                                            if sleep_sec >= 0.002 {
+                                                tokio::time::sleep(Duration::from_secs_f64(sleep_sec.min(0.5))).await;
                                             }
+                                        }
+
+                                        if elapsed_sec >= 0.5 {
+                                            limiter_window_start = Instant::now();
+                                            limiter_window_bytes = 0;
                                         }
                                     }
 

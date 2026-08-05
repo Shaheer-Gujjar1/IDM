@@ -647,6 +647,7 @@ pub fn run() {
                                             filename: String,
                                             cookie: Option<String>,
                                             referrer: Option<String>,
+                                            size: Option<u64>,
                                         }
 
                                         let body_clean = body.trim_end_matches('\0').trim();
@@ -660,8 +661,8 @@ pub fn run() {
                                                 .build()
                                                 .unwrap_or_default();
 
-                                            let mut total_size = 0u64;
-                                            let mut got_headers = false;
+                                            let mut total_size = payload.size.unwrap_or(0);
+                                            let mut got_headers = total_size > 0;
 
                                             // 1. Try HEAD request first
                                             let head_req = client.head(&payload.url)

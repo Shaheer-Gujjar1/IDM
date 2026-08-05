@@ -88,6 +88,15 @@ function App() {
   // Drawer State
   const [selectedTask, setSelectedTask] = useState<DownloadProgress | null>(null);
 
+  // Speed Limiter Helper
+  const calculateLimitBps = (valStr: string, unitStr: string): number => {
+    const num = parseFloat(valStr);
+    if (isNaN(num) || num <= 0) return 0;
+    if (unitStr === "GB") return Math.round(num * 1024 * 1024 * 1024);
+    if (unitStr === "MB") return Math.round(num * 1024 * 1024);
+    return Math.round(num * 1024); // KB
+  };
+
   // Settings State
   const [defaultSaveDir, setDefaultSaveDir] = useState(() => localStorage.getItem("default_save_dir") || "");
   const [autostart, setAutostart] = useState(() => {
@@ -97,10 +106,8 @@ function App() {
   const [minimizeToTray, setMinimizeToTray] = useState(true);
   const [maxChunks, setMaxChunks] = useState(8);
   const [speedLimitEnabled, setSpeedLimitEnabled] = useState(() => localStorage.getItem("speed_limit_enabled") === "true");
-  const [speedLimitKb, setSpeedLimitKb] = useState(() => {
-    const val = localStorage.getItem("speed_limit_kb");
-    return val ? parseInt(val) : 2048;
-  });
+  const [speedLimitVal, setSpeedLimitVal] = useState(() => localStorage.getItem("speed_limit_val") || "512");
+  const [speedLimitUnit, setSpeedLimitUnit] = useState<"KB" | "MB" | "GB">(() => (localStorage.getItem("speed_limit_unit") as "KB" | "MB" | "GB") || "KB");
   const [interceptDownloads, setInterceptDownloads] = useState(() => {
     const val = localStorage.getItem("intercept_downloads");
     return val !== null ? val === "true" : true;
@@ -312,8 +319,9 @@ function App() {
 
     // Sync speed limit settings to backend engine
     const isSpeedLimitEnabled = localStorage.getItem("speed_limit_enabled") === "true";
-    const savedSpeedLimitKb = parseInt(localStorage.getItem("speed_limit_kb") || "2048");
-    const limitBps = isSpeedLimitEnabled ? savedSpeedLimitKb * 1024 : 0;
+    const savedVal = localStorage.getItem("speed_limit_val") || "512";
+    const savedUnit = localStorage.getItem("speed_limit_unit") || "KB";
+    const limitBps = isSpeedLimitEnabled ? calculateLimitBps(savedVal, savedUnit) : 0;
     invoke("set_speed_limit", { limitBps }).catch(console.error);
 
     // Sync intercept downloads setting to backend engine
@@ -1175,10 +1183,16 @@ function App() {
                       className="switch-input"
                       checked={speedLimitEnabled}
                       onChange={(e) => {
-                        const val = e.target.checked;
-                        setSpeedLimitEnabled(val);
-                        localStorage.setItem("speed_limit_enabled", String(val));
-                        const limitBps = val ? speedLimitKb * 1024 : 0;
+                        const enabled = e.target.checked;
+                        setSpeedLimitEnabled(enabled);
+                        localStorage.setItem("speed_limit_enabled", String(enabled));
+                        const curVal = speedLimitVal || "512";
+                        const curUnit = speedLimitUnit || "KB";
+                        if (!speedLimitVal) {
+                          setSpeedLimitVal("512");
+                          localStorage.setItem("speed_limit_val", "512");
+                        }
+                        const limitBps = enabled ? calculateLimitBps(curVal, curUnit) : 0;
                         invoke("set_speed_limit", { limitBps }).catch(console.error);
                       }}
                     />
@@ -1189,51 +1203,77 @@ function App() {
                   <div className="settings-control-row" style={{ alignItems: "flex-start", flexDirection: "column", gap: "12px", background: "rgba(0,0,0,0.15)", padding: "16px", borderRadius: "12px", border: "1px solid rgba(255,255,255,0.04)" }}>
                     <div style={{ display: "flex", justifyContent: "space-between", width: "100%", alignItems: "center" }}>
                       <span className="settings-title">Maximum Speed Threshold</span>
-                      <div style={{ display: "flex", alignItems: "center", gap: "6px" }}>
+                      <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
                         <input
-                          type="number"
-                          min="64"
-                          max="1024000"
-                          step="128"
+                          type="text"
                           className="spotlight-input"
-                          style={{ width: "110px", padding: "6px 10px", textAlign: "right", fontSize: "0.9rem", fontWeight: 700, color: "var(--accent-cyan)" }}
-                          value={speedLimitKb}
+                          style={{ width: "90px", padding: "6px 10px", textAlign: "right", fontSize: "0.9rem", fontWeight: 700, color: "var(--accent-cyan)" }}
+                          value={speedLimitVal}
+                          placeholder="512"
                           onChange={(e) => {
-                            const val = Math.max(64, parseInt(e.target.value) || 128);
-                            setSpeedLimitKb(val);
-                            localStorage.setItem("speed_limit_kb", String(val));
-                            invoke("set_speed_limit", { limitBps: val * 1024 }).catch(console.error);
+                            const val = e.target.value;
+                            setSpeedLimitVal(val);
+                            localStorage.setItem("speed_limit_val", val);
+                            const limitBps = calculateLimitBps(val, speedLimitUnit);
+                            invoke("set_speed_limit", { limitBps }).catch(console.error);
                           }}
                         />
-                        <span style={{ fontSize: "0.85rem", fontWeight: 600, color: "var(--text-secondary)" }}>KB/s</span>
+                        <select
+                          className="spotlight-input"
+                          style={{ padding: "6px 10px", fontSize: "0.85rem", fontWeight: 700, color: "var(--accent-cyan)", cursor: "pointer", background: "rgba(0,0,0,0.3)", borderRadius: "8px" }}
+                          value={speedLimitUnit}
+                          onChange={(e) => {
+                            const unit = e.target.value as "KB" | "MB" | "GB";
+                            setSpeedLimitUnit(unit);
+                            localStorage.setItem("speed_limit_unit", unit);
+                            const limitBps = calculateLimitBps(speedLimitVal, unit);
+                            invoke("set_speed_limit", { limitBps }).catch(console.error);
+                          }}
+                        >
+                          <option value="KB">KB/s</option>
+                          <option value="MB">MB/s</option>
+                          <option value="GB">GB/s</option>
+                        </select>
                       </div>
                     </div>
 
                     <div style={{ display: "flex", gap: "8px", width: "100%", flexWrap: "wrap" }}>
-                      {[512, 1024, 2048, 5120, 10240].map((preset) => (
-                        <button
-                          key={preset}
-                          type="button"
-                          className="hover-action-btn"
-                          style={{
-                            flex: 1,
-                            padding: "6px 12px",
-                            fontSize: "0.8rem",
-                            fontWeight: 600,
-                            borderRadius: "8px",
-                            background: speedLimitKb === preset ? "rgba(6, 182, 212, 0.2)" : "rgba(255,255,255,0.04)",
-                            color: speedLimitKb === preset ? "var(--accent-cyan)" : "var(--text-primary)",
-                            borderColor: speedLimitKb === preset ? "var(--accent-cyan)" : "transparent"
-                          }}
-                          onClick={() => {
-                            setSpeedLimitKb(preset);
-                            localStorage.setItem("speed_limit_kb", String(preset));
-                            invoke("set_speed_limit", { limitBps: preset * 1024 }).catch(console.error);
-                          }}
-                        >
-                          {formatBytes(preset * 1024)}/s
-                        </button>
-                      ))}
+                      {[
+                        { label: "512 KB/s", val: "512", unit: "KB" },
+                        { label: "1 MB/s", val: "1", unit: "MB" },
+                        { label: "2 MB/s", val: "2", unit: "MB" },
+                        { label: "5 MB/s", val: "5", unit: "MB" },
+                        { label: "10 MB/s", val: "10", unit: "MB" },
+                      ].map((preset) => {
+                        const isSelected = speedLimitVal === preset.val && speedLimitUnit === preset.unit;
+                        return (
+                          <button
+                            key={preset.label}
+                            type="button"
+                            className="hover-action-btn"
+                            style={{
+                              flex: 1,
+                              padding: "6px 12px",
+                              fontSize: "0.8rem",
+                              fontWeight: 600,
+                              borderRadius: "8px",
+                              background: isSelected ? "rgba(6, 182, 212, 0.2)" : "rgba(255,255,255,0.04)",
+                              color: isSelected ? "var(--accent-cyan)" : "var(--text-primary)",
+                              borderColor: isSelected ? "var(--accent-cyan)" : "transparent"
+                            }}
+                            onClick={() => {
+                              setSpeedLimitVal(preset.val);
+                              setSpeedLimitUnit(preset.unit as "KB" | "MB" | "GB");
+                              localStorage.setItem("speed_limit_val", preset.val);
+                              localStorage.setItem("speed_limit_unit", preset.unit);
+                              const limitBps = calculateLimitBps(preset.val, preset.unit);
+                              invoke("set_speed_limit", { limitBps }).catch(console.error);
+                            }}
+                          >
+                            {preset.label}
+                          </button>
+                        );
+                      })}
                     </div>
                   </div>
                 )}
