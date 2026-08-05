@@ -411,8 +411,15 @@ html[data-theme="light"] .progress-ring-track {
   stroke: rgba(0, 0, 0, 0.05);
 }
 
-html[data-theme="light"] .sidebar-divider {
+html[data-theme="light"] .hover-action-btn {
+  background: rgba(0, 0, 0, 0.04);
+  border-color: rgba(0, 0, 0, 0.08);
+  color: var(--text-primary);
+}
+
+html[data-theme="light"] .hover-action-btn:hover {
   background: rgba(0, 0, 0, 0.08);
+  color: var(--text-primary);
 }
 
 /* Global React-based Tooltip V2 */

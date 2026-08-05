@@ -28,7 +28,8 @@ import {
   Zap,
   Gauge,
   ShieldCheck,
-  ShieldAlert
+  ShieldAlert,
+  ChevronDown
 } from "lucide-react";
 import { listen } from "@tauri-apps/api/event";
 import { invoke } from "@tauri-apps/api/core";
@@ -117,6 +118,22 @@ function App() {
   const [speedLimitEnabled, setSpeedLimitEnabled] = useState(() => localStorage.getItem("speed_limit_enabled") === "true");
   const [speedLimitVal, setSpeedLimitVal] = useState(() => localStorage.getItem("speed_limit_val") || "512");
   const [speedLimitUnit, setSpeedLimitUnit] = useState<"KB" | "MB" | "GB">(() => (localStorage.getItem("speed_limit_unit") as "KB" | "MB" | "GB") || "KB");
+  const [unitDropdownOpen, setUnitDropdownOpen] = useState(false);
+  const unitDropdownRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    const handleClickOutside = (event: MouseEvent) => {
+      if (unitDropdownRef.current && !unitDropdownRef.current.contains(event.target as Node)) {
+        setUnitDropdownOpen(false);
+      }
+    };
+    if (unitDropdownOpen) {
+      document.addEventListener("mousedown", handleClickOutside);
+    }
+    return () => {
+      document.removeEventListener("mousedown", handleClickOutside);
+    };
+  }, [unitDropdownOpen]);
   const [interceptDownloads, setInterceptDownloads] = useState(() => {
     const val = localStorage.getItem("intercept_downloads");
     return val !== null ? val === "true" : true;
@@ -299,12 +316,18 @@ function App() {
       console.error("Update check error:", e);
       setIsDownloadingUpdate(false);
       const errMsg = String(e?.message || e);
-      if (errMsg.includes("Could not fetch a valid release JSON") || errMsg.includes("404")) {
+      if (
+        errMsg.includes("Could not fetch a valid release JSON") ||
+        errMsg.includes("404") ||
+        errMsg.includes("fallback platforms") ||
+        errMsg.includes("were found in the response")
+      ) {
         setUpdateStatus("You are running the latest version! No new update found.");
+        setUpdateProgressInfo((prev) => ({ ...prev, status: "idle" }));
       } else {
         setUpdateStatus(`Update check error: ${errMsg}`);
+        setUpdateProgressInfo((prev) => ({ ...prev, status: "error" }));
       }
-      setUpdateProgressInfo((prev) => ({ ...prev, status: "error" }));
     } finally {
       setCheckingUpdate(false);
     }
@@ -1358,13 +1381,21 @@ function App() {
                   </label>
                 </div>
                 {speedLimitEnabled && (
-                  <div className="settings-control-row" style={{ alignItems: "flex-start", flexDirection: "column", gap: "12px", background: "rgba(0,0,0,0.15)", padding: "16px", borderRadius: "12px", border: "1px solid rgba(255,255,255,0.04)" }}>
+                  <div className="settings-control-row" style={{
+                    alignItems: "flex-start",
+                    flexDirection: "column",
+                    gap: "12px",
+                    background: themeMode === "light" ? "#FEFEFF" : "rgba(0, 0, 0, 0.15)",
+                    padding: "16px",
+                    borderRadius: "12px",
+                    border: themeMode === "light" ? "1px solid rgba(0, 0, 0, 0.08)" : "1px solid rgba(255, 255, 255, 0.04)"
+                  }}>
                     <div style={{ display: "flex", justifyContent: "space-between", width: "100%", alignItems: "center" }}>
                       <span className="settings-title">Maximum Speed Threshold</span>
                       <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
                         <input
                           type="text"
-                          className="spotlight-input"
+                          className="spotlight-input speed-limit-input"
                           style={{
                             width: "90px",
                             padding: "6px 10px",
@@ -1372,9 +1403,7 @@ function App() {
                             fontSize: "0.9rem",
                             fontWeight: 700,
                             color: "var(--accent-cyan)",
-                            background: themeMode === "light" ? "#ffffff" : "rgba(0, 0, 0, 0.25)",
-                            borderRadius: "8px",
-                            border: themeMode === "light" ? "1px solid rgba(0, 0, 0, 0.12)" : "1px solid rgba(255, 255, 255, 0.08)"
+                            borderRadius: "8px"
                           }}
                           value={speedLimitVal}
                           placeholder="512"
@@ -1386,32 +1415,89 @@ function App() {
                             invoke("set_speed_limit", { limitBps }).catch(console.error);
                           }}
                         />
-                        <select
-                          className="spotlight-input"
-                          style={{
-                            padding: "6px 10px",
-                            fontSize: "0.85rem",
-                            fontWeight: 700,
-                            color: "var(--accent-cyan)",
-                            cursor: "pointer",
-                            background: themeMode === "light" ? "#ffffff" : "rgba(0, 0, 0, 0.25)",
-                            colorScheme: themeMode === "light" ? "light" : "dark",
-                            borderRadius: "8px",
-                            border: themeMode === "light" ? "1px solid rgba(0, 0, 0, 0.12)" : "1px solid rgba(255, 255, 255, 0.08)"
-                          }}
-                          value={speedLimitUnit}
-                          onChange={(e) => {
-                            const unit = e.target.value as "KB" | "MB" | "GB";
-                            setSpeedLimitUnit(unit);
-                            localStorage.setItem("speed_limit_unit", unit);
-                            const limitBps = calculateLimitBps(speedLimitVal, unit);
-                            invoke("set_speed_limit", { limitBps }).catch(console.error);
-                          }}
-                        >
-                          <option value="KB" style={{ background: themeMode === "light" ? "#ffffff" : "#0d1117", color: themeMode === "light" ? "#000000" : "#ffffff" }}>KB/s</option>
-                          <option value="MB" style={{ background: themeMode === "light" ? "#ffffff" : "#0d1117", color: themeMode === "light" ? "#000000" : "#ffffff" }}>MB/s</option>
-                          <option value="GB" style={{ background: themeMode === "light" ? "#ffffff" : "#0d1117", color: themeMode === "light" ? "#000000" : "#ffffff" }}>GB/s</option>
-                        </select>
+                        <div ref={unitDropdownRef} style={{ position: "relative" }}>
+                          <button
+                            type="button"
+                            className="spotlight-input speed-limit-select"
+                            style={{
+                              padding: "6px 12px",
+                              fontSize: "0.85rem",
+                              fontWeight: 700,
+                              color: "var(--accent-cyan)",
+                              cursor: "pointer",
+                              borderRadius: "8px",
+                              display: "flex",
+                              alignItems: "center",
+                              gap: "6px",
+                              background: themeMode === "light" ? "#FEFEFF" : "#0d1117",
+                              border: themeMode === "light" ? "1px solid rgba(0, 0, 0, 0.15)" : "1px solid rgba(255, 255, 255, 0.1)"
+                            }}
+                            onClick={() => setUnitDropdownOpen(!unitDropdownOpen)}
+                          >
+                            <span>{speedLimitUnit}/s</span>
+                            <ChevronDown size={14} style={{ transform: unitDropdownOpen ? "rotate(180deg)" : "none", transition: "transform 0.2s ease" }} />
+                          </button>
+
+                          {unitDropdownOpen && (
+                            <>
+                              <div
+                                style={{ position: "fixed", top: 0, left: 0, right: 0, bottom: 0, zIndex: 999 }}
+                                onClick={() => setUnitDropdownOpen(false)}
+                              />
+                              <div
+                                style={{
+                                  position: "absolute",
+                                  top: "calc(100% + 4px)",
+                                  right: 0,
+                                  zIndex: 1000,
+                                  background: themeMode === "light" ? "#FEFEFF" : "#0d1117",
+                                  border: themeMode === "light" ? "1px solid rgba(0, 0, 0, 0.12)" : "1px solid rgba(255, 255, 255, 0.12)",
+                                  borderRadius: "10px",
+                                  boxShadow: themeMode === "light" ? "0 10px 25px rgba(0,0,0,0.1)" : "0 10px 25px rgba(0,0,0,0.5)",
+                                  padding: "4px",
+                                  display: "flex",
+                                  flexDirection: "column",
+                                  gap: "2px",
+                                  minWidth: "90px"
+                                }}
+                              >
+                                {(["KB", "MB", "GB"] as const).map((unit) => {
+                                  const isSelected = speedLimitUnit === unit;
+                                  return (
+                                    <div
+                                      key={unit}
+                                      style={{
+                                        padding: "8px 12px",
+                                        borderRadius: "6px",
+                                        fontSize: "0.85rem",
+                                        fontWeight: 700,
+                                        cursor: "pointer",
+                                        background: isSelected
+                                          ? (themeMode === "light" ? "rgba(6, 182, 212, 0.12)" : "rgba(6, 182, 212, 0.2)")
+                                          : "transparent",
+                                        color: isSelected
+                                          ? "var(--accent-cyan)"
+                                          : (themeMode === "light" ? "#0f172a" : "#ffffff"),
+                                        display: "flex",
+                                        alignItems: "center",
+                                        justifyContent: "space-between"
+                                      }}
+                                      onClick={() => {
+                                        setSpeedLimitUnit(unit);
+                                        localStorage.setItem("speed_limit_unit", unit);
+                                        const limitBps = calculateLimitBps(speedLimitVal, unit);
+                                        invoke("set_speed_limit", { limitBps }).catch(console.error);
+                                        setUnitDropdownOpen(false);
+                                      }}
+                                    >
+                                      <span>{unit}/s</span>
+                                    </div>
+                                  );
+                                })}
+                              </div>
+                            </>
+                          )}
+                        </div>
                       </div>
                     </div>
 
@@ -1435,9 +1521,13 @@ function App() {
                               fontSize: "0.8rem",
                               fontWeight: 600,
                               borderRadius: "8px",
-                              background: isSelected ? "rgba(6, 182, 212, 0.2)" : "rgba(255,255,255,0.04)",
+                              background: isSelected
+                                ? (themeMode === "light" ? "rgba(6, 182, 212, 0.15)" : "rgba(6, 182, 212, 0.2)")
+                                : (themeMode === "light" ? "#FEFEFF" : "rgba(255,255,255,0.04)"),
                               color: isSelected ? "var(--accent-cyan)" : "var(--text-primary)",
-                              borderColor: isSelected ? "var(--accent-cyan)" : "transparent"
+                              borderColor: isSelected
+                                ? "var(--accent-cyan)"
+                                : (themeMode === "light" ? "rgba(0, 0, 0, 0.12)" : "transparent")
                             }}
                             onClick={() => {
                               setSpeedLimitVal(preset.val);
@@ -1585,8 +1675,8 @@ function App() {
                     {/* Metrics Grid */}
                     <div className="visual-updater-metrics">
                       <div className="updater-metric-box">
-                        <span className="updater-metric-label">Downloaded</span>
-                        <span className="updater-metric-value">{formatBytes(updateProgressInfo.downloaded)} / {formatBytes(updateProgressInfo.total)}</span>
+                        <span className="updater-metric-label">Status</span>
+                        <span className={`updater-metric-value ${updateProgressInfo.status === "installing" || updateProgressInfo.status === "waiting_auth" ? "animated-installing-text" : "animated-downloading-text"}`}></span>
                       </div>
                       <div className="updater-metric-box">
                         <span className="updater-metric-label">Speed</span>
@@ -1626,9 +1716,10 @@ function App() {
                 {updateStatus && (
                   <div style={{
                     fontSize: "0.85rem",
-                    color: updateStatus.includes("failed") ? "#ef4444" : "var(--accent-cyan)",
+                    color: updateStatus.includes("failed") || updateStatus.includes("error") ? "#ef4444" : (themeMode === "light" ? "#0284c7" : "var(--accent-cyan)"),
                     fontWeight: 600,
-                    background: "rgba(0,0,0,0.2)",
+                    background: themeMode === "light" ? "#FEFEFF" : "rgba(0, 0, 0, 0.2)",
+                    border: themeMode === "light" ? "1px solid rgba(6, 182, 212, 0.3)" : "1px solid rgba(255, 255, 255, 0.05)",
                     padding: "10px 14px",
                     borderRadius: "10px",
                     width: "100%",
@@ -2042,7 +2133,7 @@ function App() {
 
       {/* Update Success Celebration Upgrade Modal */}
       {showUpdateSuccessModal && (
-        <div className="modal-backdrop-v2" onClick={() => setShowUpdateSuccessModal(false)}>
+        <div className="modal-backdrop-v2" style={{ display: "flex", alignItems: "center", justifyContent: "center" }} onClick={() => setShowUpdateSuccessModal(false)}>
           <div className="celebration-modal-dialog" onClick={(e) => e.stopPropagation()}>
             <div className="celebration-badge-header">
               <div className="celebration-icon-wrapper">
@@ -2097,8 +2188,7 @@ function App() {
 
             <div style={{ display: "flex", justifyContent: "flex-end", marginTop: "6px" }}>
               <button
-                className="accent-pill"
-                style={{ padding: "12px 32px", borderRadius: "100px", fontWeight: 800, fontSize: "0.95rem", background: "linear-gradient(135deg, #06b6d4, #3b82f6)", boxShadow: "0 4px 20px rgba(6, 182, 212, 0.4)" }}
+                className="explore-version-btn"
                 onClick={() => setShowUpdateSuccessModal(false)}
               >
                 Explore v{CURRENT_APP_VERSION} 🚀

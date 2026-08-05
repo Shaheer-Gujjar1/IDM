@@ -43,14 +43,10 @@ const findPackageFile = (dir, ext) => {
   return { file: target, signature };
 };
 
-// 1. Linux DEB Target (Debian / Ubuntu / Deepin / Mint) -> 'linux-x86_64' & 'linux-x86_64-deb' (DEB installer)
+// 1. Linux DEB Target (Debian / Ubuntu / Deepin / Mint) -> 'linux-x86_64-deb' (DEB installer)
 const debDir = path.join(bundleDir, 'deb');
 const debMatch = findPackageFile(debDir, '.deb');
 if (debMatch) {
-  latestJson.platforms['linux-x86_64'] = {
-    signature: debMatch.signature,
-    url: `${baseUrl}/${debMatch.file}`
-  };
   latestJson.platforms['linux-x86_64-deb'] = {
     signature: debMatch.signature,
     url: `${baseUrl}/${debMatch.file}`
