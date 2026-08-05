@@ -1,5 +1,19 @@
 # CHANGELOG
 
+## [0.5.6] – 2026-08-05
+
+### Added
+- **Instant Window Transition & Asynchronous Inspection**: Downloads captured from browser or added via modal instantly open the Progress Window (Popup 2) in `< 50ms`. Heavy network inspection (HEAD/GET range probes and 302 redirect tracking) runs asynchronously in background threads to eliminate UI freezes.
+- **Speed Limiter Unit Dropdown & Free Value Input**: Enhanced Settings UI for Speed Limiter with free-text typing (allowing custom limits like 512, 750, 1.5) and a unit selector dropdown supporting `KB/s`, `MB/s`, and `GB/s`.
+- **Default 512 KB/s Bandwidth Limit**: Toggling the Speed Limiter ON automatically defaults to `512 KB/s` if no custom limit is saved.
+- **Browser Extension Metadata Forwarding**: Updated Chrome extension to extract and forward native `fileSize` and resolved target URLs directly to desktop engine for 0ms instant file size display on captured popups.
+
+### Fixed
+- **Strict & Stable High-Precision Speed Limiter**: Replaced legacy per-packet sleep throttling with a high-precision sliding-window Token Bucket rate limiter algorithm in Rust. Enforces a strict upper bandwidth ceiling when limiting is ON while eliminating TCP window stalls and wild speed drops for flatline downloading.
+- **Full Wire-Speed Downloads when Limiter OFF**: Configured `reqwest` HTTP client with `tcp_nodelay(true)`, `tcp_keepalive(30s)`, and `pool_max_idle_per_host(64)` for maximum throughput and zero overhead when speed limiting is disabled.
+- **SourceForge & Multi-Hop 302 Redirect Fix**: Resolved SourceForge multi-hop CDN redirects by preserving cookies/referrers across 302 chains and dynamically updating task URLs to direct mirror CDN links before chunk worker allocation.
+- **Single-Stream Dynamic Fallback**: Added automatic fallback to 1 single stream if server rejects 8 multi-chunk range requests.
+
 ## [0.4.9] – 2026-07-25
 
 ### Fixed
