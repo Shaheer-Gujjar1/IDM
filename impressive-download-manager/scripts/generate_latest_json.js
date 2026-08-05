@@ -14,7 +14,7 @@ const tag = `v${version}`;
 const bundleDir = path.join(rootDir, 'src-tauri', 'target', 'release', 'bundle');
 const baseUrl = `https://github.com/Shaheer-Gujjar1/IDM/releases/download/${tag}`;
 
-// Clean latest.json manifest output
+// Clean latest.json manifest output (strictly excluding AppImage)
 const outPath = path.join(bundleDir, 'latest.json');
 let latestJson = {
   version: version,
@@ -23,105 +23,79 @@ let latestJson = {
   platforms: {}
 };
 
-// 1. Linux DEB Target (Default for linux-x86_64)
-const debDir = path.join(bundleDir, 'deb');
-if (fs.existsSync(debDir)) {
-  const files = fs.readdirSync(debDir);
-  const file = files.find(f => f.endsWith('.deb'));
-  const sig = files.find(f => f.endsWith('.deb.sig'));
-  if (file && sig) {
-    const signature = fs.readFileSync(path.join(debDir, sig), 'utf-8').trim();
-    latestJson.platforms['linux-x86_64'] = {
-      signature,
-      url: `${baseUrl}/${file}`
-    };
-    latestJson.platforms['linux-x86_64-deb'] = {
-      signature,
-      url: `${baseUrl}/${file}`
-    };
+// Helper: Get newest file matching extension & version
+const findPackageFile = (dir, ext) => {
+  if (!fs.existsSync(dir)) return null;
+  const files = fs.readdirSync(dir);
+  // First attempt: match current version string
+  let target = files.find(f => f.includes(version) && f.endsWith(ext) && !f.endsWith('.sig'));
+  // Fallback: match any file ending with extension
+  if (!target) {
+    target = files.find(f => f.endsWith(ext) && !f.endsWith('.sig'));
   }
+  if (!target) return null;
+
+  // Look for matching .sig file
+  const sigFile = files.find(f => (f === `${target}.sig` || f.endsWith(`${ext}.sig`)));
+  if (!sigFile) return null;
+
+  const signature = fs.readFileSync(path.join(dir, sigFile), 'utf-8').trim();
+  return { file: target, signature };
+};
+
+// 1. Linux DEB Target (Debian / Ubuntu / Deepin / Mint)
+const debDir = path.join(bundleDir, 'deb');
+const debMatch = findPackageFile(debDir, '.deb');
+if (debMatch) {
+  latestJson.platforms['linux-x86_64'] = {
+    signature: debMatch.signature,
+    url: `${baseUrl}/${debMatch.file}`
+  };
+  latestJson.platforms['linux-x86_64-deb'] = {
+    signature: debMatch.signature,
+    url: `${baseUrl}/${debMatch.file}`
+  };
 }
 
 // 2. Linux RPM Target (Fedora / RHEL / CentOS / openSUSE)
 const rpmDir = path.join(bundleDir, 'rpm');
-if (fs.existsSync(rpmDir)) {
-  const files = fs.readdirSync(rpmDir);
-  const file = files.find(f => f.endsWith('.rpm'));
-  const sig = files.find(f => f.endsWith('.rpm.sig'));
-  if (file && sig) {
-    const signature = fs.readFileSync(path.join(rpmDir, sig), 'utf-8').trim();
-    latestJson.platforms['linux-x86_64-rpm'] = {
-      signature,
-      url: `${baseUrl}/${file}`
-    };
-  }
+const rpmMatch = findPackageFile(rpmDir, '.rpm');
+if (rpmMatch) {
+  latestJson.platforms['linux-x86_64-rpm'] = {
+    signature: rpmMatch.signature,
+    url: `${baseUrl}/${rpmMatch.file}`
+  };
 }
 
-// 3. Arch Linux Pacman Target (.pkg.tar.zst)
-const pacmanDir = path.join(bundleDir, 'pacman');
-if (fs.existsSync(pacmanDir)) {
-  const files = fs.readdirSync(pacmanDir);
-  const file = files.find(f => f.endsWith('.pkg.tar.zst') || f.endsWith('.tar.zst') || f.endsWith('.tar.xz'));
-  const sig = files.find(f => f.endsWith('.sig'));
-  if (file && sig) {
-    const signature = fs.readFileSync(path.join(pacmanDir, sig), 'utf-8').trim();
-    latestJson.platforms['linux-x86_64-pacman'] = {
-      signature,
-      url: `${baseUrl}/${file}`
-    };
-  }
-}
-
-// 4. Windows 64-bit Target
+// 3. Windows 64-bit NSIS / MSI Target
 const nsisDir = path.join(bundleDir, 'nsis');
 const msiDir = path.join(bundleDir, 'msi');
-if (fs.existsSync(nsisDir)) {
-  const files = fs.readdirSync(nsisDir);
-  const file = files.find(f => f.endsWith('.exe'));
-  const sig = files.find(f => f.endsWith('.exe.sig'));
-  if (file && sig) {
-    const signature = fs.readFileSync(path.join(nsisDir, sig), 'utf-8').trim();
-    latestJson.platforms['windows-x86_64'] = {
-      signature,
-      url: `${baseUrl}/${file}`
-    };
-  }
-} else if (fs.existsSync(msiDir)) {
-  const files = fs.readdirSync(msiDir);
-  const file = files.find(f => f.endsWith('.msi'));
-  const sig = files.find(f => f.endsWith('.msi.sig'));
-  if (file && sig) {
-    const signature = fs.readFileSync(path.join(msiDir, sig), 'utf-8').trim();
-    latestJson.platforms['windows-x86_64'] = {
-      signature,
-      url: `${baseUrl}/${file}`
-    };
-  }
+const winMatch = findPackageFile(nsisDir, '.exe') || findPackageFile(msiDir, '.msi');
+if (winMatch) {
+  latestJson.platforms['windows-x86_64'] = {
+    signature: winMatch.signature,
+    url: `${baseUrl}/${winMatch.file}`
+  };
 }
 
-// 5. macOS Targets
+// 4. macOS Target (.app.tar.gz or .dmg)
 const dmgDir = path.join(bundleDir, 'dmg');
 const macosDir = path.join(bundleDir, 'macos');
-if (fs.existsSync(dmgDir) || fs.existsSync(macosDir)) {
-  const targetDir = fs.existsSync(dmgDir) ? dmgDir : macosDir;
-  const files = fs.readdirSync(targetDir);
-  const file = files.find(f => f.endsWith('.app.tar.gz') || f.endsWith('.dmg'));
-  const sig = files.find(f => f.endsWith('.sig'));
-  if (file && sig) {
-    const signature = fs.readFileSync(path.join(targetDir, sig), 'utf-8').trim();
-    latestJson.platforms['darwin-x86_64'] = {
-      signature,
-      url: `${baseUrl}/${file}`
-    };
-    latestJson.platforms['darwin-aarch64'] = {
-      signature,
-      url: `${baseUrl}/${file}`
-    };
-  }
+const macMatch = findPackageFile(dmgDir, '.dmg') || findPackageFile(macosDir, '.app.tar.gz');
+if (macMatch) {
+  latestJson.platforms['darwin-x86_64'] = {
+    signature: macMatch.signature,
+    url: `${baseUrl}/${macMatch.file}`
+  };
+  latestJson.platforms['darwin-aarch64'] = {
+    signature: macMatch.signature,
+    url: `${baseUrl}/${macMatch.file}`
+  };
 }
 
+// Write generated manifest to bundleDir
 fs.writeFileSync(outPath, JSON.stringify(latestJson, null, 2));
 
-console.log(`\n✅ Generated latest.json for ${tag}:`);
+console.log(`\n✅ Successfully generated clean latest.json for ${tag}:`);
 console.log(outPath);
 console.log(JSON.stringify(latestJson, null, 2));
