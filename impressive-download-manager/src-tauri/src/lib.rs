@@ -653,6 +653,7 @@ pub fn run() {
                                         if let Ok(payload) = serde_json::from_str::<DownloadPayload>(body_clean) {
                                             // Resolve real filename via fast HTTP HEAD inspection
                                             let mut filename = payload.filename.clone();
+                                            let mut target_download_url = payload.url.clone();
                                             let client = reqwest::Client::builder()
                                                 .user_agent("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
                                                 .redirect(reqwest::redirect::Policy::limited(10))
@@ -666,12 +667,13 @@ pub fn run() {
                                             let head_req = client.head(&payload.url)
                                                 .header(reqwest::header::COOKIE, payload.cookie.clone().unwrap_or_default())
                                                 .header(reqwest::header::REFERER, payload.referrer.clone().unwrap_or_default())
-                                                .timeout(std::time::Duration::from_secs(2))
+                                                .timeout(std::time::Duration::from_secs(6))
                                                 .send()
                                                 .await;
 
                                             if let Ok(res) = head_req {
                                                 if res.status().is_success() {
+                                                    target_download_url = res.url().as_str().to_string();
                                                     if let Some(cd_val) = res.headers().get(reqwest::header::CONTENT_DISPOSITION).and_then(|h| h.to_str().ok()) {
                                                         if let Some(parsed) = parse_content_disposition(cd_val) {
                                                             filename = parsed;
@@ -706,12 +708,13 @@ pub fn run() {
                                                     .header(reqwest::header::COOKIE, payload.cookie.clone().unwrap_or_default())
                                                     .header(reqwest::header::REFERER, payload.referrer.clone().unwrap_or_default())
                                                     .header("Range", "bytes=0-0")
-                                                    .timeout(std::time::Duration::from_secs(5))
+                                                    .timeout(std::time::Duration::from_secs(8))
                                                     .send()
                                                     .await;
 
                                                 if let Ok(res) = get_req {
                                                     if res.status().is_success() || res.status() == reqwest::StatusCode::PARTIAL_CONTENT {
+                                                        target_download_url = res.url().as_str().to_string();
                                                         if let Some(cd_val) = res.headers().get(reqwest::header::CONTENT_DISPOSITION).and_then(|h| h.to_str().ok()) {
                                                             if let Some(parsed) = parse_content_disposition(cd_val) {
                                                                 filename = parsed;
@@ -767,7 +770,7 @@ pub fn run() {
                                                     if let Some(task) = tasks.get_mut(id) {
                                                         let updated_task = std::sync::Arc::new(engine::DownloadTask {
                                                             id: task.id.clone(),
-                                                            url: payload.url.clone(),
+                                                            url: target_download_url.clone(),
                                                             filename: task.filename.clone(),
                                                             save_path: task.save_path.clone(),
                                                             cookie: payload.cookie.clone().unwrap_or_default(),
@@ -814,7 +817,7 @@ pub fn run() {
                                             // Default: Spawn native popup-add window pre-filled with payload
                                             let add_url = format!(
                                                 "index.html?popup=add&url={}&filename={}&cookie={}&referrer={}&size={}",
-                                                urlencoding::encode(&payload.url),
+                                                urlencoding::encode(&target_download_url),
                                                 urlencoding::encode(&filename),
                                                 urlencoding::encode(&payload.cookie.unwrap_or_default()),
                                                 urlencoding::encode(&payload.referrer.unwrap_or_default()),

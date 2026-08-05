@@ -272,6 +272,7 @@ function App() {
 
   // Diagnostic Error Banner State
   const [initError, setInitError] = useState<string | null>(null);
+  const [isStartingDownload, setIsStartingDownload] = useState(false);
 
   // Initialization query-param routing & initial loading
   useEffect(() => {
@@ -486,7 +487,8 @@ function App() {
 
   // Submit start download from main window modal
   const handleStartDownload = async () => {
-    if (!inputUrl) return;
+    if (!inputUrl || isStartingDownload) return;
+    setIsStartingDownload(true);
     const finalFilename = customFilename || extractFilename(inputUrl);
     const finalSavePath = `${savePath.endsWith("/") ? savePath : savePath + "/"}${finalFilename}`;
 
@@ -515,17 +517,20 @@ function App() {
       setShowAddModal(false);
       setInputUrl("");
       setCustomFilename("");
+      setIsStartingDownload(false);
 
       // Open standalone progress window for this task
       await invoke("open_progress_window", { id });
     } catch (e) {
       console.error("Failed to start download:", e);
+      setIsStartingDownload(false);
     }
   };
 
   // Submit start download from Popup 1 (Standalone Add window)
   const handlePopupStartDownload = async () => {
-    if (!popupUrl) return;
+    if (!popupUrl || isStartingDownload) return;
+    setIsStartingDownload(true);
     const finalFilename = popupFilename || extractFilename(popupUrl);
     const finalSavePath = `${savePath.endsWith("/") ? savePath : savePath + "/"}${finalFilename}`;
 
@@ -542,6 +547,7 @@ function App() {
       await invoke("open_progress_window", { id });
     } catch (e) {
       console.error("Failed to start popup download:", e);
+      setIsStartingDownload(false);
     }
   };
 
@@ -772,9 +778,9 @@ function App() {
         </div>
 
         <div className="modal-actions-v2" style={{ marginTop: "12px", paddingTop: "8px" }}>
-          <button className="hover-action-btn" style={{ width: "auto", padding: "0 16px", height: "38px", fontSize: "0.9rem" }} onClick={handleClosePopup}>Cancel</button>
-          <button className="accent-pill" style={{ padding: "8px 24px", borderRadius: "100px", fontWeight: 700, fontSize: "0.9rem", height: "38px" }} onClick={handlePopupStartDownload} disabled={!popupUrl}>
-            Start Download
+          <button className="hover-action-btn" style={{ width: "auto", padding: "0 16px", height: "38px", fontSize: "0.9rem" }} onClick={handleClosePopup} disabled={isStartingDownload}>Cancel</button>
+          <button className="accent-pill" style={{ padding: "8px 24px", borderRadius: "100px", fontWeight: 700, fontSize: "0.9rem", height: "38px", opacity: isStartingDownload ? 0.7 : 1 }} onClick={handlePopupStartDownload} disabled={!popupUrl || isStartingDownload}>
+            {isStartingDownload ? "Starting..." : "Start Download"}
           </button>
         </div>
       </div>

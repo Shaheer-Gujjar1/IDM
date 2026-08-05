@@ -191,39 +191,8 @@ impl DownloadManager {
         referrer: String,
     ) -> Result<String, String> {
         let id = uuid::Uuid::new_v4().to_string();
-        
-        // Reuse shared manager client — avoids redundant TLS handshakes
-        let mut head_req = self.client.head(&url);
-        if !cookie.is_empty() {
-            head_req = head_req.header(reqwest::header::COOKIE, &cookie);
-        }
-        if !referrer.is_empty() {
-            head_req = head_req.header(reqwest::header::REFERER, &referrer);
-        }
-
-        let mut total_size = 0;
-        let mut accept_ranges = false;
-
-        // Try HEAD request to resolve size/ranges, but fallback to 0/dynamic on fail
-        if let Ok(res) = head_req.send().await {
-            if res.status().is_success() {
-                total_size = res
-                    .headers()
-                    .get(reqwest::header::CONTENT_LENGTH)
-                    .and_then(|val| val.to_str().ok())
-                    .and_then(|s| s.parse::<u64>().ok())
-                    .unwrap_or(0);
-
-                accept_ranges = res
-                    .headers()
-                    .get(reqwest::header::ACCEPT_RANGES)
-                    .and_then(|val| val.to_str().ok())
-                    .map(|s| s == "bytes")
-                    .unwrap_or(false);
-            }
-        }
-
         let (abort_tx, _) = broadcast::channel(1);
+
         let task = Arc::new(DownloadTask {
             id: id.clone(),
             url: url.clone(),
@@ -231,7 +200,7 @@ impl DownloadManager {
             save_path: save_path.clone(),
             cookie: cookie.clone(),
             referrer: referrer.clone(),
-            total_size: AtomicU64::new(total_size),
+            total_size: AtomicU64::new(0),
             downloaded: Arc::new(AtomicU64::new(0)),
             status: Arc::new(std::sync::Mutex::new(DownloadStatus::Queued)),
             abort_tx: Some(abort_tx),
@@ -249,7 +218,106 @@ impl DownloadManager {
 
         let manager_clone = self.clone();
         tokio::spawn(async move {
-            if let Err(e) = manager_clone.run_task(task, accept_ranges).await {
+            let mut final_url = task.url.clone();
+            let mut total_size = 0u64;
+            let mut accept_ranges = false;
+            let mut got_info = false;
+
+            // 1. Try HEAD request with 6s timeout to follow redirects and resolve final direct URL
+            let mut head_req = manager_clone.client.head(&task.url).timeout(Duration::from_secs(6));
+            if !task.cookie.is_empty() {
+                head_req = head_req.header(reqwest::header::COOKIE, &task.cookie);
+            }
+            if !task.referrer.is_empty() {
+                head_req = head_req.header(reqwest::header::REFERER, &task.referrer);
+            }
+
+            if let Ok(res) = head_req.send().await {
+                if res.status().is_success() {
+                    final_url = res.url().as_str().to_string();
+                    total_size = res
+                        .headers()
+                        .get(reqwest::header::CONTENT_LENGTH)
+                        .and_then(|val| val.to_str().ok())
+                        .and_then(|s| s.parse::<u64>().ok())
+                        .unwrap_or(0);
+
+                    accept_ranges = res
+                        .headers()
+                        .get(reqwest::header::ACCEPT_RANGES)
+                        .and_then(|val| val.to_str().ok())
+                        .map(|s| s == "bytes")
+                        .unwrap_or(false);
+
+                    if total_size > 0 {
+                        got_info = true;
+                    }
+                }
+            }
+
+            // 2. Fallback to range GET request if HEAD request failed or size is still 0
+            if !got_info {
+                let mut get_req = manager_clone.client.get(&task.url)
+                    .header("Range", "bytes=0-0")
+                    .timeout(Duration::from_secs(8));
+                if !task.cookie.is_empty() {
+                    get_req = get_req.header(reqwest::header::COOKIE, &task.cookie);
+                }
+                if !task.referrer.is_empty() {
+                    get_req = get_req.header(reqwest::header::REFERER, &task.referrer);
+                }
+
+                if let Ok(res) = get_req.send().await {
+                    if res.status().is_success() || res.status() == reqwest::StatusCode::PARTIAL_CONTENT {
+                        final_url = res.url().as_str().to_string();
+                        if let Some(cr_val) = res.headers().get("Content-Range").and_then(|h| h.to_str().ok()) {
+                            if let Some(slash_idx) = cr_val.rfind('/') {
+                                if let Ok(s) = cr_val[slash_idx + 1..].trim().parse::<u64>() {
+                                    total_size = s;
+                                    accept_ranges = true;
+                                }
+                            }
+                        }
+                        if total_size == 0 {
+                            total_size = res
+                                .headers()
+                                .get(reqwest::header::CONTENT_LENGTH)
+                                .and_then(|val| val.to_str().ok())
+                                .and_then(|s| s.parse::<u64>().ok())
+                                .unwrap_or(0);
+                        }
+                    }
+                }
+            }
+
+            task.total_size.store(total_size, Ordering::Relaxed);
+
+            let mut task_to_run = task.clone();
+            if final_url != task.url {
+                let mut tasks = manager_clone.tasks.write().await;
+                if let Some(existing) = tasks.get(&task.id) {
+                    let task_id = existing.id.clone();
+                    let updated = std::sync::Arc::new(DownloadTask {
+                        id: task_id.clone(),
+                        url: final_url,
+                        filename: existing.filename.clone(),
+                        save_path: existing.save_path.clone(),
+                        cookie: existing.cookie.clone(),
+                        referrer: existing.referrer.clone(),
+                        total_size: AtomicU64::new(total_size),
+                        downloaded: existing.downloaded.clone(),
+                        status: existing.status.clone(),
+                        abort_tx: existing.abort_tx.clone(),
+                        chunks: std::sync::Mutex::new(existing.chunks.lock().unwrap().clone()),
+                        speed: existing.speed.clone(),
+                        eta: existing.eta.clone(),
+                    });
+                    tasks.insert(task_id, updated.clone());
+                    task_to_run = updated;
+                }
+            }
+
+            if let Err(e) = manager_clone.run_task(task_to_run, accept_ranges).await {
                 eprintln!("Download failed: {}", e);
             }
         });
