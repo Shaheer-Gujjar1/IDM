@@ -14,7 +14,7 @@ const tag = `v${version}`;
 const bundleDir = path.join(rootDir, 'src-tauri', 'target', 'release', 'bundle');
 const baseUrl = `https://github.com/Shaheer-Gujjar1/IDM/releases/download/${tag}`;
 
-// Clean latest.json manifest output (strictly excluding AppImage)
+// Clean latest.json manifest output (strictly DEB, RPM, NSIS EXE - NO AppImage 'linux-x86_64' key)
 const outPath = path.join(bundleDir, 'latest.json');
 let latestJson = {
   version: version,
@@ -43,21 +43,17 @@ const findPackageFile = (dir, ext) => {
   return { file: target, signature };
 };
 
-// 1. Linux DEB Target (Debian / Ubuntu / Deepin / Mint)
+// 1. Linux DEB Target (Debian / Ubuntu / Deepin / Mint) -> 'linux-x86_64-deb'
 const debDir = path.join(bundleDir, 'deb');
 const debMatch = findPackageFile(debDir, '.deb');
 if (debMatch) {
-  latestJson.platforms['linux-x86_64'] = {
-    signature: debMatch.signature,
-    url: `${baseUrl}/${debMatch.file}`
-  };
   latestJson.platforms['linux-x86_64-deb'] = {
     signature: debMatch.signature,
     url: `${baseUrl}/${debMatch.file}`
   };
 }
 
-// 2. Linux RPM Target (Fedora / RHEL / CentOS / openSUSE)
+// 2. Linux RPM Target (Fedora / RHEL / CentOS / openSUSE) -> 'linux-x86_64-rpm'
 const rpmDir = path.join(bundleDir, 'rpm');
 const rpmMatch = findPackageFile(rpmDir, '.rpm');
 if (rpmMatch) {
@@ -67,7 +63,7 @@ if (rpmMatch) {
   };
 }
 
-// 3. Windows 64-bit NSIS / MSI Target
+// 3. Windows 64-bit NSIS / MSI Target -> 'windows-x86_64'
 const nsisDir = path.join(bundleDir, 'nsis');
 const msiDir = path.join(bundleDir, 'msi');
 const winMatch = findPackageFile(nsisDir, '.exe') || findPackageFile(msiDir, '.msi');
@@ -78,7 +74,7 @@ if (winMatch) {
   };
 }
 
-// 4. macOS Target (.app.tar.gz or .dmg)
+// 4. macOS Target (.app.tar.gz or .dmg) -> 'darwin-x86_64' / 'darwin-aarch64'
 const dmgDir = path.join(bundleDir, 'dmg');
 const macosDir = path.join(bundleDir, 'macos');
 const macMatch = findPackageFile(dmgDir, '.dmg') || findPackageFile(macosDir, '.app.tar.gz');
@@ -96,6 +92,6 @@ if (macMatch) {
 // Write generated manifest to bundleDir
 fs.writeFileSync(outPath, JSON.stringify(latestJson, null, 2));
 
-console.log(`\n✅ Successfully generated clean latest.json for ${tag}:`);
+console.log(`\n✅ Successfully generated clean latest.json for ${tag} (strictly no AppImage key):`);
 console.log(outPath);
 console.log(JSON.stringify(latestJson, null, 2));
