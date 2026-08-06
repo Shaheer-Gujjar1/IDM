@@ -67,137 +67,157 @@ if (chrome.webRequest && chrome.webRequest.onBeforeRequest) {
   }
 }
 
-// 2. HTTPS Download Detection Pipeline
-function checkAndProcessDownload(id) {
-  if (!extensionEnabled || handledDownloadIds.has(id)) {
-    return;
+// 2. HTTPS Download Detection Pipeline (Instant Interception)
+async function processDownloadItem(item) {
+  if (!item || !extensionEnabled || handledDownloadIds.has(item.id)) return false;
+  if (item.state === "interrupted" || item.state === "complete") return false;
+
+  const url = item.url || "";
+  const finalUrl = item.finalUrl || url;
+  const mime = item.mime || "";
+  const filenameStr = item.filename ? item.filename.replace(/^.*[\\\/]/, "") : "";
+
+  // Check direct webRequest mirror signal
+  const directUrlSignal = filenameStr ? webRequestCapturedUrls.get(filenameStr) : null;
+  
+  // For SourceForge links, always prefer the primary project URL (url) over temporary single-use mirrors
+  let targetRealUrl = directUrlSignal || finalUrl;
+  if ((url.includes("sourceforge.net") || targetRealUrl.includes("sourceforge.net")) && url.includes("/project/")) {
+    targetRealUrl = url;
   }
 
-  let attempts = 0;
-  const maxAttempts = 20; // 10s poll window
+  // Reject HTML web pages and redirector landing URLs strictly
+  if (mime === "text/html" || mime === "text/plain" || mime.includes("html")) {
+    return false;
+  }
 
-  const interval = setInterval(async () => {
-    attempts++;
-    chrome.downloads.search({ id }, async (items) => {
-      if (!items || items.length === 0) {
-        clearInterval(interval);
-        return;
-      }
+  // Use URL parsing to strictly reject SourceForge landing pages even with query strings
+  try {
+    const pUrl = new URL(targetRealUrl);
+    if (pUrl.hostname.includes("sourceforge.net") && pUrl.pathname.endsWith("/download")) {
+      return false;
+    }
+  } catch (e) {}
 
-      const item = items[0];
-      if (!item || item.state === "interrupted" || item.state === "complete") {
-        clearInterval(interval);
-        return;
-      }
+  const isBinaryExt =
+    /\.(run|exe|zip|deb|dmg|msi|tar|gz|iso|apk|appimage)$/i.test(filenameStr) ||
+    /\.(run|exe|zip|deb|dmg|msi|tar|gz|iso|apk|appimage)$/i.test(url) ||
+    /\.(run|exe|zip|deb|dmg|msi|tar|gz|iso|apk|appimage)$/i.test(targetRealUrl);
+  const isNonTextMime = mime && !mime.startsWith("text/");
+  const hasSize = item.fileSize && item.fileSize > 0;
 
-      const url = item.url || "";
-      const finalUrl = item.finalUrl || "";
-      const mime = item.mime || "";
-      const filenameStr = item.filename ? item.filename.replace(/^.*[\\\/]/, "") : "";
+  const isRealFile = (hasSize || isNonTextMime || isBinaryExt);
 
-      // Check direct webRequest mirror signal
-      const directUrlSignal = filenameStr ? webRequestCapturedUrls.get(filenameStr) : null;
-      const targetRealUrl = directUrlSignal || finalUrl;
+  if (isRealFile) {
+    handledDownloadIds.add(item.id);
 
-      // Reject HTML web pages and redirector landing URLs strictly
-      if (mime === "text/html" || mime === "text/plain" || mime.includes("html")) {
-        return;
-      }
-
-      // Use URL parsing to strictly reject SourceForge landing pages even with query strings
-      try {
-        const pUrl = new URL(targetRealUrl);
-        if (pUrl.hostname.includes("sourceforge.net") && pUrl.pathname.endsWith("/download")) {
-          return;
-        }
-      } catch (e) { }
-
-      const isBinaryExt =
-        /\.(run|exe|zip|deb|dmg|msi|tar|gz|iso|apk|appimage)$/i.test(filenameStr) ||
-        /\.(run|exe|zip|deb|dmg|msi|tar|gz|iso|apk|appimage)$/i.test(url);
-      const isNonTextMime = mime && !mime.startsWith("text/");
-      const hasSize = item.fileSize && item.fileSize > 0;
-      const hasFinalUrl = targetRealUrl && targetRealUrl !== url;
-
-      const isRealFile = (hasSize || isNonTextMime || isBinaryExt) && (hasFinalUrl || directUrlSignal);
-
-      if (isRealFile && !handledDownloadIds.has(id)) {
-        handledDownloadIds.add(id);
-        clearInterval(interval);
-
-        const cleanFilename = filenameStr || extractFilename(targetRealUrl);
-        const cookies = await getCookiesForUrl(targetRealUrl);
-        let referrer = item.referrer || "";
-        if (!referrer) {
-          try {
-            const tabs = await chrome.tabs.query({ active: true, currentWindow: true });
-            if (tabs && tabs[0]) {
-              referrer = tabs[0].url || "";
-            }
-          } catch (e) { }
-        }
-
-        const payload = {
-          url: targetRealUrl,
-          filename: cleanFilename,
-          size: item.fileSize && item.fileSize > 0 ? item.fileSize : 0,
-          mime: mime,
-          referrer: referrer,
-          cookie: cookies,
-          userAgent: navigator.userAgent
-        };
-
-        console.log("HTTPS HERO: CONFIRMED REAL FILE PAYLOAD SENT TO TAURI BACKEND:", payload);
-
-        // 3. Engine Handoff: Send payload directly to Tauri backend
-        const success = await sendToDesktopApp(payload);
-
-        if (success) {
-          // 4. Browser Cancellation & Shelf Cleanup: Cancel and erase from Chrome download shelf
-          try {
-            chrome.downloads.cancel(id, () => {
-              try {
-                chrome.downloads.erase({ id }, () => {});
-              } catch (e) {}
-              console.log("Cancelled and erased browser download AFTER successful handoff:", id);
-            });
-          } catch (e) {}
-        } else {
-          // 5. Failsafe: If backend fails/offline, resume browser download
-          console.warn("Backend handoff failed. Failsafe active: resuming browser download", id);
-          try {
-            chrome.downloads.resume(id, () => {});
-          } catch (e) {}
-        }
-        return;
-      }
-
-      if (attempts >= maxAttempts) {
-        clearInterval(interval);
-        console.log("No real HTTPS file URL confirmed within 10s. Failsafe: Leaving browser download running.");
+    // Cancel & erase browser download IMMEDIATELY before Chrome UI pops up
+    try {
+      chrome.downloads.cancel(item.id, () => {
         try {
-          chrome.downloads.resume(id, () => {});
+          chrome.downloads.erase({ id: item.id }, () => {});
         } catch (e) {}
-      }
-    });
-  }, 500);
+      });
+    } catch (e) {}
+
+    const cleanFilename = filenameStr || extractFilename(targetRealUrl);
+    const cookies = await getCookiesForUrl(targetRealUrl);
+    let referrer = item.referrer || "";
+    if (!referrer) {
+      try {
+        const tabs = await chrome.tabs.query({ active: true, currentWindow: true });
+        if (tabs && tabs[0]) {
+          referrer = tabs[0].url || "";
+        }
+      } catch (e) {}
+    }
+
+    const payload = {
+      url: targetRealUrl,
+      filename: cleanFilename,
+      size: item.fileSize && item.fileSize > 0 ? item.fileSize : 0,
+      mime: mime,
+      referrer: referrer,
+      cookie: cookies,
+      userAgent: navigator.userAgent
+    };
+
+    console.log("HTTPS HERO: INSTANT REAL FILE PAYLOAD SENT TO TAURI BACKEND:", payload);
+    await sendToDesktopApp(payload);
+    return true;
+  }
+  return false;
+}
+
+function checkAndProcessDownload(id) {
+  if (!extensionEnabled || handledDownloadIds.has(id)) return;
+
+  chrome.downloads.search({ id }, async (items) => {
+    if (!items || items.length === 0) return;
+    const handled = await processDownloadItem(items[0]);
+    if (!handled) {
+      let attempts = 0;
+      const interval = setInterval(() => {
+        attempts++;
+        chrome.downloads.search({ id }, async (pollItems) => {
+          if (!pollItems || pollItems.length === 0) {
+            clearInterval(interval);
+            return;
+          }
+          const pollHandled = await processDownloadItem(pollItems[0]);
+          if (pollHandled || attempts >= 10) {
+            clearInterval(interval);
+          }
+        });
+      }, 300);
+    }
+  });
 }
 
 chrome.downloads.onCreated.addListener((item) => {
   if (item && item.id && extensionEnabled) {
-    // Immediately pause browser download so Chrome stops downloading in parallel
-    try {
-      chrome.downloads.pause(item.id, () => {});
-    } catch (e) {}
     checkAndProcessDownload(item.id);
   }
 });
 
 chrome.downloads.onChanged.addListener((delta) => {
-  if (delta && delta.id) {
+  if (delta && delta.id && extensionEnabled) {
     checkAndProcessDownload(delta.id);
   }
 });
+
+if (chrome.downloads && chrome.downloads.onDeterminingFilename) {
+  chrome.downloads.onDeterminingFilename.addListener((item) => {
+    if (!extensionEnabled) return;
+    const filenameStr = item.filename ? item.filename.replace(/^.*[\\\/]/, "") : "";
+    const mime = item.mime || "";
+    const url = item.url || "";
+    const targetRealUrl = item.finalUrl || url;
+
+    if (mime === "text/html" || mime === "text/plain" || mime.includes("html")) return;
+    try {
+      const pUrl = new URL(targetRealUrl);
+      if (pUrl.hostname.includes("sourceforge.net") && pUrl.pathname.endsWith("/download")) return;
+    } catch (e) {}
+
+    const isBinaryExt =
+      /\.(run|exe|zip|deb|dmg|msi|tar|gz|iso|apk|appimage)$/i.test(filenameStr) ||
+      /\.(run|exe|zip|deb|dmg|msi|tar|gz|iso|apk|appimage)$/i.test(url) ||
+      /\.(run|exe|zip|deb|dmg|msi|tar|gz|iso|apk|appimage)$/i.test(targetRealUrl);
+    const isNonTextMime = mime && !mime.startsWith("text/");
+    const hasSize = item.fileSize && item.fileSize > 0;
+
+    if (hasSize || isNonTextMime || isBinaryExt) {
+      try {
+        chrome.downloads.cancel(item.id, () => {
+          try {
+            chrome.downloads.erase({ id: item.id }, () => {});
+          } catch (e) {}
+        });
+      } catch (e) {}
+    }
+  });
+}
 
 const recentInterceptions = new Map();
 

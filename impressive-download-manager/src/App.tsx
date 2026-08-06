@@ -657,7 +657,16 @@ function App() {
       // Live progress events — only used by the main dashboard now
       // (progress popup uses its own polling loop instead)
       unlistenProgress = await listen<DownloadProgress>("download-progress", (event) => {
-        if (popupMode === "progress") return; // Popup handles itself via poll
+        if (popupMode === "progress") {
+          if (!popupTaskId || event.payload.id === popupTaskId) {
+            setPopupProgress(event.payload);
+            if (event.payload.status === "Completed") {
+              invoke("open_complete_window", { filename: event.payload.filename, savePath: event.payload.save_path || "" });
+              invoke("close_window");
+            }
+          }
+          return;
+        }
 
         setDownloads((prev) => {
           const index = prev.findIndex((d) => d.id === event.payload.id);

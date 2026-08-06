@@ -408,6 +408,7 @@ async fn resume_and_open_progress(
 
     // If the window already exists, just focus it; otherwise create it
     if let Some(win) = app_handle.get_webview_window(&window_label) {
+        let _ = win.unminimize();
         let _ = win.show();
         let _ = win.set_focus();
     } else {

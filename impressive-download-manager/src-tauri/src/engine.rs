@@ -316,10 +316,12 @@ impl DownloadManager {
                         let now = Instant::now();
                         let duration = now.duration_since(last_check).as_secs_f64();
                         let raw_speed = if duration > 0.0 {
-                            (current_bytes - last_bytes) as f64 / duration
+                            (current_bytes.saturating_sub(last_bytes)) as f64 / duration
                         } else {
                             0.0
                         };
+                        last_bytes = current_bytes;
+                        last_check = now;
 
                         let mut speed_guard = task_speed.lock().unwrap();
                         let last_speed = *speed_guard;
