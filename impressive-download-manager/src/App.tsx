@@ -24,12 +24,13 @@ import {
   Calendar,
   RefreshCw,
   FolderOpen,
-  Sparkles,
   Zap,
   Gauge,
   ShieldCheck,
   ShieldAlert,
-  ChevronDown
+  ChevronDown,
+  Rocket,
+  PartyPopper
 } from "lucide-react";
 import { listen } from "@tauri-apps/api/event";
 import { invoke } from "@tauri-apps/api/core";
@@ -160,7 +161,7 @@ function App() {
     percent: number;
     speed: number;
     eta: string;
-    status: "idle" | "checking" | "downloading" | "installing" | "waiting_auth" | "ready" | "error";
+    status: "idle" | "checking" | "downloading" | "installing" | "relaunching" | "waiting_auth" | "ready" | "error";
     version: string;
   }>({
     downloaded: 0,
@@ -191,10 +192,27 @@ function App() {
 
     if (!hasActiveDownloads) {
       setPendingRelaunch(false);
+      setUpdateProgressInfo((prev) => ({ ...prev, status: "relaunching" }));
       setUpdateStatus("Active downloads completed! Relaunching application...");
-      relaunch().catch(console.error);
+      setTimeout(() => {
+        relaunch().catch(console.error);
+      }, 1000);
     }
   }, [downloads, pendingRelaunch]);
+
+  // Background update check interval (runs every 15 mins while app is running)
+  useEffect(() => {
+    const interval = setInterval(() => {
+      checkUpdate({ headers: { "Cache-Control": "no-cache", "Pragma": "no-cache" } })
+        .then((update) => {
+          if (update && update.available) {
+            setUpdateStatus(`New update v${update.version} is available! Go to Settings to install.`);
+          }
+        })
+        .catch(() => {});
+    }, 15 * 60 * 1000);
+    return () => clearInterval(interval);
+  }, []);
 
   const triggerRelaunchOrWait = async () => {
     const hasActiveDownloads = downloads.some((d) => {
@@ -206,7 +224,9 @@ function App() {
       setPendingRelaunch(true);
       setUpdateStatus("Update installed! Application will restart automatically once active downloads finish.");
     } else {
+      setUpdateProgressInfo((prev) => ({ ...prev, status: "relaunching" }));
       setUpdateStatus("Update installed! Relaunching application...");
+      await new Promise((resolve) => setTimeout(resolve, 1000));
       await relaunch();
     }
   };
@@ -276,17 +296,11 @@ function App() {
             percent: 100,
             status: "installing"
           }));
-          setUpdateStatus("System installation starting. Please enter your Superuser (sudo) password in system prompt.");
+          setUpdateStatus("Installing update into system... Please authorize system prompt if required.");
         }
       });
 
       setIsDownloadingUpdate(false);
-      setUpdateProgressInfo((prev) => ({
-        ...prev,
-        percent: 100,
-        status: "ready"
-      }));
-
       await triggerRelaunchOrWait();
     } catch (err: any) {
       setIsDownloadingUpdate(false);
@@ -305,7 +319,7 @@ function App() {
     setUpdateStatus("Checking for updates...");
     setUpdateProgressInfo((prev) => ({ ...prev, status: "checking" }));
     try {
-      const update = await checkUpdate();
+      const update = await checkUpdate({ headers: { "Cache-Control": "no-cache", "Pragma": "no-cache" } });
       if (update && update.available) {
         await executeUpdateInstallation(update);
       } else {
@@ -1741,9 +1755,17 @@ function App() {
                     className="accent-pill"
                     style={{ padding: "10px 24px", borderRadius: "100px", fontWeight: 700, fontSize: "0.9rem" }}
                     onClick={handleCheckForUpdates}
-                    disabled={checkingUpdate || isDownloadingUpdate}
+                    disabled={checkingUpdate || isDownloadingUpdate || updateProgressInfo.status === "installing" || updateProgressInfo.status === "relaunching"}
                   >
-                    {checkingUpdate ? "Checking..." : (isDownloadingUpdate ? "Downloading Update..." : "Check for Updates")}
+                    {updateProgressInfo.status === "relaunching"
+                      ? "Relaunching..."
+                      : updateProgressInfo.status === "installing"
+                      ? "Installing..."
+                      : checkingUpdate
+                      ? "Checking..."
+                      : isDownloadingUpdate
+                      ? "Downloading Update..."
+                      : "Check for Updates"}
                   </button>
                 </div>
               </div>
@@ -2139,15 +2161,23 @@ function App() {
         <div className="modal-backdrop-v2" style={{ display: "flex", alignItems: "center", justifyContent: "center" }} onClick={() => setShowUpdateSuccessModal(false)}>
           <div className="celebration-modal-dialog" onClick={(e) => e.stopPropagation()}>
             <div className="celebration-badge-header">
-              <div className="celebration-icon-wrapper">
-                <Sparkles size={28} />
+              <div className="celebration-icon-wrapper" style={{
+                background: "linear-gradient(135deg, rgba(245, 158, 11, 0.25), rgba(236, 72, 153, 0.25), rgba(6, 182, 212, 0.25))",
+                border: "1px solid rgba(245, 158, 11, 0.4)",
+                boxShadow: "0 0 15px rgba(245, 158, 11, 0.25)",
+                color: "#f59e0b"
+              }}>
+                <Rocket size={26} />
               </div>
               <div>
-                <div className="celebration-title-text" style={{ fontSize: "1.2rem", lineHeight: "1.35" }}>
-                  {updatedFromVersion
-                    ? `🎉 v${updatedFromVersion} is history. v${CURRENT_APP_VERSION} is live now with fresh upgrades and smoother vibes!`
-                    : `🎉 v${CURRENT_APP_VERSION} is live now with fresh upgrades and smoother vibes!`
-                  }
+                <div className="celebration-title-text" style={{ fontSize: "1.2rem", lineHeight: "1.35", display: "flex", alignItems: "center", gap: "8px" }}>
+                  <PartyPopper size={22} style={{ color: "#f59e0b", flexShrink: 0 }} />
+                  <span>
+                    {updatedFromVersion
+                      ? `v${updatedFromVersion} is history. v${CURRENT_APP_VERSION} is live now with fresh upgrades and smoother vibes!`
+                      : `v${CURRENT_APP_VERSION} is live now with fresh upgrades and smoother vibes!`
+                    }
+                  </span>
                 </div>
                 <div style={{ fontSize: "0.88rem", color: "var(--text-secondary)", marginTop: "2px" }}>
                   Impressive Download Manager has been upgraded with major engine enhancements!

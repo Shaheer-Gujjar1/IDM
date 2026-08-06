@@ -13,7 +13,8 @@
     "tabs",
     "storage",
     "downloads",
-    "cookies"
+    "cookies",
+    "webRequest"
   ],
   "host_permissions": [
     "<all_urls>"

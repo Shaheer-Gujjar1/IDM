@@ -60,20 +60,20 @@ chrome.downloads.onDeterminingFilename.addListener((downloadItem, suggest) => {
     return;
   }
 
-  // Whitelist image downloads (MIME type or file extension)
   const filenameStr = downloadItem.filename || "";
   const mime = downloadItem.mime || "";
-  const isImage = mime.startsWith("image/") || 
-                  /\.(png|jpe?g|gif|webp|svg|bmp|ico|tiff?)(?:\?.*)?$/i.test(url) ||
-                  /\.(png|jpe?g|gif|webp|svg|bmp|ico|tiff?)$/i.test(filenameStr);
-  if (isImage) {
+
+  // Do not capture HTML web page navigations
+  if (mime === "text/html" || mime === "text/plain") {
     suggest();
     return;
   }
 
-  // Do not capture downloads <= 1.00MB (1,048,576 bytes)
-  // If fileSize is -1 or 0, it means size is unknown, so we capture it.
-  if (downloadItem.fileSize > 0 && downloadItem.fileSize <= 1048576) {
+  // Whitelist image downloads (MIME type or file extension)
+  const isImage = mime.startsWith("image/") || 
+                  /\.(png|jpe?g|gif|webp|svg|bmp|ico|tiff?)(?:\?.*)?$/i.test(url) ||
+                  /\.(png|jpe?g|gif|webp|svg|bmp|ico|tiff?)$/i.test(filenameStr);
+  if (isImage) {
     suggest();
     return;
   }
@@ -97,6 +97,10 @@ chrome.downloads.onDeterminingFilename.addListener((downloadItem, suggest) => {
 
     const targetUrl = downloadItem.finalUrl || downloadItem.url || "";
     const size = (downloadItem.fileSize && downloadItem.fileSize > 0) ? downloadItem.fileSize : 0;
+    let cleanFilename = "";
+    if (downloadItem.filename) {
+      cleanFilename = downloadItem.filename.replace(/^.*[\\\/]/, '');
+    }
     
     (async () => {
       const cookies = await getCookiesForUrl(targetUrl);
@@ -112,7 +116,7 @@ chrome.downloads.onDeterminingFilename.addListener((downloadItem, suggest) => {
         }
       }
       
-      await sendToDesktopApp(targetUrl, filename, cookies, referrer, size);
+      await sendToDesktopApp(targetUrl, cleanFilename, cookies, referrer, size);
     })();
   } else {
     suggest();

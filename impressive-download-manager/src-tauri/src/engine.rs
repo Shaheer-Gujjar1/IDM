@@ -82,8 +82,9 @@ pub struct DownloadManager {
 impl DownloadManager {
     pub fn new() -> Self {
         let client = reqwest::Client::builder()
+            .cookie_store(true)
             .user_agent("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
-            // tcp_nodelay DISABLED: disabling Nagle's algorithm helps latency but HURTS bulk download throughput
+            .redirect(reqwest::redirect::Policy::limited(10))
             .pool_max_idle_per_host(32)
             .connection_verbose(false)
             .build()
@@ -220,106 +221,7 @@ impl DownloadManager {
 
         let manager_clone = self.clone();
         tokio::spawn(async move {
-            let mut final_url = task.url.clone();
-            let mut total_size = 0u64;
-            let mut accept_ranges = false;
-            let mut got_info = false;
-
-            // 1. Try HEAD request with 6s timeout to follow redirects and resolve final direct URL
-            let mut head_req = manager_clone.client.head(&task.url).timeout(Duration::from_secs(6));
-            if !task.cookie.is_empty() {
-                head_req = head_req.header(reqwest::header::COOKIE, &task.cookie);
-            }
-            if !task.referrer.is_empty() {
-                head_req = head_req.header(reqwest::header::REFERER, &task.referrer);
-            }
-
-            if let Ok(res) = head_req.send().await {
-                if res.status().is_success() {
-                    final_url = res.url().as_str().to_string();
-                    total_size = res
-                        .headers()
-                        .get(reqwest::header::CONTENT_LENGTH)
-                        .and_then(|val| val.to_str().ok())
-                        .and_then(|s| s.parse::<u64>().ok())
-                        .unwrap_or(0);
-
-                    accept_ranges = res
-                        .headers()
-                        .get(reqwest::header::ACCEPT_RANGES)
-                        .and_then(|val| val.to_str().ok())
-                        .map(|s| s == "bytes")
-                        .unwrap_or(false);
-
-                    if total_size > 0 {
-                        got_info = true;
-                    }
-                }
-            }
-
-            // 2. Fallback to range GET request if HEAD request failed or size is still 0
-            if !got_info {
-                let mut get_req = manager_clone.client.get(&task.url)
-                    .header("Range", "bytes=0-0")
-                    .timeout(Duration::from_secs(8));
-                if !task.cookie.is_empty() {
-                    get_req = get_req.header(reqwest::header::COOKIE, &task.cookie);
-                }
-                if !task.referrer.is_empty() {
-                    get_req = get_req.header(reqwest::header::REFERER, &task.referrer);
-                }
-
-                if let Ok(res) = get_req.send().await {
-                    if res.status().is_success() || res.status() == reqwest::StatusCode::PARTIAL_CONTENT {
-                        final_url = res.url().as_str().to_string();
-                        if let Some(cr_val) = res.headers().get("Content-Range").and_then(|h| h.to_str().ok()) {
-                            if let Some(slash_idx) = cr_val.rfind('/') {
-                                if let Ok(s) = cr_val[slash_idx + 1..].trim().parse::<u64>() {
-                                    total_size = s;
-                                    accept_ranges = true;
-                                }
-                            }
-                        }
-                        if total_size == 0 {
-                            total_size = res
-                                .headers()
-                                .get(reqwest::header::CONTENT_LENGTH)
-                                .and_then(|val| val.to_str().ok())
-                                .and_then(|s| s.parse::<u64>().ok())
-                                .unwrap_or(0);
-                        }
-                    }
-                }
-            }
-
-            task.total_size.store(total_size, Ordering::Relaxed);
-
-            let mut task_to_run = task.clone();
-            if final_url != task.url {
-                let mut tasks = manager_clone.tasks.write().await;
-                if let Some(existing) = tasks.get(&task.id) {
-                    let task_id = existing.id.clone();
-                    let updated = std::sync::Arc::new(DownloadTask {
-                        id: task_id.clone(),
-                        url: final_url,
-                        filename: existing.filename.clone(),
-                        save_path: existing.save_path.clone(),
-                        cookie: existing.cookie.clone(),
-                        referrer: existing.referrer.clone(),
-                        total_size: AtomicU64::new(total_size),
-                        downloaded: existing.downloaded.clone(),
-                        status: existing.status.clone(),
-                        abort_tx: existing.abort_tx.clone(),
-                        chunks: std::sync::Mutex::new(existing.chunks.lock().unwrap().clone()),
-                        speed: existing.speed.clone(),
-                        eta: existing.eta.clone(),
-                    });
-                    tasks.insert(task_id, updated.clone());
-                    task_to_run = updated;
-                }
-            }
-
-            if let Err(e) = manager_clone.run_task(task_to_run, accept_ranges).await {
+            if let Err(e) = manager_clone.run_task(task, true).await {
                 eprintln!("Download failed: {}", e);
             }
         });
@@ -511,23 +413,23 @@ impl DownloadManager {
             let mut f = std_file;
             for (write_pos, buf) in rx {
                 let current_total_size = task_for_writer.total_size.load(Ordering::Relaxed);
-                // Hard cap: never write beyond total file size
-                if current_total_size > 0 {
-                    let already = downloaded_for_writer.load(Ordering::Relaxed);
-                    if already >= current_total_size {
-                        continue; // skip, but don't break because other workers might be draining
-                    }
-                    let allowed = (current_total_size - already).min(buf.len() as u64) as usize;
-                    let safe_buf = &buf[..allowed];
-                    if f.seek(std::io::SeekFrom::Start(write_pos)).is_ok() {
-                        if f.write_all(safe_buf).is_ok() {
-                            downloaded_for_writer.fetch_add(allowed as u64, Ordering::Relaxed);
-                        }
+                let buf_len = buf.len() as u64;
+
+                let allowed_len = if current_total_size > 0 && write_pos + buf_len > current_total_size {
+                    if current_total_size > write_pos {
+                        (current_total_size - write_pos) as usize
+                    } else {
+                        0
                     }
                 } else {
+                    buf.len()
+                };
+
+                if allowed_len > 0 {
+                    let safe_buf = &buf[..allowed_len];
                     if f.seek(std::io::SeekFrom::Start(write_pos)).is_ok() {
-                        if f.write_all(&buf).is_ok() {
-                            downloaded_for_writer.fetch_add(buf.len() as u64, Ordering::Relaxed);
+                        if f.write_all(safe_buf).is_ok() {
+                            downloaded_for_writer.fetch_add(allowed_len as u64, Ordering::Relaxed);
                         }
                     }
                 }
@@ -552,7 +454,10 @@ impl DownloadManager {
                     return;
                 }
 
-                let mut req = client.get(&url);
+                let mut req = client.get(&url)
+                    .header(reqwest::header::ACCEPT, "*/*")
+                    .header(reqwest::header::ACCEPT_LANGUAGE, "en-US,en;q=0.9");
+
                 if !task_clone.cookie.is_empty() {
                     req = req.header(reqwest::header::COOKIE, &task_clone.cookie);
                 }
@@ -571,23 +476,43 @@ impl DownloadManager {
                     }
                 };
 
-                if !res.status().is_success() {
-                    let code = res.status().as_u16();
-                    if code == 429 || code == 503 || code == 403 || code == 509 {
-                        eprintln!("[Smart IP Protection] Server rate-limited stream connections (HTTP {}). Protecting server IP limit...", code);
-                    } else {
-                        eprintln!("[Rust Engine] Worker HTTP request failed: {}", res.status());
-                    }
+                let content_type = res.headers()
+                    .get(reqwest::header::CONTENT_TYPE)
+                    .and_then(|v| v.to_str().ok())
+                    .unwrap_or("")
+                    .to_lowercase();
+
+                if content_type.contains("text/html") {
+                    eprintln!("[Rust Engine] Aborting: landing page captured instead of file (Content-Type: {})", content_type);
+                    *task_clone.status.lock().unwrap() = DownloadStatus::Failed("landing page captured instead of file".to_string());
                     return;
                 }
 
+                if !res.status().is_success() && res.status() != reqwest::StatusCode::PARTIAL_CONTENT {
+                    let code = res.status().as_u16();
+                    eprintln!("[Rust Engine] Worker HTTP request failed with status {}", code);
+                    *task_clone.status.lock().unwrap() = DownloadStatus::Failed(format!("HTTP server returned error status {}", code));
+                    return;
+                }
+
+                if let Some(cr_val) = res.headers().get("Content-Range").and_then(|h| h.to_str().ok()) {
+                    if let Some(slash_idx) = cr_val.rfind('/') {
+                        if let Ok(s) = cr_val[slash_idx + 1..].trim().parse::<u64>() {
+                            if s > 0 {
+                                task_clone.total_size.store(s, Ordering::Relaxed);
+                            }
+                        }
+                    }
+                }
                 if task_clone.total_size.load(Ordering::Relaxed) == 0 {
                     if let Some(content_length) = res.headers()
                         .get(reqwest::header::CONTENT_LENGTH)
                         .and_then(|val| val.to_str().ok())
                         .and_then(|s| s.parse::<u64>().ok())
                     {
-                        task_clone.total_size.store(content_length, Ordering::Relaxed);
+                        if content_length > 0 {
+                            task_clone.total_size.store(content_length, Ordering::Relaxed);
+                        }
                     }
                 }
 
@@ -732,8 +657,14 @@ impl DownloadManager {
             } else if total_size_val == 0 && downloaded_bytes > 0 {
                 task.total_size.store(downloaded_bytes, Ordering::Relaxed);
                 *task.status.lock().unwrap() = DownloadStatus::Completed;
+            } else if total_size_val > 0 && downloaded_bytes > 0 && ((downloaded_bytes as f64) / (total_size_val as f64)) >= 0.995 {
+                task.total_size.store(downloaded_bytes, Ordering::Relaxed);
+                *task.status.lock().unwrap() = DownloadStatus::Completed;
             } else {
-                *task.status.lock().unwrap() = DownloadStatus::Failed("Download incomplete".to_string());
+                *task.status.lock().unwrap() = DownloadStatus::Failed(format!(
+                    "Download incomplete ({}/{} bytes)",
+                    downloaded_bytes, total_size_val
+                ));
             }
 
             let final_status = task.status.lock().unwrap().clone();
