@@ -1,8 +1,23 @@
 mod engine;
+mod proxy;
 
 use std::sync::Arc;
 use tauri::{State, Manager};
 use engine::DownloadManager;
+
+#[tauri::command]
+async fn start_proxy_server(
+    proxy: State<'_, Arc<proxy::ProxyServer>>,
+) -> Result<(), String> {
+    proxy.start().await
+}
+
+#[tauri::command]
+async fn stop_proxy_server(
+    proxy: State<'_, Arc<proxy::ProxyServer>>,
+) -> Result<(), String> {
+    proxy.stop().await
+}
 
 #[tauri::command]
 async fn start_download(
@@ -439,6 +454,24 @@ async fn redownload_and_open_progress(
     Ok(())
 }
 
+pub fn extract_sourceforge_mirror_url(html_body: &str) -> Option<String> {
+    if let Some(pos) = html_body.find("https://downloads.sourceforge.net/project/") {
+        let tail = &html_body[pos..];
+        let end_idx = tail.find(|c: char| c == '"' || c == '\'' || c == ' ' || c == '<' || c == '\n' || c == '\r').unwrap_or(tail.len());
+        return Some(tail[..end_idx].to_string());
+    }
+    if let Some(pos) = html_body.find(".dl.sourceforge.net/project/") {
+        let head = &html_body[..pos];
+        if let Some(scheme_pos) = head.rfind("http") {
+            let tail = &html_body[scheme_pos..];
+            let end_idx = tail.find(|c: char| c == '"' || c == '\'' || c == ' ' || c == '<' || c == '\n' || c == '\r').unwrap_or(tail.len());
+            return Some(tail[..end_idx].to_string());
+        }
+    }
+    None
+}
+
+#[allow(dead_code)]
 fn parse_content_disposition(value: &str) -> Option<String> {
     if let Some(pos) = value.find("filename=") {
         let mut filename = value[pos + 9..].trim().to_string();
@@ -465,6 +498,7 @@ fn parse_content_disposition(value: &str) -> Option<String> {
     None
 }
 
+#[allow(dead_code)]
 fn parse_content_range(value: &str) -> Option<u64> {
     if let Some(slash_idx) = value.rfind('/') {
         let total_str = value[slash_idx + 1..].trim();
@@ -476,10 +510,13 @@ fn parse_content_range(value: &str) -> Option<u64> {
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let download_manager = Arc::new(DownloadManager::new());
+    let proxy_server = Arc::new(proxy::ProxyServer::new(8765));
     let manager_for_setup = download_manager.clone();
+    let proxy_for_setup = proxy_server.clone();
 
     tauri::Builder::default()
         .manage(download_manager)
+        .manage(proxy_server)
         .plugin(tauri_plugin_opener::init())
         .plugin(
             tauri_plugin_updater::Builder::new()
@@ -529,6 +566,15 @@ pub fn run() {
             // Removed temporary Wayland workaround blocks as we now force X11 backend in main.rs
 
             let handle = app.handle().clone();
+            proxy_for_setup.set_app_handle(app.handle().clone());
+
+            let proxy_start = proxy_for_setup.clone();
+            tauri::async_runtime::spawn(async move {
+                if let Err(e) = proxy_start.start().await {
+                    eprintln!("Failed to start local HTTP proxy server: {}", e);
+                }
+            });
+
             let handle_for_server = app.handle().clone();
             let manager_for_server = manager_for_setup;
             
@@ -671,6 +717,9 @@ pub fn run() {
                                             cookie: Option<String>,
                                             referrer: Option<String>,
                                             size: Option<u64>,
+                                            mime: Option<String>,
+                                            #[serde(alias = "userAgent")]
+                                            user_agent: Option<String>,
                                         }
 
                                         let body_clean = body.trim_end_matches('\0').trim();
@@ -824,7 +873,9 @@ pub fn run() {
             sync_theme_mode,
             set_speed_limit,
             set_intercept_downloads,
-            set_max_chunks
+            set_max_chunks,
+            start_proxy_server,
+            stop_proxy_server
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

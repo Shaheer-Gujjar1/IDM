@@ -396,7 +396,9 @@ function App() {
       }
       document.documentElement.setAttribute("data-theme", resolvedTheme);
 
-      invoke("sync_theme_mode", { theme_mode: resolvedTheme }).catch(console.error);
+      try {
+        invoke("sync_theme_mode", { themeMode: resolvedTheme, theme_mode: resolvedTheme }).catch(() => {});
+      } catch (e) {}
     };
 
     applyTheme();

@@ -415,13 +415,18 @@ impl DownloadManager {
                 let current_total_size = task_for_writer.total_size.load(Ordering::Relaxed);
                 let buf_len = buf.len() as u64;
 
-                let allowed_len = if current_total_size > 0 && write_pos + buf_len > current_total_size {
-                    if current_total_size > write_pos {
-                        (current_total_size - write_pos) as usize
+                let allowed_len = if current_total_size > 0 {
+                    if write_pos + buf_len > current_total_size {
+                        if current_total_size > write_pos {
+                            (current_total_size - write_pos) as usize
+                        } else {
+                            0
+                        }
                     } else {
-                        0
+                        buf.len()
                     }
                 } else {
+                    // When total_size is 0 (unknown size / chunked encoding), write ALL incoming chunks unconditionally
                     buf.len()
                 };
 
@@ -434,8 +439,10 @@ impl DownloadManager {
                     }
                 }
             }
-            // Ensure everything is flushed to OS buffers
+            // Ensure everything is flushed and synchronized to disk
             let _ = f.flush();
+            let _ = f.sync_all();
+            println!("[Rust Engine Writer] Writer thread finished. Total written bytes: {}", downloaded_for_writer.load(Ordering::Relaxed));
         });
 
         // Spawn segment download workers
@@ -468,6 +475,8 @@ impl DownloadManager {
                     req = req.header(reqwest::header::RANGE, format!("bytes={}-{}", start_offset, end_offset));
                 }
 
+                println!("[Rust Engine] Sending streaming GET request to URL: {}", url);
+
                 let res = match req.send().await {
                     Ok(r) => r,
                     Err(e) => {
@@ -475,6 +484,22 @@ impl DownloadManager {
                         return;
                     }
                 };
+
+                let status_code = res.status();
+                let content_length_hdr = res.headers()
+                    .get(reqwest::header::CONTENT_LENGTH)
+                    .and_then(|v| v.to_str().ok())
+                    .unwrap_or("none");
+                let transfer_encoding_hdr = res.headers()
+                    .get(reqwest::header::TRANSFER_ENCODING)
+                    .and_then(|v| v.to_str().ok())
+                    .unwrap_or("none");
+                let content_type_hdr = res.headers()
+                    .get(reqwest::header::CONTENT_TYPE)
+                    .and_then(|v| v.to_str().ok())
+                    .unwrap_or("none");
+
+                println!("[Rust Engine] Response Status: {} | Content-Length: {} | Transfer-Encoding: {} | Content-Type: {}", status_code, content_length_hdr, transfer_encoding_hdr, content_type_hdr);
 
                 let content_type = res.headers()
                     .get(reqwest::header::CONTENT_TYPE)
@@ -536,6 +561,7 @@ impl DownloadManager {
                         bytes_chunk = stream.next() => {
                             match bytes_chunk {
                                 Some(Ok(bytes)) => {
+                                    println!("[Rust Engine] Received chunk: {} bytes", bytes.len());
                                     let mut bytes_to_add = bytes.as_ref();
                                     if num_chunks > 1 && end_offset > 0 {
                                         let current_pos = chunk.start + local_downloaded + net_buffer.len() as u64;
@@ -652,6 +678,10 @@ impl DownloadManager {
         if !is_aborted {
             let downloaded_bytes = task.downloaded.load(Ordering::Relaxed);
             let total_size_val = task.total_size.load(Ordering::Relaxed);
+            
+            // Log for debugging
+            println!("[Rust Engine] Task {} finished. Total size: {}, Downloaded: {}", task.id, total_size_val, downloaded_bytes);
+            
             if total_size_val > 0 && downloaded_bytes >= total_size_val {
                 *task.status.lock().unwrap() = DownloadStatus::Completed;
             } else if total_size_val == 0 && downloaded_bytes > 0 {
@@ -659,6 +689,9 @@ impl DownloadManager {
                 *task.status.lock().unwrap() = DownloadStatus::Completed;
             } else if total_size_val > 0 && downloaded_bytes > 0 && ((downloaded_bytes as f64) / (total_size_val as f64)) >= 0.995 {
                 task.total_size.store(downloaded_bytes, Ordering::Relaxed);
+                *task.status.lock().unwrap() = DownloadStatus::Completed;
+            } else if total_size_val == 0 && downloaded_bytes == 0 {
+                // If it's literally a 0-byte stream that didn't abort, it's a 0-byte completed file
                 *task.status.lock().unwrap() = DownloadStatus::Completed;
             } else {
                 *task.status.lock().unwrap() = DownloadStatus::Failed(format!(

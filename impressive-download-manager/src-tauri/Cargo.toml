@@ -31,4 +31,8 @@ rfd = "0.14"
 dirs = "5.0"
 tauri-plugin-updater = "2"
 tauri-plugin-process = "2"
+hyper = { version = "1.5", features = ["full"] }
+hyper-util = { version = "0.1", features = ["full"] }
+http-body-util = "0.1"
+bytes = "1"
 
