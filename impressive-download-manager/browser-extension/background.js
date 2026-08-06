@@ -16,7 +16,7 @@ chrome.storage.local.get("extensionEnabled", (data) => {
 
 // Watch changes
 chrome.storage.onChanged.addListener((changes, area) => {
-  if (area === 'local' && changes.extensionEnabled) {
+  if (area === "local" && changes.extensionEnabled) {
     extensionEnabled = changes.extensionEnabled.newValue;
   }
 });
@@ -34,7 +34,7 @@ chrome.runtime.onInstalled.addListener(() => {
 async function getCookiesForUrl(url) {
   try {
     const cookies = await chrome.cookies.getAll({ url });
-    return cookies.map(c => `${c.name}=${c.value}`).join('; ');
+    return cookies.map((c) => `${c.name}=${c.value}`).join("; ");
   } catch (err) {
     console.warn("Failed to get cookies:", err);
     return "";
@@ -48,13 +48,19 @@ if (chrome.webRequest && chrome.webRequest.onBeforeRequest) {
       (details) => {
         if (!details.url) return;
         const u = details.url;
-        const filename = u.substring(u.lastIndexOf('/') + 1).split('?')[0];
+        const filename = u.substring(u.lastIndexOf("/") + 1).split("?")[0];
         if (filename && filename.length > 3) {
           webRequestCapturedUrls.set(filename, u);
           console.log("[HTTPS Direct WebRequest Signal]", filename, "->", u);
         }
       },
-      { urls: ["*://downloads.sourceforge.net/*", "*://*.dl.sourceforge.net/*", "*://objects.githubusercontent.com/*"] }
+      {
+        urls: [
+          "*://downloads.sourceforge.net/*",
+          "*://*.dl.sourceforge.net/*",
+          "*://objects.githubusercontent.com/*"
+        ]
+      }
     );
   } catch (e) {
     console.warn("webRequest listener failed to attach:", e);
@@ -87,7 +93,7 @@ function checkAndProcessDownload(id) {
       const url = item.url || "";
       const finalUrl = item.finalUrl || "";
       const mime = item.mime || "";
-      const filenameStr = item.filename ? item.filename.replace(/^.*[\\\/]/, '') : "";
+      const filenameStr = item.filename ? item.filename.replace(/^.*[\\\/]/, "") : "";
 
       // Check direct webRequest mirror signal
       const directUrlSignal = filenameStr ? webRequestCapturedUrls.get(filenameStr) : null;
@@ -97,15 +103,18 @@ function checkAndProcessDownload(id) {
       if (mime === "text/html" || mime === "text/plain" || mime.includes("html")) {
         return;
       }
+
       // Use URL parsing to strictly reject SourceForge landing pages even with query strings
       try {
         const pUrl = new URL(targetRealUrl);
         if (pUrl.hostname.includes("sourceforge.net") && pUrl.pathname.endsWith("/download")) {
           return;
         }
-      } catch(e) {}
+      } catch (e) { }
 
-      const isBinaryExt = /\.(run|exe|zip|deb|dmg|msi|tar|gz|iso|apk|appimage)$/i.test(filenameStr) || /\.(run|exe|zip|deb|dmg|msi|tar|gz|iso|apk|appimage)$/i.test(url);
+      const isBinaryExt =
+        /\.(run|exe|zip|deb|dmg|msi|tar|gz|iso|apk|appimage)$/i.test(filenameStr) ||
+        /\.(run|exe|zip|deb|dmg|msi|tar|gz|iso|apk|appimage)$/i.test(url);
       const isNonTextMime = mime && !mime.startsWith("text/");
       const hasSize = item.fileSize && item.fileSize > 0;
       const hasFinalUrl = targetRealUrl && targetRealUrl !== url;
@@ -125,7 +134,7 @@ function checkAndProcessDownload(id) {
             if (tabs && tabs[0]) {
               referrer = tabs[0].url || "";
             }
-          } catch (e) {}
+          } catch (e) { }
         }
 
         const payload = {
@@ -144,10 +153,13 @@ function checkAndProcessDownload(id) {
         const success = await sendToDesktopApp(payload);
 
         if (success) {
-          // 4. Browser Cancellation: ONLY AFTER backend acknowledges receipt
+          // 4. Browser Cancellation & Shelf Cleanup: Cancel and erase from Chrome download shelf
           try {
             chrome.downloads.cancel(id, () => {
-              console.log("Cancelled browser download AFTER successful handoff:", id);
+              try {
+                chrome.downloads.erase({ id }, () => {});
+              } catch (e) {}
+              console.log("Cancelled and erased browser download AFTER successful handoff:", id);
             });
           } catch (e) {}
         } else {
@@ -172,7 +184,11 @@ function checkAndProcessDownload(id) {
 }
 
 chrome.downloads.onCreated.addListener((item) => {
-  if (item && item.id) {
+  if (item && item.id && extensionEnabled) {
+    // Immediately pause browser download so Chrome stops downloading in parallel
+    try {
+      chrome.downloads.pause(item.id, () => {});
+    } catch (e) {}
     checkAndProcessDownload(item.id);
   }
 });
@@ -190,7 +206,7 @@ async function sendToDesktopApp(payload) {
   const url = payload.url;
   const now = Date.now();
   const lastIntercept = recentInterceptions.get(url);
-  if (lastIntercept && (now - lastIntercept) < 2500) {
+  if (lastIntercept && now - lastIntercept < 2500) {
     console.log("De-duplicated download payload for URL:", url);
     return false;
   }
@@ -207,11 +223,11 @@ async function sendToDesktopApp(payload) {
       const timeoutId = setTimeout(() => controller.abort(), 1500);
 
       const response = await fetch(`http://127.0.0.1:${PORT}/download`, {
-        method: 'POST',
+        method: "POST",
         headers: {
-          'Content-Type': 'application/json'
+          "Content-Type": "application/json"
         },
-        mode: 'cors',
+        mode: "cors",
         signal: controller.signal,
         body: JSON.stringify(payload)
       });
@@ -233,12 +249,12 @@ async function sendToDesktopApp(payload) {
           chrome.tabs.create({ url: "idm://wakeup", active: false }, (tab) => {
             if (tab && tab.id) {
               setTimeout(() => {
-                chrome.tabs.remove(tab.id, () => {});
+                chrome.tabs.remove(tab.id, () => { });
               }, 400);
             }
           });
-        } catch (e) {}
-        await new Promise(r => setTimeout(r, 800));
+        } catch (e) { }
+        await new Promise((r) => setTimeout(r, 800));
       }
     }
   }
@@ -248,7 +264,7 @@ async function sendToDesktopApp(payload) {
 function extractFilename(url) {
   try {
     const pathname = new URL(url).pathname;
-    const last = pathname.substring(pathname.lastIndexOf("/") + 1).split('?')[0];
+    const last = pathname.substring(pathname.lastIndexOf("/") + 1).split("?")[0];
     return last || "captured_download";
   } catch {
     return "captured_download";
@@ -256,7 +272,7 @@ function extractFilename(url) {
 }
 
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
-  if (message.type === 'SEND_TO_DESKTOP') {
+  if (message.type === "SEND_TO_DESKTOP") {
     if (!extensionEnabled) {
       sendResponse({ success: false });
       return true;

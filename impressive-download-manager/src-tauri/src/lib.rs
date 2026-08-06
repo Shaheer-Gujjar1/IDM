@@ -26,9 +26,20 @@ async fn start_download(
     save_path: String,
     cookie: Option<String>,
     referrer: Option<String>,
+    user_agent: Option<String>,
     manager: State<'_, Arc<DownloadManager>>,
 ) -> Result<String, String> {
-    manager.start_download(url, filename, save_path, cookie.unwrap_or_default(), referrer.unwrap_or_default()).await
+    println!("[Tauri IPC] start_download called: {}", url);
+    manager
+        .start_download(
+            url,
+            filename,
+            save_path,
+            cookie.unwrap_or_default(),
+            referrer.unwrap_or_default(),
+            user_agent.unwrap_or_default(),
+        )
+        .await
 }
 
 #[tauri::command]
@@ -659,188 +670,232 @@ pub fn run() {
                         let manager = manager_for_server.clone();
                         tauri::async_runtime::spawn(async move {
                             use tokio::io::{AsyncReadExt, AsyncWriteExt};
-                            let mut buffer = vec![0; 4096];
-                            if let Ok(n) = stream.read(&mut buffer).await {
-                                let req_str = String::from_utf8_lossy(&buffer[..n]);
-                                
-                                // Handle CORS Preflight request
-                                if req_str.starts_with("OPTIONS") {
-                                    let theme = manager.theme_mode.lock().await.clone();
-                                    let response = format!("HTTP/1.1 204 No Content\r\n\
+                            let mut buffer = Vec::new();
+                            let mut chunk = [0u8; 4096];
+                            let max_limit = 2 * 1024 * 1024; // 2 MB max
+
+                            loop {
+                                let n = match stream.read(&mut chunk).await {
+                                    Ok(0) => break,
+                                    Ok(n) => n,
+                                    Err(_) => break,
+                                };
+                                buffer.extend_from_slice(&chunk[..n]);
+                                if buffer.len() > max_limit {
+                                    break;
+                                }
+
+                                if let Some(pos) = buffer.windows(4).position(|w| w == b"\r\n\r\n") {
+                                    let headers_str = String::from_utf8_lossy(&buffer[..pos]);
+                                    let body_bytes = &buffer[pos + 4..];
+
+                                    let content_length = headers_str
+                                        .lines()
+                                        .find(|l| l.to_lowercase().starts_with("content-length:"))
+                                        .and_then(|l| l.split(':').nth(1))
+                                        .and_then(|v| v.trim().parse::<usize>().ok())
+                                        .unwrap_or(0);
+
+                                    if content_length == 0 || body_bytes.len() >= content_length {
+                                        break;
+                                    }
+                                }
+                            }
+
+                            let req_str = String::from_utf8_lossy(&buffer);
+                            
+                            // Handle CORS Preflight request
+                            if req_str.starts_with("OPTIONS") {
+                                let theme = manager.theme_mode.lock().await.clone();
+                                let response = format!("HTTP/1.1 204 No Content\r\n\
+                                                Access-Control-Allow-Origin: *\r\n\
+                                                Access-Control-Allow-Methods: POST, OPTIONS\r\n\
+                                                Access-Control-Allow-Headers: Content-Type\r\n\
+                                                Access-Control-Expose-Headers: X-App-Theme\r\n\
+                                                X-App-Theme: {}\r\n\
+                                                Access-Control-Max-Age: 86400\r\n\r\n", theme);
+                                let _ = stream.write_all(response.as_bytes()).await;
+                                return;
+                            }
+
+                            // Check if it is a request to show the main window from a second instance
+                            if req_str.starts_with("POST /show-main") || req_str.contains("POST /show-main") {
+                                if let Some(main_win) = app_handle.get_webview_window("main") {
+                                    let _ = main_win.show();
+                                    let _ = main_win.set_focus();
+                                    #[cfg(target_os = "linux")]
+                                    {
+                                        let _ = main_win.set_resizable(false);
+                                        let _ = main_win.set_resizable(true);
+                                    }
+                                }
+                                let response = "HTTP/1.1 200 OK\r\n\
+                                                Access-Control-Allow-Origin: *\r\n\
+                                                Content-Type: text/plain\r\n\r\n\
+                                                ok";
+                                let _ = stream.write_all(response.as_bytes()).await;
+                                return;
+                            }
+
+                            // Check if it is a POST to /download
+                            if req_str.starts_with("POST /download") || req_str.contains("POST /download") {
+                                if !manager.intercept_downloads.load(std::sync::atomic::Ordering::Relaxed) {
+                                    let response = "HTTP/1.1 403 Forbidden\r\n\
                                                     Access-Control-Allow-Origin: *\r\n\
-                                                    Access-Control-Allow-Methods: POST, OPTIONS\r\n\
-                                                    Access-Control-Allow-Headers: Content-Type\r\n\
-                                                    Access-Control-Expose-Headers: X-App-Theme\r\n\
-                                                    X-App-Theme: {}\r\n\
-                                                    Access-Control-Max-Age: 86400\r\n\r\n", theme);
+                                                    Content-Type: text/plain\r\n\r\n\
+                                                    disabled";
                                     let _ = stream.write_all(response.as_bytes()).await;
                                     return;
                                 }
 
-                                 // Check if it is a request to show the main window from a second instance
-                                  if req_str.starts_with("POST /show-main") || req_str.contains("POST /show-main") {
-                                      if let Some(main_win) = app_handle.get_webview_window("main") {
-                                          let _ = main_win.show();
-                                          let _ = main_win.set_focus();
-                                          #[cfg(target_os = "linux")]
-                                          {
-                                              let _ = main_win.set_resizable(false);
-                                              let _ = main_win.set_resizable(true);
-                                          }
-                                      }
-                                      let response = "HTTP/1.1 200 OK\r\n\
-                                                      Access-Control-Allow-Origin: *\r\n\
-                                                      Content-Type: text/plain\r\n\r\n\
-                                                      ok";
-                                      let _ = stream.write_all(response.as_bytes()).await;
-                                      return;
-                                  }
+                                if let Some(body_start) = req_str.find("\r\n\r\n") {
+                                    let body = &req_str[body_start + 4..];
+                                    
+                                    #[derive(serde::Deserialize, serde::Serialize, Clone, Debug)]
+                                    struct DownloadPayload {
+                                        url: String,
+                                        filename: String,
+                                        cookie: Option<String>,
+                                        referrer: Option<String>,
+                                        size: Option<u64>,
+                                        mime: Option<String>,
+                                        #[serde(alias = "userAgent")]
+                                        user_agent: Option<String>,
+                                    }
 
-                                 // Check if it is a POST to /download
-                                 if req_str.starts_with("POST /download") || req_str.contains("POST /download") {
-                                     if !manager.intercept_downloads.load(std::sync::atomic::Ordering::Relaxed) {
-                                         let response = "HTTP/1.1 403 Forbidden\r\n\
-                                                         Access-Control-Allow-Origin: *\r\n\
-                                                         Content-Type: text/plain\r\n\r\n\
-                                                         disabled";
-                                         let _ = stream.write_all(response.as_bytes()).await;
-                                         return;
-                                     }
+                                    let body_clean = body.trim_end_matches('\0').trim();
+                                    if let Ok(payload) = serde_json::from_str::<DownloadPayload>(body_clean) {
+                                        let mut filename = payload.filename.clone();
+                                        let target_download_url = payload.url.clone();
+                                        let total_size = payload.size.unwrap_or(0);
 
-                                     if let Some(body_start) = req_str.find("\r\n\r\n") {
-                                        let body = &req_str[body_start + 4..];
-                                        
-                                        #[derive(serde::Deserialize, serde::Serialize, Clone, Debug)]
-                                        struct DownloadPayload {
-                                            url: String,
-                                            filename: String,
-                                            cookie: Option<String>,
-                                            referrer: Option<String>,
-                                            size: Option<u64>,
-                                            mime: Option<String>,
-                                            #[serde(alias = "userAgent")]
-                                            user_agent: Option<String>,
+                                        if filename.is_empty() || filename == "download" || filename == "captured_download" {
+                                            if let Ok(parsed_url) = reqwest::Url::parse(&target_download_url) {
+                                                if let Some(last_seg) = parsed_url.path_segments().and_then(|s| s.last()) {
+                                                    if !last_seg.is_empty() && last_seg != "download" {
+                                                        filename = last_seg.to_string();
+                                                    }
+                                                }
+                                            }
+                                        }
+                                        if filename.is_empty() {
+                                            filename = "captured_download".to_string();
                                         }
 
-                                        let body_clean = body.trim_end_matches('\0').trim();
-                                        if let Ok(payload) = serde_json::from_str::<DownloadPayload>(body_clean) {
-                                            let mut filename = payload.filename.clone();
-                                            let target_download_url = payload.url.clone();
-                                            let total_size = payload.size.unwrap_or(0);
+                                        println!(
+                                            "[Capture Server] Received download payload: URL={}, filename={}, size={}, cookie_len={}, referrer={}",
+                                            target_download_url,
+                                            filename,
+                                            total_size,
+                                            payload.cookie.as_ref().map(|c| c.len()).unwrap_or(0),
+                                            payload.referrer.as_deref().unwrap_or("none")
+                                        );
 
-                                            if filename.is_empty() || filename == "download" || filename == "captured_download" {
-                                                if let Ok(parsed_url) = reqwest::Url::parse(&target_download_url) {
-                                                    if let Some(last_seg) = parsed_url.path_segments().and_then(|s| s.last()) {
-                                                        if !last_seg.is_empty() && last_seg != "download" {
-                                                            filename = last_seg.to_string();
-                                                        }
+                                        let download_dir = dirs::download_dir()
+                                            .or_else(|| dirs::home_dir().map(|h| h.join("Downloads")))
+                                            .unwrap_or_else(|| std::path::PathBuf::from("."));
+                                        let save_path = download_dir.join(&filename).to_string_lossy().to_string();
+
+                                        println!("[Capture Server] Starting engine with save_path: {}", save_path);
+
+                                        // Check if there is an active task waiting for a refresh link
+                                        let mut refresh_task_id = None;
+                                        {
+                                            let tasks = manager.tasks.read().await;
+                                            for task in tasks.values() {
+                                                let status = task.status.lock().unwrap();
+                                                if let engine::DownloadStatus::Failed(ref msg) = *status {
+                                                    if msg == "REFRESHING" {
+                                                        refresh_task_id = Some(task.id.clone());
+                                                        break;
                                                     }
                                                 }
                                             }
-                                            if filename.is_empty() {
-                                                filename = "captured_download".to_string();
-                                            }
+                                        }
 
-                                            // Check if there is an active task waiting for a refresh link
-                                            let mut refresh_task_id = None;
+                                        if let Some(ref id) = refresh_task_id {
                                             {
-                                                let tasks = manager.tasks.read().await;
-                                                for task in tasks.values() {
-                                                    let status = task.status.lock().unwrap();
-                                                    if let engine::DownloadStatus::Failed(ref msg) = *status {
-                                                        if msg == "REFRESHING" {
-                                                            refresh_task_id = Some(task.id.clone());
-                                                            break;
-                                                        }
-                                                    }
+                                                let mut tasks = manager.tasks.write().await;
+                                                if let Some(task) = tasks.get_mut(id) {
+                                                    let updated_task = std::sync::Arc::new(engine::DownloadTask {
+                                                        id: task.id.clone(),
+                                                        url: target_download_url.clone(),
+                                                        filename: task.filename.clone(),
+                                                        save_path: task.save_path.clone(),
+                                                        cookie: payload.cookie.clone().unwrap_or_default(),
+                                                        referrer: payload.referrer.clone().unwrap_or_default(),
+                                                        user_agent: payload.user_agent.clone().unwrap_or_default(),
+                                                        total_size: std::sync::atomic::AtomicU64::new(task.total_size.load(std::sync::atomic::Ordering::Relaxed)),
+                                                        downloaded: task.downloaded.clone(),
+                                                        status: std::sync::Arc::new(std::sync::Mutex::new(engine::DownloadStatus::Paused)),
+                                                        abort_tx: None,
+                                                        chunks: std::sync::Mutex::new(task.chunks.lock().unwrap().clone()),
+                                                        speed: std::sync::Arc::new(std::sync::Mutex::new(0.0)),
+                                                        eta: std::sync::Arc::new(std::sync::Mutex::new("---".to_string())),
+                                                    });
+                                                    tasks.insert(id.clone(), updated_task);
                                                 }
                                             }
 
-                                            if let Some(ref id) = refresh_task_id {
-                                                // Update task properties within scoped block to drop write-lock immediately
-                                                {
-                                                    let mut tasks = manager.tasks.write().await;
-                                                    if let Some(task) = tasks.get_mut(id) {
-                                                        let updated_task = std::sync::Arc::new(engine::DownloadTask {
-                                                            id: task.id.clone(),
-                                                            url: target_download_url.clone(),
-                                                            filename: task.filename.clone(),
-                                                            save_path: task.save_path.clone(),
-                                                            cookie: payload.cookie.clone().unwrap_or_default(),
-                                                            referrer: payload.referrer.clone().unwrap_or_default(),
-                                                            total_size: std::sync::atomic::AtomicU64::new(task.total_size.load(std::sync::atomic::Ordering::Relaxed)),
-                                                            downloaded: task.downloaded.clone(),
-                                                            status: std::sync::Arc::new(std::sync::Mutex::new(engine::DownloadStatus::Paused)), // Set to Paused so resume can start it
-                                                            abort_tx: None,
-                                                            chunks: std::sync::Mutex::new(task.chunks.lock().unwrap().clone()),
-                                                            speed: std::sync::Arc::new(std::sync::Mutex::new(0.0)),
-                                                            eta: std::sync::Arc::new(std::sync::Mutex::new("---".to_string())),
-                                                        });
-                                                        tasks.insert(id.clone(), updated_task);
-                                                    }
-                                                }
+                                            let _ = manager.resume_download(id).await;
 
-                                                // Call official resume command to trigger range check and start download workers
-                                                let _ = manager.resume_download(id).await;
-
-                                                // Close refresh window
-                                                if let Some(win) = app_handle.get_webview_window(&format!("popup-refresh-{}", id)) {
-                                                    let _ = win.close();
-                                                }
-
-                                                // Open progress window
-                                                let progress_url = format!("index.html#popup=progress&id={}", id);
-                                                let _ = tauri::WebviewWindowBuilder::new(
-                                                    &app_handle,
-                                                    format!("popup-progress-{}", id),
-                                                    tauri::WebviewUrl::App(progress_url.into()),
-                                                )
-                                                .title("Downloading...")
-                                                .inner_size(520.0, 340.0)
-                                                .build();
-
-                                                let response = "HTTP/1.1 200 OK\r\n\
-                                                                Access-Control-Allow-Origin: *\r\n\
-                                                                Content-Type: application/json\r\n\r\n\
-                                                                {\"status\":\"ok\"}";
-                                                let _ = stream.write_all(response.as_bytes()).await;
-                                                return;
+                                            if let Some(win) = app_handle.get_webview_window(&format!("popup-refresh-{}", id)) {
+                                                let _ = win.close();
                                             }
 
-                                            // Default: Spawn native popup-add window pre-filled with payload
-                                            let add_url = format!(
-                                                "index.html#popup=add&url={}&filename={}&cookie={}&referrer={}&size={}",
-                                                urlencoding::encode(&target_download_url),
-                                                urlencoding::encode(&filename),
-                                                urlencoding::encode(&payload.cookie.unwrap_or_default()),
-                                                urlencoding::encode(&payload.referrer.unwrap_or_default()),
-                                                total_size
-                                            );
-                                            
+                                            let progress_url = format!("index.html#popup=progress&id={}", id);
                                             let _ = tauri::WebviewWindowBuilder::new(
                                                 &app_handle,
-                                                "popup-add",
-                                                tauri::WebviewUrl::App(add_url.into()),
+                                                format!("popup-progress-{}", id),
+                                                tauri::WebviewUrl::App(progress_url.into()),
                                             )
-                                            .title("New Download Captured")
-                                            .inner_size(520.0, 370.0)
+                                            .title("Downloading...")
+                                            .inner_size(520.0, 340.0)
                                             .build();
-                                            
+
                                             let response = "HTTP/1.1 200 OK\r\n\
                                                             Access-Control-Allow-Origin: *\r\n\
-                                                            Access-Control-Allow-Methods: POST, OPTIONS\r\n\
-                                                            Access-Control-Allow-Headers: Content-Type\r\n\
                                                             Content-Type: application/json\r\n\r\n\
                                                             {\"status\":\"ok\"}";
-                                                let _ = stream.write_all(response.as_bytes()).await;
-                                                return;
-                                            }
+                                            let _ = stream.write_all(response.as_bytes()).await;
+                                            return;
                                         }
+
+                                        // Popup-based flow: Spawn native popup-add window pre-filled with payload
+                                        let add_url = format!(
+                                            "index.html#popup=add&url={}&filename={}&cookie={}&referrer={}&user_agent={}&size={}",
+                                            urlencoding::encode(&target_download_url),
+                                            urlencoding::encode(&filename),
+                                            urlencoding::encode(&payload.cookie.unwrap_or_default()),
+                                            urlencoding::encode(&payload.referrer.unwrap_or_default()),
+                                            urlencoding::encode(&payload.user_agent.unwrap_or_default()),
+                                            total_size
+                                        );
+                                        
+                                        let _ = tauri::WebviewWindowBuilder::new(
+                                            &app_handle,
+                                            "popup-add",
+                                            tauri::WebviewUrl::App(add_url.into()),
+                                        )
+                                        .title("New Download Captured")
+                                        .inner_size(520.0, 370.0)
+                                        .build();
+                                        
+                                        let response = "HTTP/1.1 200 OK\r\n\
+                                                        Access-Control-Allow-Origin: *\r\n\
+                                                        Access-Control-Allow-Methods: POST, OPTIONS\r\n\
+                                                        Access-Control-Allow-Headers: Content-Type\r\n\
+                                                        Content-Type: application/json\r\n\r\n\
+                                                        {\"status\":\"ok\"}";
+                                        let _ = stream.write_all(response.as_bytes()).await;
+                                        return;
                                     }
+                                }
 
                                 let response = "HTTP/1.1 400 Bad Request\r\n\
                                                 Access-Control-Allow-Origin: *\r\n\r\n";
                                 let _ = stream.write_all(response.as_bytes()).await;
+                                return;
                             }
                         });
                     }

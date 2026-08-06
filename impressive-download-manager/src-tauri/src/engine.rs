@@ -46,6 +46,7 @@ pub struct DownloadTask {
     pub save_path: String,
     pub cookie: String,
     pub referrer: String,
+    pub user_agent: String,
     pub total_size: AtomicU64,
     pub downloaded: Arc<AtomicU64>,
     pub status: Arc<std::sync::Mutex<DownloadStatus>>,
@@ -63,6 +64,8 @@ pub struct PersistentTask {
     pub save_path: String,
     pub cookie: String,
     pub referrer: String,
+    #[serde(default)]
+    pub user_agent: String,
     pub total_size: u64,
     pub downloaded: u64,
     pub status: DownloadStatus,
@@ -129,6 +132,7 @@ impl DownloadManager {
                     save_path: task.save_path.clone(),
                     cookie: task.cookie.clone(),
                     referrer: task.referrer.clone(),
+                    user_agent: task.user_agent.clone(),
                     total_size: task.total_size.load(Ordering::Relaxed),
                     downloaded,
                     status,
@@ -169,6 +173,7 @@ impl DownloadManager {
                                 save_path: p_task.save_path,
                                 cookie: p_task.cookie,
                                 referrer: p_task.referrer,
+                                user_agent: p_task.user_agent,
                                 total_size: AtomicU64::new(p_task.total_size),
                                 downloaded: Arc::new(AtomicU64::new(p_task.downloaded)),
                                 status: Arc::new(std::sync::Mutex::new(status)),
@@ -192,6 +197,7 @@ impl DownloadManager {
         save_path: String,
         cookie: String,
         referrer: String,
+        user_agent: String,
     ) -> Result<String, String> {
         let id = uuid::Uuid::new_v4().to_string();
         let (abort_tx, _) = broadcast::channel(1);
@@ -203,6 +209,7 @@ impl DownloadManager {
             save_path: save_path.clone(),
             cookie: cookie.clone(),
             referrer: referrer.clone(),
+            user_agent: user_agent.clone(),
             total_size: AtomicU64::new(0),
             downloaded: Arc::new(AtomicU64::new(0)),
             status: Arc::new(std::sync::Mutex::new(DownloadStatus::Queued)),
@@ -471,6 +478,9 @@ impl DownloadManager {
                 if !task_clone.referrer.is_empty() {
                     req = req.header(reqwest::header::REFERER, &task_clone.referrer);
                 }
+                if !task_clone.user_agent.is_empty() {
+                    req = req.header(reqwest::header::USER_AGENT, &task_clone.user_agent);
+                }
                 if num_chunks > 1 && end_offset > 0 {
                     req = req.header(reqwest::header::RANGE, format!("bytes={}-{}", start_offset, end_offset));
                 }
@@ -691,8 +701,7 @@ impl DownloadManager {
                 task.total_size.store(downloaded_bytes, Ordering::Relaxed);
                 *task.status.lock().unwrap() = DownloadStatus::Completed;
             } else if total_size_val == 0 && downloaded_bytes == 0 {
-                // If it's literally a 0-byte stream that didn't abort, it's a 0-byte completed file
-                *task.status.lock().unwrap() = DownloadStatus::Completed;
+                *task.status.lock().unwrap() = DownloadStatus::Failed("No bytes received".to_string());
             } else {
                 *task.status.lock().unwrap() = DownloadStatus::Failed(format!(
                     "Download incomplete ({}/{} bytes)",
@@ -790,6 +799,7 @@ impl DownloadManager {
                 save_path: task.save_path.clone(),
                 cookie: task.cookie.clone(),
                 referrer: task.referrer.clone(),
+                user_agent: task.user_agent.clone(),
                 total_size: AtomicU64::new(task.total_size.load(Ordering::Relaxed)),
                 downloaded: task.downloaded.clone(),
                 status: task.status.clone(),
@@ -972,6 +982,7 @@ impl DownloadManager {
                 save_path: task.save_path.clone(),
                 cookie: task.cookie.clone(),
                 referrer: task.referrer.clone(),
+                user_agent: task.user_agent.clone(),
                 total_size: AtomicU64::new(task.total_size.load(Ordering::Relaxed)),
                 downloaded: Arc::new(AtomicU64::new(0)),
                 status: Arc::new(std::sync::Mutex::new(DownloadStatus::Queued)),

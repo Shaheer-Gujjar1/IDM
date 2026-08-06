@@ -468,6 +468,7 @@ function App() {
   // Diagnostic Error Banner State
   const [initError, setInitError] = useState<string | null>(null);
   const [isStartingDownload, setIsStartingDownload] = useState(false);
+  const [popupUserAgent, setPopupUserAgent] = useState("");
 
   // Initialization query/hash-param routing & initial loading
   useEffect(() => {
@@ -481,6 +482,7 @@ function App() {
     const savePath = searchParams.get("save_path") || hashParams.get("save_path") || "";
     const cookie = searchParams.get("cookie") || hashParams.get("cookie") || "";
     const referrer = searchParams.get("referrer") || hashParams.get("referrer") || "";
+    const userAgent = searchParams.get("user_agent") || hashParams.get("user_agent") || "";
     const size = searchParams.get("size") || hashParams.get("size") || "0";
     const taskId = searchParams.get("id") || hashParams.get("id") || null;
 
@@ -535,6 +537,7 @@ function App() {
       setPopupSavePath(decodeURIComponent(savePath));
       setPopupCookie(cookie);
       setPopupReferrer(referrer);
+      setPopupUserAgent(userAgent);
       setPopupTaskId(taskId);
       setPopupSize(size);
 
@@ -691,6 +694,14 @@ function App() {
   // Submit start download from main window modal
   const handleStartDownload = async () => {
     if (!inputUrl || isStartingDownload) return;
+
+    if (inputUrl.includes("sourceforge.net/projects/")) {
+      alert("SourceForge landing page detected instead of direct file mirror URL! Please wait for the download link to resolve to a direct mirror host.");
+      return;
+    }
+
+    console.log("[popup-add] Invoking start_download with URL:", inputUrl);
+
     setIsStartingDownload(true);
     const finalFilename = customFilename || extractFilename(inputUrl);
     const finalSavePath = `${savePath.endsWith("/") ? savePath : savePath + "/"}${finalFilename}`;
@@ -701,7 +712,8 @@ function App() {
         filename: finalFilename,
         savePath: finalSavePath,
         cookie: popupCookie || "",
-        referrer: popupReferrer || ""
+        referrer: popupReferrer || "",
+        userAgent: popupUserAgent || ""
       });
 
       const newTask: DownloadProgress = {
@@ -733,6 +745,14 @@ function App() {
   // Submit start download from Popup 1 (Standalone Add window)
   const handlePopupStartDownload = async () => {
     if (!popupUrl || isStartingDownload) return;
+
+    if (popupUrl.includes("sourceforge.net/projects/")) {
+      alert("SourceForge landing page detected instead of direct file mirror URL! Please wait for the download link to resolve to a direct mirror host.");
+      return;
+    }
+
+    console.log("[popup-add] Invoking start_download with URL:", popupUrl);
+
     setIsStartingDownload(true);
     const finalFilename = popupFilename || extractFilename(popupUrl);
     const finalSavePath = `${savePath.endsWith("/") ? savePath : savePath + "/"}${finalFilename}`;
@@ -743,7 +763,8 @@ function App() {
         filename: finalFilename,
         savePath: finalSavePath,
         cookie: popupCookie || "",
-        referrer: popupReferrer || ""
+        referrer: popupReferrer || "",
+        userAgent: popupUserAgent || ""
       });
 
       // Open standalone Progress window (Popup 2), which closes this Add window
