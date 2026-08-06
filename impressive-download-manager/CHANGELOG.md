@@ -1,5 +1,18 @@
 # CHANGELOG
 
+## [0.6.3] – 2026-08-06
+
+### Added
+- **Custom Speed Limiter Unit Selector Dropdown**: Replaced native OS GTK `<select>` element with a custom React Dropdown component for speed unit selection (`KB/s`, `MB/s`, `GB/s`). Eliminates dark system GTK menu overlays in Light Mode.
+- **Global Click-Outside Dropdown Dismissal**: Integrated `useRef` and a global document mouse event listener (`unitDropdownRef`) to close the unit selector dropdown whenever clicking anywhere outside the open menu.
+- **Single Animated Arrow Icon**: Removed static CSS background arrows, leaving a single smooth animated `<ChevronDown />` icon that rotates 180° when opened.
+
+### Fixed
+- **Standalone Popup Window Hash Routing Fix**: Fixed WebKit 404 and `"Could not connect to localhost: Connection refused"` errors in installed release packages by replacing query string paths (`index.html?popup=...`) with URL hash fragment parameters (`index.html#popup=...`) across Rust backend popup builders (`popup-add`, `popup-progress`, `popup-complete`, and `popup-refresh`). Updated `App.tsx` routing to parse both `searchParams` and `hashParams`.
+- **Uniform Light Theme Background Palette (`#FEFEFF`)**: Enforced explicit `#FEFEFF` background across Speed Limiter sub-div containers, numerical threshold inputs, dropdown trigger buttons, option menus, speed preset buttons, software updater metric cards, and update status banners.
+- **Clean Software Updater Fallback Handling**: Filtered out technical fallback platform errors (`None of the fallback platforms ['linux-x86_64'] were found in the response platforms object`), cleanly displaying `"You are running the latest version! No new update found."`
+- **Clean Release Manifest Generation**: Updated `generate_latest_json.js` manifest generator script to produce target platforms `linux-x86_64-deb`, `linux-x86_64-rpm`, and `windows-x86_64`, omitting the duplicate `linux-x86_64` AppImage key.
+
 ## [0.6.0] – 2026-08-05
 
 ### Added

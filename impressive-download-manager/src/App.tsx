@@ -146,7 +146,7 @@ function App() {
   const [deleteFileFromDisk, setDeleteFileFromDisk] = useState(false);
 
   // Updater State & Metrics
-  const CURRENT_APP_VERSION = "0.6.0";
+  const CURRENT_APP_VERSION = "0.6.3";
   const [checkingUpdate, setCheckingUpdate] = useState(false);
   const [updateStatus, setUpdateStatus] = useState<string | null>(null);
   const [pendingRelaunch, setPendingRelaunch] = useState(false);
@@ -453,17 +453,20 @@ function App() {
   const [initError, setInitError] = useState<string | null>(null);
   const [isStartingDownload, setIsStartingDownload] = useState(false);
 
-  // Initialization query-param routing & initial loading
+  // Initialization query/hash-param routing & initial loading
   useEffect(() => {
-    const params = new URLSearchParams(window.location.search);
-    const mode = params.get("popup");
-    const url = params.get("url") || "";
-    const filename = params.get("filename") || "";
-    const savePath = params.get("save_path") || "";
-    const cookie = params.get("cookie") || "";
-    const referrer = params.get("referrer") || "";
-    const size = params.get("size") || "0";
-    const taskId = params.get("id") || null;
+    const searchParams = new URLSearchParams(window.location.search);
+    const hashString = window.location.hash.startsWith("#") ? window.location.hash.slice(1) : window.location.hash;
+    const hashParams = new URLSearchParams(hashString);
+
+    const mode = searchParams.get("popup") || hashParams.get("popup");
+    const url = searchParams.get("url") || hashParams.get("url") || "";
+    const filename = searchParams.get("filename") || hashParams.get("filename") || "";
+    const savePath = searchParams.get("save_path") || hashParams.get("save_path") || "";
+    const cookie = searchParams.get("cookie") || hashParams.get("cookie") || "";
+    const referrer = searchParams.get("referrer") || hashParams.get("referrer") || "";
+    const size = searchParams.get("size") || hashParams.get("size") || "0";
+    const taskId = searchParams.get("id") || hashParams.get("id") || null;
 
     // Fetch OS default download directory if no custom saved path exists
     const savedDir = localStorage.getItem("default_save_dir");
@@ -530,7 +533,7 @@ function App() {
             setInitError(`Failed to get download progress (ID: ${taskId}): ${err?.message || err}`);
           });
       } else if (mode === "complete") {
-        setPopupFilename(params.get("filename") || "");
+        setPopupFilename(filename);
       }
     } else {
       // Main dashboard: fetch all active/completed downloads from backend

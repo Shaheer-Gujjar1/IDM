@@ -112,7 +112,7 @@ async fn refresh_download_link(
                 .spawn();
         }
 
-        let refresh_url = format!("index.html?popup=refresh&id={}", id);
+        let refresh_url = format!("index.html#popup=refresh&id={}", id);
         let _ = tauri::WebviewWindowBuilder::new(
             &app_handle,
             format!("popup-refresh-{}", id),
@@ -304,7 +304,7 @@ async fn set_max_chunks(
 
 #[tauri::command]
 async fn open_progress_window(app_handle: tauri::AppHandle, id: String) -> Result<(), String> {
-    let progress_url = format!("index.html?popup=progress&id={}", id);
+    let progress_url = format!("index.html#popup=progress&id={}", id);
     
     // Spawn the progress window
     let _ = tauri::WebviewWindowBuilder::new(
@@ -327,7 +327,7 @@ async fn open_progress_window(app_handle: tauri::AppHandle, id: String) -> Resul
 #[tauri::command]
 async fn open_complete_window(app_handle: tauri::AppHandle, filename: String, save_path: String) -> Result<(), String> {
     let complete_url = format!(
-        "index.html?popup=complete&filename={}&save_path={}",
+        "index.html#popup=complete&filename={}&save_path={}",
         urlencoding::encode(&filename),
         urlencoding::encode(&save_path),
     );
@@ -377,7 +377,7 @@ async fn resume_and_open_progress(
 ) -> Result<(), String> {
     manager.resume_download(&id).await?;
 
-    let progress_url = format!("/index.html?popup=progress&id={}", id);
+    let progress_url = format!("index.html#popup=progress&id={}", id);
     let window_label = format!("popup-progress-{}", id);
 
     // If the window already exists, just focus it; otherwise create it
@@ -418,7 +418,7 @@ async fn redownload_and_open_progress(
 ) -> Result<(), String> {
     manager.redownload_task(&id).await?;
 
-    let progress_url = format!("/index.html?popup=progress&id={}", id);
+    let progress_url = format!("index.html#popup=progress&id={}", id);
     let window_label = format!("popup-progress-{}", id);
 
     // If the window already exists, just focus it; otherwise create it
@@ -816,7 +816,7 @@ pub fn run() {
                                                 }
 
                                                 // Open progress window
-                                                let progress_url = format!("index.html?popup=progress&id={}", id);
+                                                let progress_url = format!("index.html#popup=progress&id={}", id);
                                                 let _ = tauri::WebviewWindowBuilder::new(
                                                     &app_handle,
                                                     format!("popup-progress-{}", id),
@@ -836,7 +836,7 @@ pub fn run() {
 
                                             // Default: Spawn native popup-add window pre-filled with payload
                                             let add_url = format!(
-                                                "index.html?popup=add&url={}&filename={}&cookie={}&referrer={}&size={}",
+                                                "index.html#popup=add&url={}&filename={}&cookie={}&referrer={}&size={}",
                                                 urlencoding::encode(&target_download_url),
                                                 urlencoding::encode(&filename),
                                                 urlencoding::encode(&payload.cookie.unwrap_or_default()),
