@@ -88,7 +88,12 @@ impl DownloadManager {
             .cookie_store(true)
             .user_agent("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
             .redirect(reqwest::redirect::Policy::limited(10))
-            .pool_max_idle_per_host(32)
+            .pool_max_idle_per_host(64)
+            .pool_idle_timeout(std::time::Duration::from_secs(90))
+            .tcp_keepalive(std::time::Duration::from_secs(30))
+            .tcp_nodelay(true)
+            .connect_timeout(std::time::Duration::from_secs(30))
+            .read_timeout(std::time::Duration::from_secs(120))
             .connection_verbose(false)
             .build()
             .unwrap_or_default();
@@ -239,19 +244,85 @@ impl DownloadManager {
     pub async fn run_task(self: &Arc<Self>, task: Arc<DownloadTask>, accept_ranges: bool) -> Result<(), String> {
         *task.status.lock().unwrap() = DownloadStatus::Downloading;
 
-        let is_new = task.downloaded.load(Ordering::Relaxed) == 0;
-        let configured_max = (self.max_chunks.load(Ordering::Relaxed).clamp(1, 32)) as usize;
-        let num_chunks = if accept_ranges && task.total_size.load(Ordering::Relaxed) > 0 { configured_max } else { 1 };
-
         if let Some(parent) = std::path::Path::new(&task.save_path).parent() {
             let _ = tokio::fs::create_dir_all(parent).await;
         }
 
+        let is_new = task.downloaded.load(Ordering::Relaxed) == 0;
         let file_exists = tokio::fs::metadata(&task.save_path).await.is_ok();
-        let should_initialize = is_new || !file_exists;
+        let should_initialize = is_new || !file_exists || task.chunks.lock().unwrap().is_empty();
 
         if should_initialize {
             task.downloaded.store(0, Ordering::Relaxed);
+
+            let is_sourceforge = task.url.contains("sourceforge.net");
+            let mut server_supports_ranges = false;
+            let mut probed_total_size = task.total_size.load(Ordering::Relaxed);
+
+            // SourceForge mirrors choke when probed with Range or requested via multi-chunks.
+            // Force single-connection streaming for SourceForge.
+            if accept_ranges && !is_sourceforge {
+                let mut req = self.client.head(&task.url)
+                    .header(reqwest::header::ACCEPT, "*/*")
+                    .header(reqwest::header::ACCEPT_LANGUAGE, "en-US,en;q=0.9");
+
+                if !task.cookie.is_empty() {
+                    req = req.header(reqwest::header::COOKIE, &task.cookie);
+                }
+                if !task.referrer.is_empty() {
+                    req = req.header(reqwest::header::REFERER, &task.referrer);
+                }
+                if !task.user_agent.is_empty() {
+                    req = req.header(reqwest::header::USER_AGENT, &task.user_agent);
+                }
+
+                if let Ok(res) = req.send().await {
+                    let status = res.status();
+                    if status.is_success() || status == reqwest::StatusCode::PARTIAL_CONTENT {
+                        server_supports_ranges = true;
+                        if let Some(cl) = res.headers().get(reqwest::header::CONTENT_LENGTH).and_then(|h| h.to_str().ok()).and_then(|s| s.parse::<u64>().ok()) {
+                            if cl > 0 {
+                                probed_total_size = cl;
+                            }
+                        }
+                    }
+                }
+                // If HEAD fails or gives 0 size, fall back to GET Range 0-0 probe
+                if probed_total_size == 0 {
+                    let mut req_get = self.client.get(&task.url)
+                        .header(reqwest::header::ACCEPT, "*/*")
+                        .header(reqwest::header::RANGE, "bytes=0-0");
+                    if !task.cookie.is_empty() { req_get = req_get.header(reqwest::header::COOKIE, &task.cookie); }
+                    if !task.referrer.is_empty() { req_get = req_get.header(reqwest::header::REFERER, &task.referrer); }
+                    if !task.user_agent.is_empty() { req_get = req_get.header(reqwest::header::USER_AGENT, &task.user_agent); }
+
+                    if let Ok(res_get) = req_get.send().await {
+                        if res_get.status() == reqwest::StatusCode::PARTIAL_CONTENT {
+                            server_supports_ranges = true;
+                        }
+                        if let Some(cr_val) = res_get.headers().get(reqwest::header::CONTENT_RANGE).and_then(|h| h.to_str().ok()) {
+                            server_supports_ranges = true;
+                            if let Some(slash_idx) = cr_val.rfind('/') {
+                                if let Ok(s) = cr_val[slash_idx + 1..].trim().parse::<u64>() {
+                                    if s > 0 { probed_total_size = s; }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            if probed_total_size > 0 {
+                task.total_size.store(probed_total_size, Ordering::Relaxed);
+            }
+
+            let configured_max = (self.max_chunks.load(Ordering::Relaxed).clamp(1, 32)) as usize;
+            let num_chunks = if accept_ranges && !is_sourceforge && (server_supports_ranges || probed_total_size > 0) {
+                configured_max
+            } else {
+                1
+            };
+
             let file = OpenOptions::new()
                 .write(true)
                 .create(true)
@@ -259,20 +330,20 @@ impl DownloadManager {
                 .open(&task.save_path)
                 .await
                 .map_err(|e| format!("Failed to create file: {}", e))?;
-            let total_size_val = task.total_size.load(Ordering::Relaxed);
-            if total_size_val > 0 {
-                let _ = file.set_len(total_size_val).await;
+
+            if probed_total_size > 0 {
+                let _ = file.set_len(probed_total_size).await;
             }
 
             // Initialize connection chunks
             let mut chunks = vec![];
-            if total_size_val > 0 {
+            if num_chunks > 1 && probed_total_size > 0 {
                 let num_chunks_u64 = num_chunks as u64;
-                let chunk_size = total_size_val / num_chunks_u64;
+                let chunk_size = probed_total_size / num_chunks_u64;
                 for i in 0..num_chunks {
                     let start = (i as u64) * chunk_size;
                     let end = if i == num_chunks - 1 {
-                        total_size_val - 1
+                        probed_total_size - 1
                     } else {
                         ((i as u64) + 1) * chunk_size - 1
                     };
@@ -301,11 +372,12 @@ impl DownloadManager {
         let manager_for_reporting = self.clone();
         let task_for_reporting = task.clone();
 
-        // Speed & Progress reporting loop
+        // Speed & Progress reporting loop — uses a 3-sample sliding window for stable, accurate display
         tokio::spawn(async move {
             let mut interval = tokio::time::interval(Duration::from_millis(800));
-            let mut last_bytes = downloaded_counter.load(Ordering::Relaxed);
-            let mut last_check = Instant::now();
+            // Rolling 3-sample window: store (bytes_snapshot, instant) for last 3 ticks
+            let mut samples: std::collections::VecDeque<(u64, Instant)> = std::collections::VecDeque::with_capacity(4);
+            samples.push_back((downloaded_counter.load(Ordering::Relaxed), Instant::now()));
             let mut save_ticks = 0;
 
             loop {
@@ -314,23 +386,22 @@ impl DownloadManager {
                     _ = interval.tick() => {
                         let current_bytes = downloaded_counter.load(Ordering::Relaxed);
                         let now = Instant::now();
-                        let duration = now.duration_since(last_check).as_secs_f64();
-                        let raw_speed = if duration > 0.0 {
-                            (current_bytes.saturating_sub(last_bytes)) as f64 / duration
-                        } else {
-                            0.0
-                        };
-                        last_bytes = current_bytes;
-                        last_check = now;
+
+                        // 3-sample sliding window: average speed over the last 3 ticks (~2.4s window)
+                        samples.push_back((current_bytes, now));
+                        if samples.len() > 3 {
+                            samples.pop_front();
+                        }
+                        let raw_speed = if samples.len() >= 2 {
+                            let (old_bytes, old_time) = samples.front().unwrap();
+                            let duration = now.duration_since(*old_time).as_secs_f64();
+                            if duration > 0.0 {
+                                current_bytes.saturating_sub(*old_bytes) as f64 / duration
+                            } else { 0.0 }
+                        } else { 0.0 };
 
                         let mut speed_guard = task_speed.lock().unwrap();
-                        let last_speed = *speed_guard;
-                        let speed = if last_speed <= 0.0 {
-                            raw_speed
-                        } else {
-                            // 0.3 weight to current speed, 0.7 to historical trend
-                            0.3 * raw_speed + 0.7 * last_speed
-                        };
+                        let speed = raw_speed;
                         *speed_guard = speed;
 
                         let current_total_size = task_for_reporting.total_size.load(Ordering::Relaxed);
@@ -398,265 +469,249 @@ impl DownloadManager {
                         if status == DownloadStatus::Completed || matches!(status, DownloadStatus::Failed(_)) {
                             break;
                         }
-
-                        last_bytes = current_bytes;
-                        last_check = now;
                     }
                 }
             }
         });
 
-        // --- Shared Blocking Writer Thread ---
-        // Prevents Ext4/NTFS inode lock contention from multiple threads writing to the same file.
-        let std_file = match std::fs::OpenOptions::new().write(true).open(&task.save_path) {
-            Ok(f) => f,
-            Err(e) => return Err(format!("Could not open file for writing: {}", e)),
-        };
-
-        // Channel: async readers → single blocking writer (up to 128 chunks = 64 MB buffered)
-        let (tx, rx) = std::sync::mpsc::sync_channel::<(u64, Vec<u8>)>(128);
-        let downloaded_for_writer = task.downloaded.clone();
-        let task_for_writer = task.clone();
-
-        let writer_handle = tokio::task::spawn_blocking(move || {
-            let mut f = std_file;
-            for (write_pos, buf) in rx {
-                let current_total_size = task_for_writer.total_size.load(Ordering::Relaxed);
-                let buf_len = buf.len() as u64;
-
-                let allowed_len = if current_total_size > 0 {
-                    if write_pos + buf_len > current_total_size {
-                        if current_total_size > write_pos {
-                            (current_total_size - write_pos) as usize
-                        } else {
-                            0
-                        }
-                    } else {
-                        buf.len()
-                    }
-                } else {
-                    // When total_size is 0 (unknown size / chunked encoding), write ALL incoming chunks unconditionally
-                    buf.len()
-                };
-
-                if allowed_len > 0 {
-                    let safe_buf = &buf[..allowed_len];
-                    if f.seek(std::io::SeekFrom::Start(write_pos)).is_ok() {
-                        if f.write_all(safe_buf).is_ok() {
-                            downloaded_for_writer.fetch_add(allowed_len as u64, Ordering::Relaxed);
-                        }
-                    }
-                }
-            }
-            // Ensure everything is flushed and synchronized to disk
-            let _ = f.flush();
-            let _ = f.sync_all();
-            println!("[Rust Engine Writer] Writer thread finished. Total written bytes: {}", downloaded_for_writer.load(Ordering::Relaxed));
-        });
-
-        // Spawn segment download workers
+        let num_chunks = chunks_list.len();
+        // Spawn segment download workers — each writes sequentially to its own .part_X file (IDM/XDM style)
         for (idx, chunk) in chunks_list.into_iter().enumerate() {
             let url = task.url.clone();
             let task_clone = task.clone();
             let mut task_abort_rx = abort_tx.subscribe();
             let client = self.client.clone();
-            let tx_clone = tx.clone();
             let manager_for_worker = self.clone();
 
             let worker = tokio::spawn(async move {
-                let start_offset = chunk.start + chunk.downloaded;
                 let end_offset = chunk.end;
-                if end_offset > 0 && start_offset >= end_offset {
-                    return;
-                }
+                let part_path = format!("{}.part_{}", task_clone.save_path, idx);
 
-                let mut req = client.get(&url)
-                    .header(reqwest::header::ACCEPT, "*/*")
-                    .header(reqwest::header::ACCEPT_LANGUAGE, "en-US,en;q=0.9");
-
-                if !task_clone.cookie.is_empty() {
-                    req = req.header(reqwest::header::COOKIE, &task_clone.cookie);
-                }
-                if !task_clone.referrer.is_empty() {
-                    req = req.header(reqwest::header::REFERER, &task_clone.referrer);
-                }
-                if !task_clone.user_agent.is_empty() {
-                    req = req.header(reqwest::header::USER_AGENT, &task_clone.user_agent);
-                }
-                if num_chunks > 1 && end_offset > 0 {
-                    req = req.header(reqwest::header::RANGE, format!("bytes={}-{}", start_offset, end_offset));
-                }
-
-                println!("[Rust Engine] Sending streaming GET request to URL: {}", url);
-
-                let res = match req.send().await {
-                    Ok(r) => r,
-                    Err(e) => {
-                        eprintln!("[Rust Engine] Worker request failed: {:?}", e);
-                        return;
-                    }
+                let mut worker_file = match std::fs::OpenOptions::new()
+                    .create(true)
+                    .write(true)
+                    .open(&part_path)
+                {
+                    Ok(f) => f,
+                    Err(_) => return,
                 };
 
-                let status_code = res.status();
-                let content_length_hdr = res.headers()
-                    .get(reqwest::header::CONTENT_LENGTH)
-                    .and_then(|v| v.to_str().ok())
-                    .unwrap_or("none");
-                let transfer_encoding_hdr = res.headers()
-                    .get(reqwest::header::TRANSFER_ENCODING)
-                    .and_then(|v| v.to_str().ok())
-                    .unwrap_or("none");
-                let content_type_hdr = res.headers()
-                    .get(reqwest::header::CONTENT_TYPE)
-                    .and_then(|v| v.to_str().ok())
-                    .unwrap_or("none");
-
-                println!("[Rust Engine] Response Status: {} | Content-Length: {} | Transfer-Encoding: {} | Content-Type: {}", status_code, content_length_hdr, transfer_encoding_hdr, content_type_hdr);
-
-                let content_type = res.headers()
-                    .get(reqwest::header::CONTENT_TYPE)
-                    .and_then(|v| v.to_str().ok())
-                    .unwrap_or("")
-                    .to_lowercase();
-
-                if content_type.contains("text/html") {
-                    eprintln!("[Rust Engine] Aborting: landing page captured instead of file (Content-Type: {})", content_type);
-                    *task_clone.status.lock().unwrap() = DownloadStatus::Failed("landing page captured instead of file".to_string());
-                    return;
-                }
-
-                if !res.status().is_success() && res.status() != reqwest::StatusCode::PARTIAL_CONTENT {
-                    let code = res.status().as_u16();
-                    eprintln!("[Rust Engine] Worker HTTP request failed with status {}", code);
-                    *task_clone.status.lock().unwrap() = DownloadStatus::Failed(format!("HTTP server returned error status {}", code));
-                    return;
-                }
-
-                if let Some(cr_val) = res.headers().get("Content-Range").and_then(|h| h.to_str().ok()) {
-                    if let Some(slash_idx) = cr_val.rfind('/') {
-                        if let Ok(s) = cr_val[slash_idx + 1..].trim().parse::<u64>() {
-                            if s > 0 {
-                                task_clone.total_size.store(s, Ordering::Relaxed);
-                            }
-                        }
-                    }
-                }
-                if task_clone.total_size.load(Ordering::Relaxed) == 0 {
-                    if let Some(content_length) = res.headers()
-                        .get(reqwest::header::CONTENT_LENGTH)
-                        .and_then(|val| val.to_str().ok())
-                        .and_then(|s| s.parse::<u64>().ok())
-                    {
-                        if content_length > 0 {
-                            task_clone.total_size.store(content_length, Ordering::Relaxed);
-                        }
-                    }
-                }
-
-                let mut stream = res.bytes_stream();
                 let mut local_downloaded = chunk.downloaded;
                 let mut last_saved_downloaded = chunk.downloaded;
 
-                // Rate limiter tracking state per worker
+                if local_downloaded > 0 {
+                    let _ = worker_file.seek(std::io::SeekFrom::Start(local_downloaded));
+                }
+
                 let mut limiter_window_start = Instant::now();
                 let mut limiter_window_bytes = 0u64;
 
-                // --- Async network reader --- reads at full line speed, sends to shared writer ---
-                let mut net_buffer = Vec::with_capacity(512 * 1024);
+                let max_retries: u32 = 20;
+                let mut retry_count: u32 = 0;
 
-                loop {
-                    tokio::select! {
-                        biased; // Check abort first, always
-                        _ = task_abort_rx.recv() => {
-                            break;
+                'reconnect: loop {
+                    let current_start = chunk.start + local_downloaded;
+                    if end_offset > 0 && current_start >= end_offset + 1 {
+                        break 'reconnect;
+                    }
+                    if retry_count >= max_retries {
+                        break 'reconnect;
+                    }
+
+                    if retry_count > 0 {
+                        tokio::time::sleep(Duration::from_millis(300)).await;
+                    }
+
+                    let mut req = client.get(&url)
+                        .header(reqwest::header::ACCEPT, "*/*")
+                        .header(reqwest::header::ACCEPT_LANGUAGE, "en-US,en;q=0.9")
+                        .header(reqwest::header::CONNECTION, "keep-alive");
+
+                    if !task_clone.cookie.is_empty() {
+                        req = req.header(reqwest::header::COOKIE, &task_clone.cookie);
+                    }
+                    if !task_clone.referrer.is_empty() {
+                        req = req.header(reqwest::header::REFERER, &task_clone.referrer);
+                    }
+                    if !task_clone.user_agent.is_empty() {
+                        req = req.header(reqwest::header::USER_AGENT, &task_clone.user_agent);
+                    }
+                    let is_sourceforge = task_clone.url.contains("sourceforge.net");
+                    if num_chunks > 1 && end_offset > 0 {
+                        req = req.header(reqwest::header::RANGE, format!("bytes={}-{}", current_start, end_offset));
+                    } else if local_downloaded > 0 && !is_sourceforge {
+                        req = req.header(reqwest::header::RANGE, format!("bytes={}-", current_start));
+                    }
+
+                    let res = match req.send().await {
+                        Ok(r) => r,
+                        Err(_) => {
+                            retry_count += 1;
+                            continue 'reconnect;
                         }
-                        bytes_chunk = stream.next() => {
-                            match bytes_chunk {
-                                Some(Ok(bytes)) => {
-                                    println!("[Rust Engine] Received chunk: {} bytes", bytes.len());
-                                    let mut bytes_to_add = bytes.as_ref();
-                                    if num_chunks > 1 && end_offset > 0 {
-                                        let current_pos = chunk.start + local_downloaded + net_buffer.len() as u64;
-                                        if current_pos >= end_offset + 1 {
-                                            break;
+                    };
+
+                    if retry_count == 0 {
+                        let content_type = res.headers()
+                            .get(reqwest::header::CONTENT_TYPE)
+                            .and_then(|v| v.to_str().ok())
+                            .unwrap_or("")
+                            .to_lowercase();
+
+                        if content_type.contains("text/html") {
+                            *task_clone.status.lock().unwrap() = DownloadStatus::Failed(
+                                "landing page captured instead of file".to_string()
+                            );
+                            break 'reconnect;
+                        }
+
+                        if !res.status().is_success() && res.status() != reqwest::StatusCode::PARTIAL_CONTENT {
+                            let code = res.status().as_u16();
+                            *task_clone.status.lock().unwrap() = DownloadStatus::Failed(
+                                format!("HTTP server returned error status {}", code)
+                            );
+                            break 'reconnect;
+                        }
+
+                        if let Some(cr_val) = res.headers().get("Content-Range").and_then(|h| h.to_str().ok()) {
+                            if let Some(slash_idx) = cr_val.rfind('/') {
+                                if let Ok(s) = cr_val[slash_idx + 1..].trim().parse::<u64>() {
+                                    if s > 0 { task_clone.total_size.store(s, Ordering::Relaxed); }
+                                }
+                            }
+                        }
+                        if task_clone.total_size.load(Ordering::Relaxed) == 0 {
+                            if let Some(cl) = res.headers()
+                                .get(reqwest::header::CONTENT_LENGTH)
+                                .and_then(|v| v.to_str().ok())
+                                .and_then(|s| s.parse::<u64>().ok())
+                            {
+                                if cl > 0 { task_clone.total_size.store(cl, Ordering::Relaxed); }
+                            }
+                        }
+                    }
+
+                    let mut stream = res.bytes_stream();
+                    let mut net_buffer = Vec::with_capacity(64 * 1024);
+
+                    loop {
+                        tokio::select! {
+                            _ = task_abort_rx.recv() => {
+                                if !net_buffer.is_empty() {
+                                    local_downloaded += net_buffer.len() as u64;
+                                    let _ = worker_file.write_all(&net_buffer);
+                                    net_buffer.clear();
+                                }
+                                break 'reconnect;
+                            }
+
+                            chunk_res = tokio::time::timeout(Duration::from_secs(15), stream.next()) => {
+                                match chunk_res {
+                                    Err(_timeout) => {
+                                        if !net_buffer.is_empty() {
+                                            local_downloaded += net_buffer.len() as u64;
+                                            let _ = worker_file.write_all(&net_buffer);
+                                            net_buffer.clear();
                                         }
-                                        let remaining = (end_offset + 1) - current_pos;
-                                        if bytes_to_add.len() as u64 > remaining {
-                                            bytes_to_add = &bytes_to_add[..remaining as usize];
-                                        }
+                                        retry_count += 1;
+                                        continue 'reconnect;
                                     }
 
-                                    net_buffer.extend_from_slice(bytes_to_add);
+                                    Ok(None) => {
+                                        if !net_buffer.is_empty() {
+                                            local_downloaded += net_buffer.len() as u64;
+                                            let _ = worker_file.write_all(&net_buffer);
+                                            net_buffer.clear();
+                                        }
+                                        break 'reconnect;
+                                    }
 
-                                    // --- Precision Sliding Window Rate Limiter ---
-                                    let limit_bps = manager_for_worker.speed_limit_bps.load(Ordering::Relaxed);
-                                    if limit_bps > 0 {
-                                        let per_worker_limit = (limit_bps / (num_chunks as u64)).max(1024);
-                                        limiter_window_bytes += bytes_to_add.len() as u64;
+                                    Ok(Some(Err(_))) => {
+                                        if !net_buffer.is_empty() {
+                                            local_downloaded += net_buffer.len() as u64;
+                                            let _ = worker_file.write_all(&net_buffer);
+                                            net_buffer.clear();
+                                        }
+                                        retry_count += 1;
+                                        continue 'reconnect;
+                                    }
 
-                                        let elapsed_sec = limiter_window_start.elapsed().as_secs_f64();
-                                        let allowed_bytes = (per_worker_limit as f64 * elapsed_sec) as u64;
+                                    Ok(Some(Ok(bytes))) => {
+                                        retry_count = 0;
+                                        let mut bytes_to_add = bytes.as_ref();
 
-                                        if limiter_window_bytes > allowed_bytes {
-                                            let excess_bytes = limiter_window_bytes - allowed_bytes;
-                                            let sleep_sec = excess_bytes as f64 / per_worker_limit as f64;
-                                            if sleep_sec >= 0.002 {
-                                                tokio::time::sleep(Duration::from_secs_f64(sleep_sec.min(0.5))).await;
+                                        if num_chunks > 1 && end_offset > 0 {
+                                            let current_pos = chunk.start + local_downloaded + net_buffer.len() as u64;
+                                            if current_pos >= end_offset + 1 {
+                                                if !net_buffer.is_empty() {
+                                                    local_downloaded += net_buffer.len() as u64;
+                                                    let _ = worker_file.write_all(&net_buffer);
+                                                    net_buffer.clear();
+                                                }
+                                                break 'reconnect;
+                                            }
+                                            let remaining = (end_offset + 1) - current_pos;
+                                            if bytes_to_add.len() as u64 > remaining {
+                                                bytes_to_add = &bytes_to_add[..remaining as usize];
                                             }
                                         }
 
-                                        if elapsed_sec >= 0.5 {
-                                            limiter_window_start = Instant::now();
-                                            limiter_window_bytes = 0;
-                                        }
-                                    }
+                                        net_buffer.extend_from_slice(bytes_to_add);
+                                        task_clone.downloaded.fetch_add(bytes_to_add.len() as u64, Ordering::Relaxed);
 
-                                    // Flush to writer thread every 512 KB
-                                    if net_buffer.len() >= 512 * 1024 {
-                                        let write_pos = chunk.start + local_downloaded;
-                                        let flushed = std::mem::replace(&mut net_buffer, Vec::with_capacity(512 * 1024));
-                                        local_downloaded += flushed.len() as u64;
-
-                                        // Lock chunks to save progress only every 8 MB to eliminate lock contention
-                                        if local_downloaded - last_saved_downloaded >= 8 * 1024 * 1024 {
-                                            last_saved_downloaded = local_downloaded;
-                                            let mut chunks_lock = task_clone.chunks.lock().unwrap();
-                                            if idx < chunks_lock.len() {
-                                                chunks_lock[idx].downloaded = local_downloaded;
+                                        let limit_bps = manager_for_worker.speed_limit_bps.load(Ordering::Relaxed);
+                                        if limit_bps > 0 {
+                                            let per_worker_limit = (limit_bps / (num_chunks as u64)).max(1024);
+                                            limiter_window_bytes += bytes_to_add.len() as u64;
+                                            let elapsed_sec = limiter_window_start.elapsed().as_secs_f64();
+                                            let allowed_bytes = (per_worker_limit as f64 * elapsed_sec) as u64;
+                                            if limiter_window_bytes > allowed_bytes {
+                                                let excess = limiter_window_bytes - allowed_bytes;
+                                                let sleep_sec = excess as f64 / per_worker_limit as f64;
+                                                if sleep_sec >= 0.002 {
+                                                    tokio::time::sleep(Duration::from_secs_f64(sleep_sec.min(0.5))).await;
+                                                }
+                                            }
+                                            if elapsed_sec >= 0.5 {
+                                                limiter_window_start = Instant::now();
+                                                limiter_window_bytes = 0;
                                             }
                                         }
 
-                                        // If channel is full this will block briefly, which is fine
-                                        if tx_clone.send((write_pos, flushed)).is_err() {
-                                            break; // writer died
-                                        }
-                                    }
+                                        if net_buffer.len() >= 64 * 1024 {
+                                            let _ = worker_file.write_all(&net_buffer);
+                                            local_downloaded += net_buffer.len() as u64;
+                                            net_buffer.clear();
 
-                                    // Segment boundary reached
-                                    if num_chunks > 1 && end_offset > 0 {
-                                        let current_pos = chunk.start + local_downloaded + net_buffer.len() as u64;
-                                        if current_pos >= end_offset + 1 {
-                                            break;
+                                            if local_downloaded - last_saved_downloaded >= 4 * 1024 * 1024 {
+                                                if let Ok(mut chunks_lock) = task_clone.chunks.try_lock() {
+                                                    if idx < chunks_lock.len() {
+                                                        chunks_lock[idx].downloaded = local_downloaded;
+                                                        last_saved_downloaded = local_downloaded;
+                                                    }
+                                                }
+                                            }
+                                        }
+
+                                        if num_chunks > 1 && end_offset > 0 {
+                                            let current_pos = chunk.start + local_downloaded + net_buffer.len() as u64;
+                                            if current_pos >= end_offset + 1 {
+                                                if !net_buffer.is_empty() {
+                                                    local_downloaded += net_buffer.len() as u64;
+                                                    let _ = worker_file.write_all(&net_buffer);
+                                                    net_buffer.clear();
+                                                }
+                                                break 'reconnect;
+                                            }
                                         }
                                     }
                                 }
-                                _ => break,
                             }
                         }
                     }
                 }
 
-                // Flush any remaining bytes
-                if !net_buffer.is_empty() {
-                    let write_pos = chunk.start + local_downloaded;
-                    local_downloaded += net_buffer.len() as u64;
-                    let _ = tx_clone.send((write_pos, net_buffer));
-                }
-
-                // Drop local clone of tx so writer knows this worker is done
-                drop(tx_clone);
-
-                // Update segment offset state when aborted or finished
+                let _ = worker_file.flush();
                 let mut chunks_lock = task_clone.chunks.lock().unwrap();
                 if idx < chunks_lock.len() {
                     chunks_lock[idx].downloaded = local_downloaded;
@@ -666,19 +721,16 @@ impl DownloadManager {
             workers.push(worker);
         }
 
-        // Drop the main tx so the writer thread rx channel will close once all worker tx_clones drop
-        drop(tx);
-
-        // Wait for workers to exit
         for worker in workers {
             let _ = worker.await;
         }
 
-        // Wait for the single writer thread to finish flushing to disk
-        let _ = writer_handle.await;
-
+        // --- Post-Download Assembly (IDM/XDM style) ---
         let is_deleted = !self.tasks.read().await.contains_key(&task.id);
         if is_deleted {
+            for idx in 0..num_chunks {
+                let _ = std::fs::remove_file(format!("{}.part_{}", task.save_path, idx));
+            }
             return Ok(());
         }
 
@@ -690,18 +742,39 @@ impl DownloadManager {
         if !is_aborted {
             let downloaded_bytes = task.downloaded.load(Ordering::Relaxed);
             let total_size_val = task.total_size.load(Ordering::Relaxed);
-            
-            // Log for debugging
-            println!("[Rust Engine] Task {} finished. Total size: {}, Downloaded: {}", task.id, total_size_val, downloaded_bytes);
-            
-            if total_size_val > 0 && downloaded_bytes >= total_size_val {
-                *task.status.lock().unwrap() = DownloadStatus::Completed;
-            } else if total_size_val == 0 && downloaded_bytes > 0 {
-                task.total_size.store(downloaded_bytes, Ordering::Relaxed);
-                *task.status.lock().unwrap() = DownloadStatus::Completed;
-            } else if total_size_val > 0 && downloaded_bytes > 0 && ((downloaded_bytes as f64) / (total_size_val as f64)) >= 0.995 {
-                task.total_size.store(downloaded_bytes, Ordering::Relaxed);
-                *task.status.lock().unwrap() = DownloadStatus::Completed;
+            let is_success = (total_size_val > 0 && downloaded_bytes >= total_size_val)
+                || (total_size_val > 0 && downloaded_bytes > 0 && ((downloaded_bytes as f64) / (total_size_val as f64)) >= 0.995)
+                || (total_size_val == 0 && downloaded_bytes > 0);
+
+            if is_success {
+                // Merge .part_X files into final save_path
+                let merge_res = tokio::task::spawn_blocking({
+                    let save_path = task.save_path.clone();
+                    move || -> Result<(), String> {
+                        let mut final_file = std::fs::OpenOptions::new()
+                            .create(true)
+                            .write(true)
+                            .truncate(true)
+                            .open(&save_path)
+                            .map_err(|e| e.to_string())?;
+
+                        for idx in 0..num_chunks {
+                            let part_path = format!("{}.part_{}", save_path, idx);
+                            if let Ok(mut part_file) = std::fs::File::open(&part_path) {
+                                let _ = std::io::copy(&mut part_file, &mut final_file);
+                            }
+                            let _ = std::fs::remove_file(&part_path);
+                        }
+                        let _ = final_file.flush();
+                        Ok(())
+                    }
+                }).await;
+
+                if merge_res.is_ok() && merge_res.unwrap().is_ok() {
+                    *task.status.lock().unwrap() = DownloadStatus::Completed;
+                } else {
+                    *task.status.lock().unwrap() = DownloadStatus::Failed("Failed to merge segment files".to_string());
+                }
             } else if total_size_val == 0 && downloaded_bytes == 0 {
                 *task.status.lock().unwrap() = DownloadStatus::Failed("No bytes received".to_string());
             } else {
@@ -710,6 +783,7 @@ impl DownloadManager {
                     downloaded_bytes, total_size_val
                 ));
             }
+        }
 
             let final_status = task.status.lock().unwrap().clone();
             let progress = DownloadProgress {
@@ -728,7 +802,6 @@ impl DownloadManager {
                 use tauri::Emitter;
                 let _ = handle.emit("download-progress", progress);
             }
-        }
 
         let _ = self.save_history().await;
         Ok(())

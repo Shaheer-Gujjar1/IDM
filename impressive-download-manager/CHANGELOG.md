@@ -1,5 +1,15 @@
 # CHANGELOG
 
+## [0.6.6] – 2026-08-10
+
+### Added
+- **IDM/XDM Style Segment File Architecture**: Implemented per-connection segment files (`.part_0`, `.part_1`, etc.) written sequentially without in-flight file seeking or cross-thread lock contention during downloading.
+- **Post-Download File Assembly Phase**: Added automatic sequential file merging upon 100% completion of all parallel worker segments, uniting segment parts into the final target file and cleaning up temporary part files.
+
+### Fixed
+- **SourceForge CDN Connection Throttle**: Resolved 0–20 KB/s CDN throttling on `sourceforge.net` downloads by bypassing Range probes and suppressing `Range` headers on single-stream connections.
+- **Multi-Connection Full Wire-Speed Recovery**: Resolved non-SourceForge speed caps by fixing Range detection probes and eliminating Tokio timer-state caching bugs inside worker read loops.
+
 ## [0.6.3] – 2026-08-06
 
 ### Added

@@ -62,11 +62,11 @@ interface Category {
 }
 
 const formatBytes = (bytes: number): string => {
-  if (!bytes || bytes === 0) return "0 Bytes";
+  if (!bytes || isNaN(bytes) || bytes <= 0) return "0 B";
   const k = 1024;
-  const sizes = ["Bytes", "KB", "MB", "GB", "TB"];
-  const i = Math.floor(Math.log(bytes) / Math.log(k));
-  return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + " " + sizes[i];
+  const sizes = ["B", "KB", "MB", "GB", "TB", "PB"];
+  const i = Math.min(sizes.length - 1, Math.floor(Math.log(bytes) / Math.log(k)));
+  return `${(bytes / Math.pow(k, i)).toFixed(2)} ${sizes[i]}`;
 };
 
 function App() {
@@ -147,7 +147,7 @@ function App() {
   const [deleteFileFromDisk, setDeleteFileFromDisk] = useState(false);
 
   // Updater State & Metrics
-  const CURRENT_APP_VERSION = "0.6.3";
+  const CURRENT_APP_VERSION = "0.6.6";
   const [checkingUpdate, setCheckingUpdate] = useState(false);
   const [updateStatus, setUpdateStatus] = useState<string | null>(null);
   const [pendingRelaunch, setPendingRelaunch] = useState(false);
@@ -648,17 +648,23 @@ function App() {
     return () => { stopped = true; };
   }, [popupMode, popupTaskId]);
 
-  // Event listener: only handles main-dashboard updates + browser intercept
+  const popupModeRef = useRef(popupMode);
+  const popupTaskIdRef = useRef(popupTaskId);
+  useEffect(() => { popupModeRef.current = popupMode; }, [popupMode]);
+  useEffect(() => { popupTaskIdRef.current = popupTaskId; }, [popupTaskId]);
+
+  // Event listener: handles main-dashboard updates, progress popup, and browser intercept
   useEffect(() => {
     let unlistenProgress: (() => void) | undefined;
     let unlistenIntercept: (() => void) | undefined;
 
     async function setupListeners() {
-      // Live progress events — only used by the main dashboard now
-      // (progress popup uses its own polling loop instead)
       unlistenProgress = await listen<DownloadProgress>("download-progress", (event) => {
-        if (popupMode === "progress") {
-          if (!popupTaskId || event.payload.id === popupTaskId) {
+        const mode = popupModeRef.current;
+        const taskId = popupTaskIdRef.current;
+
+        if (mode === "progress") {
+          if (!taskId || event.payload.id === taskId) {
             setPopupProgress(event.payload);
             if (event.payload.status === "Completed") {
               invoke("open_complete_window", { filename: event.payload.filename, savePath: event.payload.save_path || "" });
@@ -680,8 +686,7 @@ function App() {
         });
       });
 
-      // Browser automatic interception — only on main dashboard window
-      if (!popupMode) {
+      if (!popupModeRef.current) {
         unlistenIntercept = await listen<{ url: string; filename: string; cookie?: string; referrer?: string }>("download-intercepted", (event) => {
           setInputUrl(event.payload.url);
           setCustomFilename(event.payload.filename);
@@ -698,7 +703,7 @@ function App() {
       if (unlistenProgress) unlistenProgress();
       if (unlistenIntercept) unlistenIntercept();
     };
-  }, [popupMode]);
+  }, []);
 
   // Submit start download from main window modal
   const handleStartDownload = async () => {
