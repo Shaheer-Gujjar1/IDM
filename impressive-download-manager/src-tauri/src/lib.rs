@@ -116,7 +116,7 @@ async fn refresh_download_link(
         let browser_url = if !task.referrer.is_empty() {
             task.referrer.clone()
         } else {
-            task.url.clone()
+            task.original_url.clone()
         };
 
         #[cfg(target_os = "linux")]
@@ -820,7 +820,8 @@ pub fn run() {
                                                 if let Some(task) = tasks.get_mut(id) {
                                                     let updated_task = std::sync::Arc::new(engine::DownloadTask {
                                                         id: task.id.clone(),
-                                                        url: target_download_url.clone(),
+                                                        original_url: target_download_url.clone(),
+                                                        final_url: tokio::sync::Mutex::new(target_download_url.clone()),
                                                         filename: task.filename.clone(),
                                                         save_path: task.save_path.clone(),
                                                         cookie: payload.cookie.clone().unwrap_or_default(),
@@ -828,6 +829,7 @@ pub fn run() {
                                                         user_agent: payload.user_agent.clone().unwrap_or_default(),
                                                         total_size: std::sync::atomic::AtomicU64::new(task.total_size.load(std::sync::atomic::Ordering::Relaxed)),
                                                         downloaded: task.downloaded.clone(),
+                                                        network_downloaded: std::sync::Arc::new(std::sync::atomic::AtomicU64::new(task.downloaded.load(std::sync::atomic::Ordering::Relaxed))),
                                                         status: std::sync::Arc::new(std::sync::Mutex::new(engine::DownloadStatus::Paused)),
                                                         abort_tx: None,
                                                         chunks: std::sync::Mutex::new(task.chunks.lock().unwrap().clone()),

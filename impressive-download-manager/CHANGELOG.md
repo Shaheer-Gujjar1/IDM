@@ -1,14 +1,15 @@
 # CHANGELOG
 
-## [0.6.6] – 2026-08-10
+## [0.7.0] – 2026-08-10
 
 ### Added
-- **IDM/XDM Style Segment File Architecture**: Implemented per-connection segment files (`.part_0`, `.part_1`, etc.) written sequentially without in-flight file seeking or cross-thread lock contention during downloading.
-- **Post-Download File Assembly Phase**: Added automatic sequential file merging upon 100% completion of all parallel worker segments, uniting segment parts into the final target file and cleaning up temporary part files.
+- **Isolated Part File & Assembly Architecture**: Implemented isolated per-chunk temporary files (`app_data_dir/temp/{task_id}/{chunk_id}`) written independently without cross-thread lock contention or random in-flight file seeking.
+- **Post-Download File Assembly Phase**: Introduced an `Assembling` progress status and a fast sequential file merging phase upon 100% completion of parallel workers, followed by automatic hidden temporary file cleanup.
+- **Continuous Real-Time Progress & Size Updates**: Updated UI reporting to reflect live `network_downloaded` byte streams continuously rather than jumping in 1MB disk-flush ticks.
 
 ### Fixed
-- **SourceForge CDN Connection Throttle**: Resolved 0–20 KB/s CDN throttling on `sourceforge.net` downloads by bypassing Range probes and suppressing `Range` headers on single-stream connections.
-- **Multi-Connection Full Wire-Speed Recovery**: Resolved non-SourceForge speed caps by fixing Range detection probes and eliminating Tokio timer-state caching bugs inside worker read loops.
+- **Wire-Speed Flatline Throughput & Drop Protection**: Re-tuned dynamic piece splitting thresholds (1MB minimum) and stream timeout limits (15s) to eliminate zero-speed drops and sustain peak wire speed (2.5–3.2+ MB/s) on high-speed internet connections.
+- **SourceForge & Protected Platform Support**: Fixed CDN connection throttles and Range probe handling for protected platforms like `sourceforge.net`.
 
 ## [0.6.3] – 2026-08-06
 

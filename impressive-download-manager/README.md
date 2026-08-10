@@ -1,6 +1,6 @@
-# Impressive Download Manager (IDM) 🚀 `v0.6.6`
+# Impressive Download Manager (IDM) 🚀 `v0.7.0`
 
-**Impressive Download Manager** is a state-of-the-art, multi-threaded open-source download manager engineered for maximum speed, instant UI responsiveness, and rock-solid reliability. Powered by **Rust**, **Tauri v2**, and **React**, it provides a sleek, modern alternative to classic desktop download managers like IDM and XDM.
+**Impressive Download Manager** is a state-of-the-art, multi-threaded open-source download manager engineered for maximum speed, instant UI responsiveness, and rock-solid reliability. Powered by **Rust**, **Tauri v2**, and **React**, it provides a sleek, modern, ultra-fast desktop downloading experience.
 
 ---
 
