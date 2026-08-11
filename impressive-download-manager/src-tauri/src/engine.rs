@@ -769,7 +769,6 @@ impl DownloadManager {
                                         Some(Ok(bytes)) => {
                                             retry_count = 0;
                                             let mut bytes_to_add = bytes.as_ref();
-                                            task_clone.network_downloaded.fetch_add(bytes_to_add.len() as u64, Ordering::Relaxed);
 
                                             // Re-evaluate end in case of dynamic split
                                             let dynamic_end = chunk.end.load(Ordering::SeqCst);
@@ -794,6 +793,7 @@ impl DownloadManager {
                                                 }
                                             }
 
+                                            task_clone.network_downloaded.fetch_add(bytes_to_add.len() as u64, Ordering::Relaxed);
                                             net_buffer.extend_from_slice(bytes_to_add);
 
                                             let limit_bps = manager_for_worker.speed_limit_bps.load(Ordering::Relaxed);
@@ -852,6 +852,11 @@ impl DownloadManager {
                     // net_buffer is already guaranteed empty when breaking loop, 
                     // or flushed before break, because we replaced tx_clone with file.write_all
                     
+                    let final_dl = chunk.downloaded.load(Ordering::SeqCst);
+                    let chunk_path = temp_dir_clone.join(&chunk_id);
+                    if let Ok(f) = tokio::fs::OpenOptions::new().write(true).open(&chunk_path).await {
+                        f.set_len(final_dl).await.ok();
+                    }
                     chunk.active.store(false, Ordering::SeqCst);
                     let _ = completed_tx.send(chunk_id);
                 });
@@ -887,7 +892,6 @@ impl DownloadManager {
             let total_size_val = task.total_size.load(Ordering::Relaxed);
             
             let is_success = (total_size_val > 0 && downloaded_bytes >= total_size_val)
-                || (total_size_val > 0 && downloaded_bytes > 0 && ((downloaded_bytes as f64) / (total_size_val as f64)) >= 0.995)
                 || (total_size_val == 0 && downloaded_bytes > 0);
 
             if is_success {
@@ -930,10 +934,22 @@ impl DownloadManager {
                         if let Ok(mut part_file) = std::fs::File::open(&part_path) {
                             use std::io::Read;
                             use std::io::Write;
-                            loop {
-                                let n = part_file.read(&mut buf).map_err(|e| format!("Read part err: {}", e))?;
+                            
+                            let downloaded = chunk.downloaded.load(Ordering::SeqCst);
+                            let chunk_end = chunk.end.load(Ordering::SeqCst);
+                            let expected_len = if chunk_end >= chunk.start {
+                                (chunk_end - chunk.start + 1).min(downloaded)
+                            } else {
+                                downloaded
+                            };
+
+                            let mut remaining_to_read = expected_len;
+                            while remaining_to_read > 0 {
+                                let to_read = (remaining_to_read as usize).min(buf.len());
+                                let n = part_file.read(&mut buf[..to_read]).map_err(|e| format!("Read part err: {}", e))?;
                                 if n == 0 { break; }
                                 out_file.write_all(&buf[..n]).map_err(|e| format!("Write final err: {}", e))?;
+                                remaining_to_read -= n as u64;
                             }
                         }
                     }

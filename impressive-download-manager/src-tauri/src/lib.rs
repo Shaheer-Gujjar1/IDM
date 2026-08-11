@@ -162,7 +162,28 @@ async fn open_file_dir(path: String) -> Result<(), String> {
     {
         let path_clone = path.clone();
         let _ = tokio::task::spawn_blocking(move || {
-            // Nautilus (GNOME) — selects the file
+            let abs_path = std::path::Path::new(&path_clone);
+            let file_uri = format!("file://{}", abs_path.to_string_lossy());
+
+            // 1. Freedesktop DBus FileManager1 (Highlights file in Nautilus, Dolphin, Nemo, Thunar, PCManFM, etc.)
+            if let Ok(mut child) = std::process::Command::new("dbus-send")
+                .args([
+                    "--session",
+                    "--dest=org.freedesktop.FileManager1",
+                    "/org/freedesktop/FileManager1",
+                    "org.freedesktop.FileManager1.ShowItems",
+                    &format!("array:string:{}", file_uri),
+                    "string:",
+                ])
+                .spawn()
+            {
+                if let Ok(status) = child.wait() {
+                    if status.success() {
+                        return;
+                    }
+                }
+            }
+            // 2. Nautilus (GNOME) — selects the file
             if std::process::Command::new("nautilus")
                 .args(["--select", &path_clone])
                 .spawn()
@@ -170,7 +191,7 @@ async fn open_file_dir(path: String) -> Result<(), String> {
             {
                 return;
             }
-            // Dolphin (KDE) — selects the file
+            // 3. Dolphin (KDE) — selects the file
             if std::process::Command::new("dolphin")
                 .args(["--select", &path_clone])
                 .spawn()
@@ -178,7 +199,7 @@ async fn open_file_dir(path: String) -> Result<(), String> {
             {
                 return;
             }
-            // Nemo (Cinnamon) — opens and highlights
+            // 4. Nemo (Cinnamon) — opens and highlights
             if std::process::Command::new("nemo")
                 .arg(&path_clone)
                 .spawn()
@@ -186,7 +207,7 @@ async fn open_file_dir(path: String) -> Result<(), String> {
             {
                 return;
             }
-            // Generic fallback: open parent directory
+            // 5. Generic fallback: open parent directory
             if let Some(parent) = std::path::Path::new(&path_clone).parent() {
                 let _ = std::process::Command::new("xdg-open")
                     .arg(parent)
@@ -197,8 +218,9 @@ async fn open_file_dir(path: String) -> Result<(), String> {
     }
     #[cfg(target_os = "windows")]
     {
-        // /select, highlights the exact file in Explorer
-        let arg = format!("/select,{}", path);
+        // /select, highlights the exact file in Windows Explorer
+        let win_path = path.replace('/', "\\");
+        let arg = format!("/select,\"{}\"", win_path);
         let _ = std::process::Command::new("explorer").arg(arg).spawn();
     }
     #[cfg(target_os = "macos")]

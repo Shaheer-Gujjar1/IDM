@@ -1,5 +1,11 @@
 # CHANGELOG
 
+## [0.7.1] – 2026-08-11 (Commit Reference Tag: `e1c0cb669f42a9cd4d2b0d31c2d9724fca6e958c`)
+
+### Fixed
+- **Virtual Time Speed Limiter Refactor (Commit: `e1c0cb6`)**: Refactored `TaskSpeedLimiter` to a Virtual Time / Leaky Bucket design using async Tokio Mutex serialization. Enforces strict rate caps without overshooting (capped at 99.5% with UI display clamping), prevents download speed drops when limiter is inactive, and ensures clean task resumption. If speed throttling behavior is ever questioned in the future, reference Git commit [`e1c0cb669f42a9cd4d2b0d31c2d9724fca6e958c`](https://github.com/Shaheer-Gujjar1/IDM/commit/e1c0cb669f42a9cd4d2b0d31c2d9724fca6e958c).
+- **Exact File Highlighting in File Managers**: Upgraded `open_file_dir` command across Linux, Windows, and macOS. Uses Freedesktop `org.freedesktop.FileManager1.ShowItems` DBus interface on Linux and backslash-normalized path strings on Windows Explorer (`explorer /select,"..."`) to highlight and select the exact file in Nautilus, Dolphin, Nemo, Thunar, and Windows Explorer rather than just opening the container directory.
+
 ## [0.7.0] – 2026-08-10
 
 ### Added
