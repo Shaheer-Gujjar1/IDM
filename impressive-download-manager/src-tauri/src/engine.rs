@@ -61,6 +61,12 @@ pub struct DownloadProgress {
     pub speed_limited: bool,
 }
 
+#[derive(Debug)]
+pub struct TaskSpeedLimiter {
+    pub last_bytes: u64,
+    pub last_tick: Instant,
+}
+
 pub struct DownloadTask {
     pub id: String,
     pub original_url: String,
@@ -73,11 +79,52 @@ pub struct DownloadTask {
     pub total_size: AtomicU64,
     pub downloaded: Arc<AtomicU64>,
     pub network_downloaded: Arc<AtomicU64>,
+    pub speed_limiter: Mutex<TaskSpeedLimiter>,
     pub status: Arc<std::sync::Mutex<DownloadStatus>>,
     pub abort_tx: Option<broadcast::Sender<()>>,
     pub chunks: std::sync::Mutex<Vec<ActiveChunk>>,
     pub speed: Arc<std::sync::Mutex<f64>>,
     pub eta: Arc<std::sync::Mutex<String>>,
+}
+
+impl DownloadTask {
+    pub async fn throttle_if_needed(&self, limit_bps: u64) {
+        if limit_bps == 0 {
+            return;
+        }
+
+        let mut limiter = self.speed_limiter.lock().await;
+        
+        let current_bytes = self.network_downloaded.load(Ordering::Relaxed);
+        
+        if limiter.last_bytes == 0 {
+            limiter.last_bytes = current_bytes;
+            limiter.last_tick = Instant::now();
+            return;
+        }
+
+        let now = Instant::now();
+        let actual_time_spent = now.duration_since(limiter.last_tick).as_secs_f64();
+        if actual_time_spent < 0.001 {
+            return;
+        }
+
+        let diff = current_bytes.saturating_sub(limiter.last_bytes);
+        
+        // expected time in seconds = diff / limit_bps
+        let expected_time_spent = diff as f64 / limit_bps as f64;
+
+        if actual_time_spent < expected_time_spent {
+            let sleep_duration = Duration::from_secs_f64(expected_time_spent - actual_time_spent);
+            tokio::time::sleep(sleep_duration).await;
+            
+            limiter.last_bytes = self.network_downloaded.load(Ordering::Relaxed);
+            limiter.last_tick = Instant::now();
+        } else {
+            limiter.last_bytes = current_bytes;
+            limiter.last_tick = now;
+        }
+    }
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
@@ -229,6 +276,10 @@ impl DownloadManager {
                                 total_size: AtomicU64::new(p_task.total_size),
                                 downloaded: Arc::new(AtomicU64::new(p_task.downloaded)),
                                 network_downloaded: Arc::new(AtomicU64::new(p_task.downloaded)),
+                                speed_limiter: Mutex::new(TaskSpeedLimiter {
+                                    last_bytes: p_task.downloaded,
+                                    last_tick: Instant::now(),
+                                }),
                                 status: Arc::new(std::sync::Mutex::new(status)),
                                 abort_tx: None,
                                 chunks: std::sync::Mutex::new(active_chunks),
@@ -309,6 +360,10 @@ impl DownloadManager {
             total_size: AtomicU64::new(total_size),
             downloaded: Arc::new(AtomicU64::new(0)),
             network_downloaded: Arc::new(AtomicU64::new(0)),
+            speed_limiter: Mutex::new(TaskSpeedLimiter {
+                last_bytes: 0,
+                last_tick: Instant::now(),
+            }),
             status: Arc::new(std::sync::Mutex::new(DownloadStatus::Queued)),
             abort_tx: Some(abort_tx),
             chunks: std::sync::Mutex::new(vec![]),
@@ -342,9 +397,6 @@ impl DownloadManager {
             let _ = tokio::fs::create_dir_all(parent).await;
         }
 
-        let file_exists = tokio::fs::metadata(&task.save_path).await.is_ok();
-        let should_initialize = is_new || !file_exists || task.chunks.lock().unwrap().is_empty();
-
         let total_size_val = task.total_size.load(Ordering::Relaxed);
 
         let temp_dir = {
@@ -358,6 +410,10 @@ impl DownloadManager {
                 std::path::PathBuf::from(format!("./temp/{}", task.id))
             }
         };
+
+        let temp_dir_exists = temp_dir.exists();
+        let chunks_empty = task.chunks.lock().unwrap().is_empty();
+        let should_initialize = is_new || chunks_empty || !temp_dir_exists;
 
         if should_initialize {
             task.downloaded.store(0, Ordering::Relaxed);
@@ -634,8 +690,6 @@ impl DownloadManager {
                     let max_retries: u32 = 20;
                     let mut retry_count: u32 = 0;
                     
-                    let mut limiter_window_start = Instant::now();
-                    let mut limiter_window_bytes = 0u64;
                     let mut net_buffer = Vec::with_capacity(256 * 1024);
 
                     'reconnect: loop {
@@ -711,7 +765,16 @@ impl DownloadManager {
                             tokio::select! {
                                 biased;
                                 res = worker_abort_rx.recv() => {
-                                    if res.is_ok() { break 'reconnect; }
+                                    if res.is_ok() {
+                                        if !net_buffer.is_empty() {
+                                            let flushed = std::mem::replace(&mut net_buffer, Vec::with_capacity(1024 * 1024));
+                                            if let Ok(_) = file.write_all(&flushed).await {
+                                                chunk.downloaded.fetch_add(flushed.len() as u64, Ordering::SeqCst);
+                                                downloaded_counter_clone.fetch_add(flushed.len() as u64, Ordering::Relaxed);
+                                            }
+                                        }
+                                        break 'reconnect;
+                                    }
                                 }
                                 bytes_chunk_res = tokio::time::timeout(Duration::from_secs(15), stream.next()) => {
                                     let bytes_chunk = match bytes_chunk_res {
@@ -759,31 +822,8 @@ impl DownloadManager {
 
                                             net_buffer.extend_from_slice(bytes_to_add);
 
-                                            // Shared token bucket speed limit
                                             let limit_bps = manager_for_worker.speed_limit_bps.load(Ordering::Relaxed);
-                                            if limit_bps > 0 {
-                                                let mut active_count = 1;
-                                                for c in task_clone.chunks.lock().unwrap().iter() {
-                                                    if c.active.load(Ordering::Relaxed) { active_count += 1; }
-                                                }
-                                                let per_worker_limit = (limit_bps / (active_count as u64)).max(1024);
-                                                
-                                                limiter_window_bytes += bytes_to_add.len() as u64;
-                                                let elapsed_sec = limiter_window_start.elapsed().as_secs_f64();
-                                                let allowed_bytes = (per_worker_limit as f64 * elapsed_sec) as u64;
-                                                
-                                                if limiter_window_bytes > allowed_bytes {
-                                                    let excess = limiter_window_bytes - allowed_bytes;
-                                                    let sleep_sec = excess as f64 / per_worker_limit as f64;
-                                                    if sleep_sec >= 0.002 {
-                                                        tokio::time::sleep(Duration::from_secs_f64(sleep_sec.min(0.5))).await;
-                                                    }
-                                                }
-                                                if elapsed_sec >= 0.5 {
-                                                    limiter_window_start = Instant::now();
-                                                    limiter_window_bytes = 0;
-                                                }
-                                            }
+                                            task_clone.throttle_if_needed(limit_bps).await;
 
                                             if net_buffer.len() >= 1024 * 1024 { // 1MB buffer
                                                 let flushed = std::mem::replace(&mut net_buffer, Vec::with_capacity(1024 * 1024));
@@ -959,7 +999,7 @@ impl DownloadManager {
             filename: task.filename.clone(),
             save_path: task.save_path.clone(),
             total_size: task.total_size.load(Ordering::Relaxed),
-            downloaded: task.downloaded.load(Ordering::Relaxed),
+            downloaded: task.network_downloaded.load(Ordering::Relaxed),
             speed: 0.0,
             eta: "0s".to_string(),
             status: final_status,
@@ -991,7 +1031,7 @@ impl DownloadManager {
                 filename: task.filename.clone(),
                 save_path: task.save_path.clone(),
                 total_size: task.total_size.load(Ordering::Relaxed),
-                downloaded: task.downloaded.load(Ordering::Relaxed),
+                downloaded: task.network_downloaded.load(Ordering::Relaxed),
                 speed: 0.0,
                 eta: "---".to_string(),
                 status: DownloadStatus::Paused,
@@ -1040,6 +1080,10 @@ impl DownloadManager {
                 total_size: AtomicU64::new(task.total_size.load(Ordering::Relaxed)),
                 downloaded: task.downloaded.clone(),
                 network_downloaded: Arc::new(AtomicU64::new(task.downloaded.load(Ordering::Relaxed))),
+                speed_limiter: Mutex::new(TaskSpeedLimiter {
+                    last_bytes: task.downloaded.load(Ordering::Relaxed),
+                    last_tick: Instant::now(),
+                }),
                 status: task.status.clone(),
                 abort_tx: Some(abort_tx),
                 chunks: std::sync::Mutex::new(chunks_clone),
@@ -1080,7 +1124,7 @@ impl DownloadManager {
                 filename: task.filename.clone(),
                 save_path: task.save_path.clone(),
                 total_size: task.total_size.load(Ordering::Relaxed),
-                downloaded: task.downloaded.load(Ordering::Relaxed),
+                downloaded: task.network_downloaded.load(Ordering::Relaxed),
                 speed: 0.0,
                 eta: "Paused".to_string(),
                 status: DownloadStatus::Paused,
@@ -1135,7 +1179,7 @@ impl DownloadManager {
                 filename: task.filename.clone(),
                 save_path: task.save_path.clone(),
                 total_size: task.total_size.load(Ordering::Relaxed),
-                downloaded: task.downloaded.load(Ordering::Relaxed),
+                downloaded: task.network_downloaded.load(Ordering::Relaxed),
                 speed: 0.0,
                 eta: "---".to_string(),
                 status: DownloadStatus::Trash,
@@ -1178,7 +1222,7 @@ impl DownloadManager {
                 filename: task.filename.clone(),
                 save_path: task.save_path.clone(),
                 total_size: task.total_size.load(Ordering::Relaxed),
-                downloaded: task.downloaded.load(Ordering::Relaxed),
+                downloaded: task.network_downloaded.load(Ordering::Relaxed),
                 speed: 0.0,
                 eta: "---".to_string(),
                 status: final_status,
@@ -1221,6 +1265,10 @@ impl DownloadManager {
                 total_size: AtomicU64::new(task.total_size.load(Ordering::Relaxed)),
                 downloaded: Arc::new(AtomicU64::new(0)),
                 network_downloaded: Arc::new(AtomicU64::new(0)),
+                speed_limiter: Mutex::new(TaskSpeedLimiter {
+                    last_bytes: 0,
+                    last_tick: Instant::now(),
+                }),
                 status: Arc::new(std::sync::Mutex::new(DownloadStatus::Queued)),
                 abort_tx: Some(abort_tx),
                 chunks: std::sync::Mutex::new(vec![]),
@@ -1249,7 +1297,7 @@ impl DownloadManager {
     pub async fn get_progress(&self, id: &str) -> Option<DownloadProgress> {
         let tasks = self.tasks.read().await;
         if let Some(task) = tasks.get(id) {
-            let current_bytes = task.downloaded.load(Ordering::Relaxed);
+            let current_bytes = task.network_downloaded.load(Ordering::Relaxed);
             let speed = *task.speed.lock().unwrap();
             let eta = task.eta.lock().unwrap().clone();
             let status = task.status.lock().unwrap().clone();
@@ -1279,7 +1327,7 @@ impl DownloadManager {
         let mut list = vec![];
         let current_limit = self.speed_limit_bps.load(Ordering::Relaxed);
         for task in tasks.values() {
-            let current_bytes = task.downloaded.load(Ordering::Relaxed);
+            let current_bytes = task.network_downloaded.load(Ordering::Relaxed);
             let status = task.status.lock().unwrap().clone();
             let speed = *task.speed.lock().unwrap();
             let eta = task.eta.lock().unwrap().clone();

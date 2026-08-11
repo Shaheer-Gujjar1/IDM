@@ -146,6 +146,7 @@ async fn refresh_download_link(
         )
         .title("Refreshing Link...")
         .inner_size(520.0, 300.0)
+        .center()
         .build()
         .map_err(|e| e.to_string())?;
         
@@ -340,6 +341,7 @@ async fn open_progress_window(app_handle: tauri::AppHandle, id: String) -> Resul
     )
     .title("Downloading...")
     .inner_size(520.0, 340.0)
+    .center()
     .build()
     .map_err(|e| e.to_string())?;
 
@@ -366,6 +368,7 @@ async fn open_complete_window(app_handle: tauri::AppHandle, filename: String, sa
     )
     .title("Download Finished")
     .inner_size(520.0, 360.0)
+    .center()
     .build()
     .map_err(|e| e.to_string())?;
 
@@ -419,6 +422,7 @@ async fn resume_and_open_progress(
         )
         .title("Downloading...")
         .inner_size(520.0, 340.0)
+        .center()
         .build()
         .map_err(|e| e.to_string())?;
     }
@@ -460,6 +464,7 @@ async fn redownload_and_open_progress(
         )
         .title("Downloading...")
         .inner_size(520.0, 340.0)
+        .center()
         .build()
         .map_err(|e| e.to_string())?;
     }
@@ -830,6 +835,10 @@ pub fn run() {
                                                         total_size: std::sync::atomic::AtomicU64::new(task.total_size.load(std::sync::atomic::Ordering::Relaxed)),
                                                         downloaded: task.downloaded.clone(),
                                                         network_downloaded: std::sync::Arc::new(std::sync::atomic::AtomicU64::new(task.downloaded.load(std::sync::atomic::Ordering::Relaxed))),
+                                                        speed_limiter: tokio::sync::Mutex::new(engine::TaskSpeedLimiter {
+                                                            last_bytes: task.downloaded.load(std::sync::atomic::Ordering::Relaxed),
+                                                            last_tick: std::time::Instant::now(),
+                                                        }),
                                                         status: std::sync::Arc::new(std::sync::Mutex::new(engine::DownloadStatus::Paused)),
                                                         abort_tx: None,
                                                         chunks: std::sync::Mutex::new(task.chunks.lock().unwrap().clone()),
@@ -854,6 +863,7 @@ pub fn run() {
                                             )
                                             .title("Downloading...")
                                             .inner_size(520.0, 340.0)
+                                            .center()
                                             .build();
 
                                             let response = "HTTP/1.1 200 OK\r\n\
@@ -882,6 +892,7 @@ pub fn run() {
                                         )
                                         .title("New Download Captured")
                                         .inner_size(520.0, 370.0)
+                                        .center()
                                         .build();
                                         
                                         let response = "HTTP/1.1 200 OK\r\n\

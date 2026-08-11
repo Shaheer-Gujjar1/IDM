@@ -21,7 +21,7 @@
         "maximizable": true,
         "minimizable": true,
         "closable": true,
-        "center": false
+        "center": true
       }
     ],
     "security": {

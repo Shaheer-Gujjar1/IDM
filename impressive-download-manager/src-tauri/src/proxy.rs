@@ -240,6 +240,7 @@ async fn handle_http_passthrough(
             )
             .title("New Download Captured")
             .inner_size(520.0, 370.0)
+            .center()
             .build();
         }
 

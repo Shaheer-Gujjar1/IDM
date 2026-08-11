@@ -2224,34 +2224,34 @@ function App() {
 
             <div style={{ display: "flex", flexDirection: "column", gap: "10px" }}>
               <div className="celebration-feature-card">
+                <Layers size={20} style={{ color: "var(--accent-cyan)", flexShrink: 0, marginTop: "2px" }} />
+                <div>
+                  <div style={{ fontWeight: 800, fontSize: "0.92rem", color: "var(--text-primary)" }}>Isolated Part File Architecture</div>
+                  <div style={{ fontSize: "0.82rem", color: "var(--text-secondary)", marginTop: "2px" }}>Segmented per-chunk temporary storage written independently to prevent thread-lock contention and random disk seek overhead.</div>
+                </div>
+              </div>
+
+              <div className="celebration-feature-card">
+                <RefreshCw size={20} style={{ color: "var(--accent-cyan)", flexShrink: 0, marginTop: "2px" }} />
+                <div>
+                  <div style={{ fontWeight: 800, fontSize: "0.92rem", color: "var(--text-primary)" }}>Post-Download File Assembly</div>
+                  <div style={{ fontSize: "0.82rem", color: "var(--text-secondary)", marginTop: "2px" }}>Sequential fast file-merging phase with automatic background temporary file cleanup upon 100% download completion.</div>
+                </div>
+              </div>
+
+              <div className="celebration-feature-card">
+                <Activity size={20} style={{ color: "var(--accent-cyan)", flexShrink: 0, marginTop: "2px" }} />
+                <div>
+                  <div style={{ fontWeight: 800, fontSize: "0.92rem", color: "var(--text-primary)" }}>Real-Time Progress Streams</div>
+                  <div style={{ fontSize: "0.82rem", color: "var(--text-secondary)", marginTop: "2px" }}>Continuous progress updates reflecting live network byte streams rather than jumping in 1MB disk-flush ticks.</div>
+                </div>
+              </div>
+
+              <div className="celebration-feature-card">
                 <Zap size={20} style={{ color: "var(--accent-cyan)", flexShrink: 0, marginTop: "2px" }} />
                 <div>
-                  <div style={{ fontWeight: 800, fontSize: "0.92rem", color: "var(--text-primary)" }}>Full Wire-Speed Download Engine</div>
-                  <div style={{ fontSize: "0.82rem", color: "var(--text-secondary)", marginTop: "2px" }}>Multi-threaded connection engine with zero lock contention and TCP socket nodelay tuning for maximum throughput.</div>
-                </div>
-              </div>
-
-              <div className="celebration-feature-card">
-                <Clock size={20} style={{ color: "var(--accent-cyan)", flexShrink: 0, marginTop: "2px" }} />
-                <div>
-                  <div style={{ fontWeight: 800, fontSize: "0.92rem", color: "var(--text-primary)" }}>Instant Popup Capture (&lt; 50ms)</div>
-                  <div style={{ fontSize: "0.82rem", color: "var(--text-secondary)", marginTop: "2px" }}>Download popups open instantly while network HEAD probes and 302 redirect tracking run asynchronously in background.</div>
-                </div>
-              </div>
-
-              <div className="celebration-feature-card">
-                <Gauge size={20} style={{ color: "var(--accent-cyan)", flexShrink: 0, marginTop: "2px" }} />
-                <div>
-                  <div style={{ fontWeight: 800, fontSize: "0.92rem", color: "var(--text-primary)" }}>Precision Bandwidth Limiter</div>
-                  <div style={{ fontSize: "0.82rem", color: "var(--text-secondary)", marginTop: "2px" }}>Free text speed entry + KB/s, MB/s, GB/s unit selector dropdown & token bucket sliding window algorithm.</div>
-                </div>
-              </div>
-
-              <div className="celebration-feature-card">
-                <ShieldCheck size={20} style={{ color: "var(--accent-cyan)", flexShrink: 0, marginTop: "2px" }} />
-                <div>
-                  <div style={{ fontWeight: 800, fontSize: "0.92rem", color: "var(--text-primary)" }}>Protected Auto-Restart Queue</div>
-                  <div style={{ fontSize: "0.82rem", color: "var(--text-secondary)", marginTop: "2px" }}>Updates download seamlessly in background and automatically queue restart until active downloads complete.</div>
+                  <div style={{ fontWeight: 800, fontSize: "0.92rem", color: "var(--text-primary)" }}>Wire-Speed Throughput & Protection</div>
+                  <div style={{ fontSize: "0.82rem", color: "var(--text-secondary)", marginTop: "2px" }}>Tuned piece-splitting limits and 15s stream timeouts to sustain peak bandwidth and eliminate flatline speed drops.</div>
                 </div>
               </div>
             </div>
