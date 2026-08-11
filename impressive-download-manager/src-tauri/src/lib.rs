@@ -835,10 +835,7 @@ pub fn run() {
                                                         total_size: std::sync::atomic::AtomicU64::new(task.total_size.load(std::sync::atomic::Ordering::Relaxed)),
                                                         downloaded: task.downloaded.clone(),
                                                         network_downloaded: std::sync::Arc::new(std::sync::atomic::AtomicU64::new(task.downloaded.load(std::sync::atomic::Ordering::Relaxed))),
-                                                        speed_limiter: tokio::sync::Mutex::new(engine::TaskSpeedLimiter {
-                                                            last_bytes: task.downloaded.load(std::sync::atomic::Ordering::Relaxed),
-                                                            last_tick: std::time::Instant::now(),
-                                                        }),
+                                                        speed_limiter: tokio::sync::Mutex::new(std::time::Instant::now()),
                                                         status: std::sync::Arc::new(std::sync::Mutex::new(engine::DownloadStatus::Paused)),
                                                         abort_tx: None,
                                                         chunks: std::sync::Mutex::new(task.chunks.lock().unwrap().clone()),

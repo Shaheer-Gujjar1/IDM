@@ -61,12 +61,6 @@ pub struct DownloadProgress {
     pub speed_limited: bool,
 }
 
-#[derive(Debug)]
-pub struct TaskSpeedLimiter {
-    pub last_bytes: u64,
-    pub last_tick: Instant,
-}
-
 pub struct DownloadTask {
     pub id: String,
     pub original_url: String,
@@ -79,7 +73,7 @@ pub struct DownloadTask {
     pub total_size: AtomicU64,
     pub downloaded: Arc<AtomicU64>,
     pub network_downloaded: Arc<AtomicU64>,
-    pub speed_limiter: Mutex<TaskSpeedLimiter>,
+    pub speed_limiter: Mutex<Instant>,
     pub status: Arc<std::sync::Mutex<DownloadStatus>>,
     pub abort_tx: Option<broadcast::Sender<()>>,
     pub chunks: std::sync::Mutex<Vec<ActiveChunk>>,
@@ -88,41 +82,28 @@ pub struct DownloadTask {
 }
 
 impl DownloadTask {
-    pub async fn throttle_if_needed(&self, limit_bps: u64) {
-        if limit_bps == 0 {
+    pub async fn throttle_if_needed(&self, bytes_len: u64, limit_bps: u64) {
+        if limit_bps == 0 || bytes_len == 0 {
             return;
         }
 
-        let mut limiter = self.speed_limiter.lock().await;
-        
-        let current_bytes = self.network_downloaded.load(Ordering::Relaxed);
-        
-        if limiter.last_bytes == 0 {
-            limiter.last_bytes = current_bytes;
-            limiter.last_tick = Instant::now();
-            return;
-        }
+        // Target cap at 99.5% to guarantee measured UI speed never touches or exceeds limit
+        let target_bps = (limit_bps as f64 * 0.995).max(1.0);
 
+        let mut virtual_time = self.speed_limiter.lock().await;
         let now = Instant::now();
-        let actual_time_spent = now.duration_since(limiter.last_tick).as_secs_f64();
-        if actual_time_spent < 0.001 {
-            return;
-        }
-
-        let diff = current_bytes.saturating_sub(limiter.last_bytes);
         
-        // expected time in seconds = diff / limit_bps
-        let expected_time_spent = diff as f64 / limit_bps as f64;
-
-        if actual_time_spent < expected_time_spent {
-            let sleep_duration = Duration::from_secs_f64(expected_time_spent - actual_time_spent);
-            tokio::time::sleep(sleep_duration).await;
-            
-            limiter.last_bytes = self.network_downloaded.load(Ordering::Relaxed);
-            limiter.last_tick = Instant::now();
-        } else {
-            limiter.last_bytes = current_bytes;
-            limiter.last_tick = now;
+        if *virtual_time < now {
+            *virtual_time = now;
+        }
+        
+        let duration = Duration::from_secs_f64(bytes_len as f64 / target_bps);
+        *virtual_time += duration;
+        
+        if let Some(sleep_duration) = virtual_time.checked_duration_since(now) {
+            if !sleep_duration.is_zero() {
+                tokio::time::sleep(sleep_duration).await;
+            }
         }
     }
 }
@@ -276,10 +257,7 @@ impl DownloadManager {
                                 total_size: AtomicU64::new(p_task.total_size),
                                 downloaded: Arc::new(AtomicU64::new(p_task.downloaded)),
                                 network_downloaded: Arc::new(AtomicU64::new(p_task.downloaded)),
-                                speed_limiter: Mutex::new(TaskSpeedLimiter {
-                                    last_bytes: p_task.downloaded,
-                                    last_tick: Instant::now(),
-                                }),
+                                speed_limiter: Mutex::new(Instant::now()),
                                 status: Arc::new(std::sync::Mutex::new(status)),
                                 abort_tx: None,
                                 chunks: std::sync::Mutex::new(active_chunks),
@@ -360,10 +338,7 @@ impl DownloadManager {
             total_size: AtomicU64::new(total_size),
             downloaded: Arc::new(AtomicU64::new(0)),
             network_downloaded: Arc::new(AtomicU64::new(0)),
-            speed_limiter: Mutex::new(TaskSpeedLimiter {
-                last_bytes: 0,
-                last_tick: Instant::now(),
-            }),
+            speed_limiter: Mutex::new(Instant::now()),
             status: Arc::new(std::sync::Mutex::new(DownloadStatus::Queued)),
             abort_tx: Some(abort_tx),
             chunks: std::sync::Mutex::new(vec![]),
@@ -458,7 +433,6 @@ impl DownloadManager {
         let id_clone = task.id.clone();
         let filename_clone = task.filename.clone();
         let save_path_clone = task.save_path.clone();
-        let downloaded_counter = task.downloaded.clone();
         let status_ref = task.status.clone();
         let mut abort_rx = abort_tx.subscribe();
         let app_handle_opt = self.app_handle.lock().await.clone();
@@ -472,7 +446,7 @@ impl DownloadManager {
         tokio::spawn(async move {
             let mut interval = tokio::time::interval(Duration::from_millis(800));
             let mut samples: std::collections::VecDeque<(u64, Instant)> = std::collections::VecDeque::with_capacity(4);
-            samples.push_back((downloaded_counter.load(Ordering::Relaxed), Instant::now()));
+            samples.push_back((task_for_reporting.network_downloaded.load(Ordering::Relaxed), Instant::now()));
             let mut save_ticks = 0;
 
             loop {
@@ -492,8 +466,11 @@ impl DownloadManager {
                             if duration > 0.0 { current_bytes.saturating_sub(*old_bytes) as f64 / duration } else { 0.0 }
                         } else { 0.0 };
 
+                        let current_limit = manager_for_reporting.speed_limit_bps.load(Ordering::Relaxed);
+                        let is_speed_limited = current_limit > 0 && raw_speed > 0.0;
+                        let speed = if current_limit > 0 { raw_speed.min(current_limit as f64) } else { raw_speed };
+
                         let mut speed_guard = task_speed.lock().unwrap();
-                        let speed = raw_speed;
                         *speed_guard = speed;
 
                         let current_total_size = task_for_reporting.total_size.load(Ordering::Relaxed);
@@ -514,9 +491,6 @@ impl DownloadManager {
 
                         let status = status_ref.lock().unwrap().clone();
                         *task_eta.lock().unwrap() = eta.clone();
-
-                        let current_limit = manager_for_reporting.speed_limit_bps.load(Ordering::Relaxed);
-                        let is_speed_limited = current_limit > 0 && speed > 0.0;
 
                         let progress = DownloadProgress {
                             id: id_clone.clone(),
@@ -823,7 +797,7 @@ impl DownloadManager {
                                             net_buffer.extend_from_slice(bytes_to_add);
 
                                             let limit_bps = manager_for_worker.speed_limit_bps.load(Ordering::Relaxed);
-                                            task_clone.throttle_if_needed(limit_bps).await;
+                                            task_clone.throttle_if_needed(bytes_to_add.len() as u64, limit_bps).await;
 
                                             if net_buffer.len() >= 1024 * 1024 { // 1MB buffer
                                                 let flushed = std::mem::replace(&mut net_buffer, Vec::with_capacity(1024 * 1024));
@@ -1080,10 +1054,7 @@ impl DownloadManager {
                 total_size: AtomicU64::new(task.total_size.load(Ordering::Relaxed)),
                 downloaded: task.downloaded.clone(),
                 network_downloaded: Arc::new(AtomicU64::new(task.downloaded.load(Ordering::Relaxed))),
-                speed_limiter: Mutex::new(TaskSpeedLimiter {
-                    last_bytes: task.downloaded.load(Ordering::Relaxed),
-                    last_tick: Instant::now(),
-                }),
+                speed_limiter: Mutex::new(Instant::now()),
                 status: task.status.clone(),
                 abort_tx: Some(abort_tx),
                 chunks: std::sync::Mutex::new(chunks_clone),
@@ -1265,10 +1236,7 @@ impl DownloadManager {
                 total_size: AtomicU64::new(task.total_size.load(Ordering::Relaxed)),
                 downloaded: Arc::new(AtomicU64::new(0)),
                 network_downloaded: Arc::new(AtomicU64::new(0)),
-                speed_limiter: Mutex::new(TaskSpeedLimiter {
-                    last_bytes: 0,
-                    last_tick: Instant::now(),
-                }),
+                speed_limiter: Mutex::new(Instant::now()),
                 status: Arc::new(std::sync::Mutex::new(DownloadStatus::Queued)),
                 abort_tx: Some(abort_tx),
                 chunks: std::sync::Mutex::new(vec![]),
