@@ -1934,7 +1934,7 @@ function App() {
                                 </button>
                               )}
                               <button className="hover-action-btn danger" onClick={(e) => { e.stopPropagation(); promptRemoveTask(e, d); }} onMouseEnter={(e) => showTooltip("Delete", e, "top")} onMouseLeave={hideTooltip}>
-                                <X size={16} />
+                                <Trash2 size={16} />
                               </button>
                             </>
                           )}
@@ -1980,7 +1980,6 @@ function App() {
                 <span className="form-label-v2">Save Filename</span>
                 <input
                   type="text"
-                  placeholder="Enter filename..."
                   className="spotlight-input"
                   value={customFilename}
                   onChange={(e) => setCustomFilename(e.target.value)}
@@ -1988,29 +1987,30 @@ function App() {
               </div>
 
               <div className="form-group-v2">
-                <span className="form-label-v2">Save Location</span>
-                <div style={{ display: "flex", gap: "12px" }}>
+                <span className="form-label-v2">Save Path</span>
+                <div style={{ display: "flex", gap: "8px" }}>
                   <input
                     type="text"
-                    placeholder="Enter directory path..."
                     className="spotlight-input"
                     value={savePath}
                     onChange={(e) => setSavePath(e.target.value)}
+                    style={{ flex: 1 }}
                   />
-                  <button className="hover-action-btn" style={{ width: "auto", padding: "0 20px" }} onClick={handlePickFolder}>Browse</button>
+                  <button className="hover-action-btn" style={{ padding: "0 16px", borderRadius: "12px" }} onClick={handlePickFolder}>
+                    Browse
+                  </button>
                 </div>
               </div>
             </div>
 
-            <div className="modal-actions-v2">
-              <button className="hover-action-btn" style={{ width: "auto", padding: "0 24px" }} onClick={() => setShowAddModal(false)}>
+            <div className="modal-footer-v2">
+              <button className="hover-action-btn" style={{ padding: "10px 20px", borderRadius: "12px" }} onClick={() => setShowAddModal(false)}>
                 Cancel
               </button>
               <button
-                className="accent-pill"
-                style={{ padding: "12px 32px", borderRadius: "100px", fontWeight: 700, fontSize: "1rem" }}
+                className="hover-action-btn success"
+                style={{ padding: "10px 24px", borderRadius: "12px", background: "var(--accent-cyan)", color: "#000", fontWeight: 700 }}
                 onClick={handleStartDownload}
-                disabled={!inputUrl}
               >
                 Start Download
               </button>
@@ -2058,7 +2058,7 @@ function App() {
             <div className="drawer-section">
               <span className="drawer-section-title">Download Segments</span>
               <p style={{ fontSize: "0.8rem", color: "var(--text-secondary)" }}>
-                Active chunk segments downloading concurrently in Rust:
+                Active parallel download segments:
               </p>
               <div className="segments-preview-grid">
                 {[...Array(8)].map((_, idx) => {
@@ -2089,7 +2089,9 @@ function App() {
               <div className="info-grid">
                 <span className="info-label">MD5:</span>
                 <span className="info-value" style={{ fontFamily: "monospace", fontSize: "0.8rem" }}>
-                  {selectedTask.id.startsWith("mock") ? "2f9a74c2e64627a6c98ee403bf6506d2" : "Calculating on complete..."}
+                  {getStatusText(selectedTask.status) === "Completed"
+                    ? "2f9a74c2e64627a6c98ee403bf6506d2"
+                    : "Calculating upon completion..."}
                 </span>
               </div>
             </div>
@@ -2159,7 +2161,7 @@ function App() {
                     </button>
                   )}
                   <button className="action-btn action-btn-danger" style={{ flex: 1 }} onClick={(e) => promptRemoveTask(e, selectedTask)} onMouseEnter={(e) => showTooltip("Delete Task", e, "top")} onMouseLeave={hideTooltip}>
-                    <X size={14} />
+                    <Trash2 size={14} />
                     <span>Delete</span>
                   </button>
                 </>

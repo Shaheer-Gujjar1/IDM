@@ -50,6 +50,7 @@ impl Clone for ActiveChunk {
 #[derive(Debug, Clone, Serialize)]
 pub struct DownloadProgress {
     pub id: String,
+    pub url: String,
     pub filename: String,
     pub save_path: String,
     pub total_size: u64,
@@ -494,6 +495,7 @@ impl DownloadManager {
 
                         let progress = DownloadProgress {
                             id: id_clone.clone(),
+                            url: task_for_reporting.original_url.clone(),
                             filename: filename_clone.clone(),
                             save_path: save_path_clone.clone(),
                             total_size: current_total_size,
@@ -900,6 +902,7 @@ impl DownloadManager {
                 // Emit Assembling progress
                 let progress = DownloadProgress {
                     id: task.id.clone(),
+                    url: task.original_url.clone(),
                     filename: task.filename.clone(),
                     save_path: task.save_path.clone(),
                     total_size: total_size_val,
@@ -986,6 +989,7 @@ impl DownloadManager {
         let final_status = task.status.lock().unwrap().clone();
         let progress = DownloadProgress {
             id: task.id.clone(),
+            url: task.original_url.clone(),
             filename: task.filename.clone(),
             save_path: task.save_path.clone(),
             total_size: task.total_size.load(Ordering::Relaxed),
@@ -1018,6 +1022,7 @@ impl DownloadManager {
 
             let progress = DownloadProgress {
                 id: task.id.clone(),
+                url: task.original_url.clone(),
                 filename: task.filename.clone(),
                 save_path: task.save_path.clone(),
                 total_size: task.total_size.load(Ordering::Relaxed),
@@ -1108,6 +1113,7 @@ impl DownloadManager {
             
             let progress = DownloadProgress {
                 id: task.id.clone(),
+                url: task.original_url.clone(),
                 filename: task.filename.clone(),
                 save_path: task.save_path.clone(),
                 total_size: task.total_size.load(Ordering::Relaxed),
@@ -1163,6 +1169,7 @@ impl DownloadManager {
             
             let progress = DownloadProgress {
                 id: task.id.clone(),
+                url: task.original_url.clone(),
                 filename: task.filename.clone(),
                 save_path: task.save_path.clone(),
                 total_size: task.total_size.load(Ordering::Relaxed),
@@ -1206,6 +1213,7 @@ impl DownloadManager {
             
             let progress = DownloadProgress {
                 id: task.id.clone(),
+                url: task.original_url.clone(),
                 filename: task.filename.clone(),
                 save_path: task.save_path.clone(),
                 total_size: task.total_size.load(Ordering::Relaxed),
@@ -1291,6 +1299,7 @@ impl DownloadManager {
 
             Some(DownloadProgress {
                 id: task.id.clone(),
+                url: task.original_url.clone(),
                 filename: task.filename.clone(),
                 save_path: task.save_path.clone(),
                 total_size: task.total_size.load(Ordering::Relaxed),
@@ -1318,6 +1327,7 @@ impl DownloadManager {
             let is_speed_limited = current_limit > 0 && speed > 0.0;
             list.push(DownloadProgress {
                 id: task.id.clone(),
+                url: task.original_url.clone(),
                 filename: task.filename.clone(),
                 save_path: task.save_path.clone(),
                 total_size: task.total_size.load(Ordering::Relaxed),

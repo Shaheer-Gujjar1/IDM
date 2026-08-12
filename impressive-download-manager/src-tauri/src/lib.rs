@@ -164,74 +164,14 @@ async fn open_file_dir(path: String) -> Result<(), String> {
         let _ = tokio::task::spawn_blocking(move || {
             let raw_p = std::path::Path::new(&path_clone);
             let p = raw_p.canonicalize().unwrap_or_else(|_| raw_p.to_path_buf());
-            let canonical_str = p.to_string_lossy().to_string();
 
             let parent_dir = if p.is_dir() {
-                p.clone()
+                p
             } else {
-                p.parent().map(|parent| parent.to_path_buf()).unwrap_or_else(|| p.clone())
+                p.parent().map(|parent| parent.to_path_buf()).unwrap_or(p)
             };
 
-            let is_package_or_executable = p.extension()
-                .and_then(|ext| ext.to_str())
-                .map(|ext| {
-                    let lower = ext.to_lowercase();
-                    matches!(lower.as_str(), "run" | "deb" | "rpm" | "sh" | "appimage" | "bin" | "apk")
-                })
-                .unwrap_or(false);
-
-            if !p.is_dir() && p.exists() && !is_package_or_executable {
-                let file_uri = format!("file://{}", canonical_str);
-
-                // 1. Freedesktop Standard DBus ShowItems (Highlights non-package files in Nautilus/Zorin, Dolphin, Nemo, Deepin, etc.)
-                if let Ok(mut child) = std::process::Command::new("dbus-send")
-                    .args([
-                        "--session",
-                        "--print-reply",
-                        "--dest=org.freedesktop.FileManager1",
-                        "/org/freedesktop/FileManager1",
-                        "org.freedesktop.FileManager1.ShowItems",
-                        &format!("array:string:{}", file_uri),
-                        "string:",
-                    ])
-                    .spawn()
-                {
-                    if let Ok(status) = child.wait() {
-                        if status.success() {
-                            return;
-                        }
-                    }
-                }
-
-                // 2. GNOME / Zorin OS (nautilus --select)
-                if std::process::Command::new("nautilus")
-                    .args(["--select", &canonical_str])
-                    .spawn()
-                    .is_ok()
-                {
-                    return;
-                }
-
-                // 3. KDE (dolphin --select)
-                if std::process::Command::new("dolphin")
-                    .args(["--select", &canonical_str])
-                    .spawn()
-                    .is_ok()
-                {
-                    return;
-                }
-
-                // 4. Cinnamon (nemo --select)
-                if std::process::Command::new("nemo")
-                    .args(["--select", &canonical_str])
-                    .spawn()
-                    .is_ok()
-                {
-                    return;
-                }
-            }
-
-            // For package/installer files OR general fallback: Open containing folder directory directly
+            // Open the containing folder directory directly in desktop file manager (matching XDM)
             if std::process::Command::new("dde-file-manager").arg(&parent_dir).spawn().is_ok() {
                 return;
             }
@@ -242,6 +182,12 @@ async fn open_file_dir(path: String) -> Result<(), String> {
                 return;
             }
             if std::process::Command::new("nemo").arg(&parent_dir).spawn().is_ok() {
+                return;
+            }
+            if std::process::Command::new("thunar").arg(&parent_dir).spawn().is_ok() {
+                return;
+            }
+            if std::process::Command::new("pcmanfm").arg(&parent_dir).spawn().is_ok() {
                 return;
             }
             let _ = std::process::Command::new("xdg-open").arg(&parent_dir).spawn();
