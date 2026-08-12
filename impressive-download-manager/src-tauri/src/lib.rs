@@ -591,18 +591,22 @@ pub fn run() {
             }
         })
         .setup(move |app| {
-            // Check if port 9600 is already in use by another instance
-            if std::net::TcpListener::bind("127.0.0.1:9600").is_err() {
-                // Another instance is already running. Notify it to show the main window.
-                if let Ok(mut stream) = std::net::TcpStream::connect("127.0.0.1:9600") {
-                    use std::io::Write;
-                    let _ = stream.write_all(b"POST /show-main HTTP/1.1\r\n\r\n");
+            // Bind port 9600 synchronously for single-instance check and reuse for capture server
+            let std_listener = match std::net::TcpListener::bind("127.0.0.1:9600") {
+                Ok(l) => l,
+                Err(_) => {
+                    // Another instance is already running. Notify it to show the main window.
+                    if let Ok(mut stream) = std::net::TcpStream::connect("127.0.0.1:9600") {
+                        use std::io::Write;
+                        let _ = stream.write_all(b"POST /show-main HTTP/1.1\r\n\r\n");
+                    }
+                    // Exit this second instance immediately
+                    std::process::exit(0);
                 }
-                // Exit this second instance immediately
-                std::process::exit(0);
-            }
+            };
 
-            // Removed temporary Wayland workaround blocks as we now force X11 backend in main.rs
+            std_listener.set_nonblocking(true).ok();
+            let tokio_listener = tokio::net::TcpListener::from_std(std_listener).expect("valid tokio listener");
 
             let handle = app.handle().clone();
             proxy_for_setup.set_app_handle(app.handle().clone());
@@ -647,29 +651,117 @@ pub fn run() {
                                 use std::os::unix::fs::PermissionsExt;
                                 let _ = std::fs::set_permissions(&desktop_path, std::fs::Permissions::from_mode(0o755));
                             }
+
+                            // Write Native Messaging Host manifests for Linux browsers (Chrome, Brave, Chromium, Edge, Opera, Vivaldi, Firefox)
+                            let browser_dirs = [
+                                std::path::Path::new(&home).join(".config").join("BraveSoftware").join("Brave-Browser").join("NativeMessagingHosts"),
+                                std::path::Path::new(&home).join(".config").join("google-chrome").join("NativeMessagingHosts"),
+                                std::path::Path::new(&home).join(".config").join("chromium").join("NativeMessagingHosts"),
+                                std::path::Path::new(&home).join(".config").join("microsoft-edge").join("NativeMessagingHosts"),
+                                std::path::Path::new(&home).join(".config").join("opera").join("NativeMessagingHosts"),
+                                std::path::Path::new(&home).join(".config").join("vivaldi").join("NativeMessagingHosts"),
+                                std::path::Path::new(&home).join(".mozilla").join("native-messaging-hosts"),
+                            ];
+
+                            let native_manifest = format!(
+                                "{{\n  \"name\": \"com.impressive.idm\",\n  \"description\": \"Impressive Download Manager Host\",\n  \"path\": \"{}\",\n  \"type\": \"stdio\",\n  \"allowed_origins\": [\"chrome-extension://*\", \"moz-extension://*\"],\n  \"allowed_extensions\": [\"*@*\"]\n}}\n",
+                                exe_str
+                            );
+
+                            for b_dir in &browser_dirs {
+                                if std::fs::create_dir_all(b_dir).is_ok() {
+                                    let manifest_file = b_dir.join("com.impressive.idm.json");
+                                    let _ = std::fs::write(manifest_file, &native_manifest);
+                                }
+                            }
                         }
                     }
                 }
 
-                // Add Windows Run Registry key automatically for Windows startup in background
+                // Windows Autostart & Native Messaging setup
                 #[cfg(target_os = "windows")]
                 {
                     if let Ok(current_exe) = std::env::current_exe() {
                         let exe_str = current_exe.to_string_lossy().to_string();
                         let cmd_str = format!("\"{}\" --background", exe_str);
                         let _ = std::process::Command::new("reg")
-                            .args(&[
-                                "add",
-                                "HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Run",
-                                "/v",
-                                "ImpressiveDownloadManager",
-                                "/t",
-                                "REG_SZ",
-                                "/d",
-                                &cmd_str,
-                                "/f"
-                            ])
+                            .args(&["add", "HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Run", "/v", "ImpressiveDownloadManager", "/t", "REG_SZ", "/d", &cmd_str, "/f"])
                             .spawn();
+
+                        if let Ok(app_data) = std::env::var("APPDATA") {
+                            let manifest_dir = std::path::Path::new(&app_data).join("ImpressiveDownloadManager");
+                            if std::fs::create_dir_all(&manifest_dir).is_ok() {
+                                let manifest_path = manifest_dir.join("com.impressive.idm.json");
+                                let json_path_str = manifest_path.to_string_lossy().to_string();
+                                let escaped_exe = exe_str.replace('\\', "\\\\");
+                                let native_manifest = format!(
+                                    "{{\n  \"name\": \"com.impressive.idm\",\n  \"description\": \"Impressive Download Manager Host\",\n  \"path\": \"{}\",\n  \"type\": \"stdio\",\n  \"allowed_origins\": [\"chrome-extension://*\", \"moz-extension://*\"],\n  \"allowed_extensions\": [\"*@*\"]\n}}\n",
+                                    escaped_exe
+                                );
+                                if std::fs::write(&manifest_path, native_manifest).is_ok() {
+                                    for reg_path in &[
+                                        "HKCU\\Software\\Google\\Chrome\\NativeMessagingHosts\\com.impressive.idm",
+                                        "HKCU\\Software\\Microsoft\\Edge\\NativeMessagingHosts\\com.impressive.idm",
+                                        "HKCU\\Software\\Mozilla\\NativeMessagingHosts\\com.impressive.idm",
+                                    ] {
+                                        let _ = std::process::Command::new("reg")
+                                            .args(&["add", reg_path, "/ve", "/t", "REG_SZ", "/d", &json_path_str, "/f"])
+                                            .spawn();
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+
+                // macOS Autostart LaunchAgent & Native Messaging setup
+                #[cfg(target_os = "macos")]
+                {
+                    if let Ok(home) = std::env::var("HOME") {
+                        if let Ok(current_exe) = std::env::current_exe().and_then(|p| p.canonicalize()) {
+                            let exe_str = current_exe.to_string_lossy().to_string();
+                            let launch_agents_dir = std::path::Path::new(&home).join("Library").join("LaunchAgents");
+                            let _ = std::fs::create_dir_all(&launch_agents_dir);
+                            let plist_path = launch_agents_dir.join("com.impressive.idm.plist");
+                            let plist_content = format!(
+                                "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n\
+                                 <!DOCTYPE plist PUBLIC \"-//Apple//DTD PLIST 1.0//EN\" \"http://www.apple.com/DTDs/PropertyList-1.0.dtd\">\n\
+                                 <plist version=\"1.0\">\n\
+                                 <dict>\n\
+                                   <key>Label</key><string>com.impressive.idm</string>\n\
+                                   <key>ProgramArguments</key>\n\
+                                   <array>\n\
+                                     <string>{}</string>\n\
+                                     <string>--background</string>\n\
+                                   </array>\n\
+                                   <key>RunAtLoad</key><true/>\n\
+                                 </dict>\n\
+                                 </plist>\n",
+                                exe_str
+                            );
+                            let _ = std::fs::write(plist_path, plist_content);
+
+                            let browser_dirs = [
+                                std::path::Path::new(&home).join("Library").join("Application Support").join("Google").join("Chrome").join("NativeMessagingHosts"),
+                                std::path::Path::new(&home).join("Library").join("Application Support").join("BraveSoftware").join("Brave-Browser").join("NativeMessagingHosts"),
+                                std::path::Path::new(&home).join("Library").join("Application Support").join("Microsoft Edge").join("NativeMessagingHosts"),
+                                std::path::Path::new(&home).join("Library").join("Application Support").join("com.operasoftware.Opera").join("NativeMessagingHosts"),
+                                std::path::Path::new(&home).join("Library").join("Application Support").join("Vivaldi").join("NativeMessagingHosts"),
+                                std::path::Path::new(&home).join("Library").join("Application Support").join("Mozilla").join("NativeMessagingHosts"),
+                            ];
+
+                            let native_manifest = format!(
+                                "{{\n  \"name\": \"com.impressive.idm\",\n  \"description\": \"Impressive Download Manager Host\",\n  \"path\": \"{}\",\n  \"type\": \"stdio\",\n  \"allowed_origins\": [\"chrome-extension://*\", \"moz-extension://*\"],\n  \"allowed_extensions\": [\"*@*\"]\n}}\n",
+                                exe_str
+                            );
+
+                            for b_dir in &browser_dirs {
+                                if std::fs::create_dir_all(b_dir).is_ok() {
+                                    let manifest_file = b_dir.join("com.impressive.idm.json");
+                                    let _ = std::fs::write(manifest_file, &native_manifest);
+                                }
+                            }
+                        }
                     }
                 }
             });
@@ -682,15 +774,9 @@ pub fn run() {
                 }
             }
 
-            // Spawn local capture server on Tauri's async runtime
+            // Spawn local capture server on Tauri's async runtime reusing the bound listener
             tauri::async_runtime::spawn(async move {
-                let listener = match tokio::net::TcpListener::bind("127.0.0.1:9600").await {
-                    Ok(l) => l,
-                    Err(e) => {
-                        eprintln!("Failed to bind extension capture server to port 9600: {}", e);
-                        return;
-                    }
-                };
+                let listener = tokio_listener;
 
                 loop {
                     if let Ok((mut stream, _)) = listener.accept().await {

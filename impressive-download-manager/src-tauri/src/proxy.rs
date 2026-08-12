@@ -199,22 +199,8 @@ async fn handle_http_passthrough(
 
     // Phase 3: Interception & Handoff
     if is_download_response(&uri_str, res.headers()) {
-        let cd = res.headers().get("content-disposition").and_then(|v| v.to_str().ok()).unwrap_or("");
         let cl = res.headers().get("content-length").and_then(|v| v.to_str().ok()).and_then(|s| s.parse::<u64>().ok()).unwrap_or(0);
-        
-        let mut filename = parse_content_disposition(cd).unwrap_or_default();
-        if filename.is_empty() {
-            if let Ok(parsed) = reqwest::Url::parse(&uri_str) {
-                if let Some(last) = parsed.path_segments().and_then(|s| s.last()) {
-                    if !last.is_empty() {
-                        filename = last.to_string();
-                    }
-                }
-            }
-        }
-        if filename.is_empty() {
-            filename = "captured_download".to_string();
-        }
+        let filename = get_best_filename(&uri_str, res.headers());
 
         println!("[Proxy Handoff] 🚀 INTERCEPTED DOWNLOAD & HANDING OFF TO IDM ENGINE!");
         println!("  -> URL: {}", uri_str);
@@ -274,25 +260,142 @@ fn download_captured_response() -> Response<BoxBody<Bytes, hyper::Error>> {
     resp
 }
 
+fn sanitize_filename(name: &str) -> String {
+    let mut clean = name.trim().trim_matches('"').trim_matches('\'').to_string();
+    for invalid in ['/', '\\', ':', '*', '?', '"', '<', '>', '|'] {
+        clean = clean.replace(invalid, "_");
+    }
+    clean.trim().to_string()
+}
+
 fn parse_content_disposition(value: &str) -> Option<String> {
     if value.is_empty() { return None; }
+    
+    // Pass 1: filename*= (RFC 5987)
     for part in value.split(';') {
         let part = part.trim();
         if part.to_lowercase().starts_with("filename*=") {
             if let Some(val) = part.split('=').nth(1) {
                 let clean = val.trim_matches('"').trim();
-                if let Some(idx) = clean.rfind("''") {
-                    return Some(clean[idx + 2..].to_string());
+                let encoded_str = if let Some(idx) = clean.rfind("''") {
+                    &clean[idx + 2..]
+                } else {
+                    clean
+                };
+                if let Ok(decoded) = urlencoding::decode(encoded_str) {
+                    let sanitized = sanitize_filename(&decoded);
+                    if !sanitized.is_empty() {
+                        return Some(sanitized);
+                    }
                 }
-                return Some(clean.to_string());
-            }
-        } else if part.to_lowercase().starts_with("filename=") {
-            if let Some(val) = part.split('=').nth(1) {
-                return Some(val.trim_matches('"').trim().to_string());
             }
         }
     }
+
+    // Pass 2: filename=
+    for part in value.split(';') {
+        let part = part.trim();
+        if part.to_lowercase().starts_with("filename=") {
+            if let Some(val) = part.split('=').nth(1) {
+                let clean = val.trim_matches('"').trim();
+                if let Ok(decoded) = urlencoding::decode(clean) {
+                    let sanitized = sanitize_filename(&decoded);
+                    if !sanitized.is_empty() {
+                        return Some(sanitized);
+                    }
+                }
+            }
+        }
+    }
+
     None
+}
+
+fn is_generic_filename(name: &str) -> bool {
+    let lower = name.to_lowercase();
+    lower == "captured_download"
+        || lower == "download"
+        || lower == "download.php"
+        || lower == "file.php"
+        || lower == "index.php"
+        || lower == "index.cgi"
+        || lower == "get_file.php"
+        || lower == "attachment.php"
+}
+
+fn extension_from_content_type(ct: &str) -> Option<&'static str> {
+    let lower = ct.to_lowercase();
+    if lower.contains("application/pdf") { Some(".pdf") }
+    else if lower.contains("application/zip") || lower.contains("application/x-zip-compressed") { Some(".zip") }
+    else if lower.contains("application/x-rar-compressed") { Some(".rar") }
+    else if lower.contains("application/x-7z-compressed") { Some(".7z") }
+    else if lower.contains("application/x-tar") { Some(".tar") }
+    else if lower.contains("application/gzip") { Some(".tar.gz") }
+    else if lower.contains("video/mp4") { Some(".mp4") }
+    else if lower.contains("video/x-matroska") { Some(".mkv") }
+    else if lower.contains("video/webm") { Some(".webm") }
+    else if lower.contains("audio/mpeg") { Some(".mp3") }
+    else if lower.contains("audio/wav") { Some(".wav") }
+    else if lower.contains("image/jpeg") { Some(".jpg") }
+    else if lower.contains("image/png") { Some(".png") }
+    else if lower.contains("image/gif") { Some(".gif") }
+    else if lower.contains("image/webp") { Some(".webp") }
+    else { None }
+}
+
+fn get_best_filename(uri_str: &str, headers: &hyper::HeaderMap) -> String {
+    let cd = headers.get("content-disposition").and_then(|v| v.to_str().ok()).unwrap_or("");
+    let ct = headers.get("content-type").and_then(|v| v.to_str().ok()).unwrap_or("");
+
+    if let Some(name) = parse_content_disposition(cd) {
+        if !name.is_empty() && !is_generic_filename(&name) {
+            return name;
+        }
+    }
+
+    let mut candidate = String::new();
+    if let Ok(parsed) = reqwest::Url::parse(uri_str) {
+        // Query param check
+        for (k, v) in parsed.query_pairs() {
+            let k_lower = k.to_lowercase();
+            if (k_lower.contains("file") || k_lower.contains("name") || k_lower.contains("title")) && v.contains('.') {
+                if let Ok(decoded) = urlencoding::decode(&v) {
+                    let sanitized = sanitize_filename(&decoded);
+                    if !sanitized.is_empty() && !is_generic_filename(&sanitized) {
+                        candidate = sanitized;
+                        break;
+                    }
+                }
+            }
+        }
+
+        if candidate.is_empty() {
+            if let Some(last) = parsed.path_segments().and_then(|s| s.last()) {
+                if !last.is_empty() {
+                    if let Ok(decoded) = urlencoding::decode(last) {
+                        candidate = sanitize_filename(&decoded);
+                    }
+                }
+            }
+        }
+    }
+
+    if candidate.is_empty() || is_generic_filename(&candidate) {
+        candidate = "download".to_string();
+    }
+
+    if !candidate.contains('.') || candidate.ends_with(".php") || candidate.ends_with(".cgi") || candidate.ends_with(".aspx") || candidate.ends_with(".ashx") {
+        if let Some(ext) = extension_from_content_type(ct) {
+            if candidate.contains('.') {
+                if let Some(dot_idx) = candidate.rfind('.') {
+                    candidate.truncate(dot_idx);
+                }
+            }
+            candidate.push_str(ext);
+        }
+    }
+
+    candidate
 }
 
 pub fn is_download_response(url_str: &str, headers: &hyper::HeaderMap) -> bool {
