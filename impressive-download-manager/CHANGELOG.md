@@ -1,8 +1,14 @@
 # CHANGELOG
 
-## [0.7.1] – 2026-08-11 (Commit Reference Tag: `e1c0cb669f42a9cd4d2b0d31c2d9724fca6e958c`)
+## [0.7.1] – 2026-08-12 (Commit Reference Tag: `e1c0cb669f42a9cd4d2b0d31c2d9724fca6e958c`)
+
+### Added
+- **Multi-Browser Native Messaging Host Auto-Launch**: Registered `com.impressive.idm.json` Native Messaging Host manifests and autostart background daemons (`--background`) for all web browsers (Firefox, Chrome, Brave, Opera, Edge, Vivaldi) across Linux (`.config` & `.mozilla`), Windows (Registry keys under `HKCU`), and macOS (`LaunchAgents` & `Application Support`). Browsers can now automatically wake up IDM on demand without throwing connection errors.
 
 ### Fixed
+- **Robust Filename Extraction & Extension Inferencing**: Upgraded filename parser in `proxy.rs` to decode RFC 5987 `filename*=` and `filename=` headers using `urlencoding::decode`, sanitize OS invalid characters, extract names from URL query parameters (`?file=...`), and infer missing extensions from `Content-Type` headers to prevent weird/mismatched file names.
+- **Port 9600 Socket Reuse & Zero-Race Binding**: Converted the single-instance `std::net::TcpListener` on port 9600 directly to Tokio's non-blocking listener (`tokio::net::TcpListener::from_std`), eliminating socket `TIME_WAIT` race conditions and preventing `"Could not connect to localhost"` errors.
+- **Strict File Corruption & Byte Bounds Safeguards**: Fixed pre-truncation byte overcounting, enforced part file length truncation (`f.set_len`), implemented bounded copying in `assemble_file` (`expected_len = (chunk_end - chunk_start + 1).min(downloaded)`), and strictly required 100.00% byte completion before file assembly.
 - **Virtual Time Speed Limiter Refactor (Commit: `e1c0cb6`)**: Refactored `TaskSpeedLimiter` to a Virtual Time / Leaky Bucket design using async Tokio Mutex serialization. Enforces strict rate caps without overshooting (capped at 99.5% with UI display clamping), prevents download speed drops when limiter is inactive, and ensures clean task resumption. If speed throttling behavior is ever questioned in the future, reference Git commit [`e1c0cb669f42a9cd4d2b0d31c2d9724fca6e958c`](https://github.com/Shaheer-Gujjar1/IDM/commit/e1c0cb669f42a9cd4d2b0d31c2d9724fca6e958c).
 - **Exact File Highlighting in File Managers**: Upgraded `open_file_dir` command across Linux, Windows, and macOS. Uses Freedesktop `org.freedesktop.FileManager1.ShowItems` DBus interface on Linux and backslash-normalized path strings on Windows Explorer (`explorer /select,"..."`) to highlight and select the exact file in Nautilus, Dolphin, Nemo, Thunar, and Windows Explorer rather than just opening the container directory.
 
