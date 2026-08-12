@@ -25,8 +25,6 @@ import {
   RefreshCw,
   FolderOpen,
   Zap,
-  Gauge,
-  ShieldCheck,
   ShieldAlert,
   ChevronDown,
   Rocket,
