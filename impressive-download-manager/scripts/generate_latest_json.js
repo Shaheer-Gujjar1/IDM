@@ -41,7 +41,7 @@ const findPackageFile = (dir, ext) => {
   if (!target) return null;
 
   // Look for matching .sig file
-  const sigFile = files.find(f => (f === `${target}.sig` || f.endsWith(`${ext}.sig`)));
+  const sigFile = files.find(f => f.endsWith('.sig') || f.includes('.sig'));
   if (!sigFile) return null;
 
   const signature = fs.readFileSync(path.join(dir, sigFile), 'utf-8').trim();
