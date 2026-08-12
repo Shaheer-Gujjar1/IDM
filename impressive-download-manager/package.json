@@ -9,7 +9,7 @@
     "preview": "vite preview",
     "tauri": "tauri",
     "postbuild-release": "node scripts/generate_latest_json.js",
-    "release": "TAURI_SIGNING_PRIVATE_KEY=\"$(cat ~/.tauri/idm.key)\" tauri build && node scripts/generate_latest_json.js"
+    "release": "node scripts/release.js"
   },
   "dependencies": {
     "@tauri-apps/api": "^2",
