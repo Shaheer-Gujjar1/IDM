@@ -2,8 +2,26 @@
 const PORT = 9600;
 
 let extensionEnabled = true;
+let desktopAppInterceptionDisabled = false;
 const handledDownloadIds = new Set();
 const webRequestCapturedUrls = new Map(); // filename -> direct HTTPS URL
+
+// Check desktop app interception setting every 4 seconds
+async function checkDesktopAppStatus() {
+  try {
+    const res = await fetch(`http://127.0.0.1:${PORT}/status`, { cache: "no-store" });
+    if (res.ok) {
+      const data = await res.json();
+      desktopAppInterceptionDisabled = data.enabled === false;
+    } else if (res.status === 403) {
+      desktopAppInterceptionDisabled = true;
+    }
+  } catch (e) {
+    // If backend is offline, leave extensionEnabled behavior intact
+  }
+}
+setInterval(checkDesktopAppStatus, 4000);
+checkDesktopAppStatus();
 
 // Initialize state
 chrome.storage.local.get("extensionEnabled", (data) => {
@@ -69,7 +87,7 @@ if (chrome.webRequest && chrome.webRequest.onBeforeRequest) {
 
 // 2. HTTPS Download Detection Pipeline (Instant Interception)
 async function processDownloadItem(item) {
-  if (!item || !extensionEnabled || handledDownloadIds.has(item.id)) return false;
+  if (!item || !extensionEnabled || desktopAppInterceptionDisabled || handledDownloadIds.has(item.id)) return false;
   if (item.state === "interrupted" || item.state === "complete") return false;
 
   const url = item.url || "";
@@ -188,7 +206,7 @@ chrome.downloads.onChanged.addListener((delta) => {
 
 if (chrome.downloads && chrome.downloads.onDeterminingFilename) {
   chrome.downloads.onDeterminingFilename.addListener((item) => {
-    if (!extensionEnabled) return;
+    if (!extensionEnabled || desktopAppInterceptionDisabled) return;
     const filenameStr = item.filename ? item.filename.replace(/^.*[\\\/]/, "") : "";
     const mime = item.mime || "";
     const url = item.url || "";

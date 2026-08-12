@@ -134,6 +134,7 @@ pub struct DownloadManager {
     pub speed_limit_bps: AtomicU64,
     pub max_chunks: AtomicU64,
     pub intercept_downloads: std::sync::atomic::AtomicBool,
+    pub minimize_to_tray: std::sync::atomic::AtomicBool,
 }
 
 impl DownloadManager {
@@ -157,6 +158,7 @@ impl DownloadManager {
             speed_limit_bps: AtomicU64::new(0),
             max_chunks: AtomicU64::new(8),
             intercept_downloads: std::sync::atomic::AtomicBool::new(true),
+            minimize_to_tray: std::sync::atomic::AtomicBool::new(true),
         }
     }
 

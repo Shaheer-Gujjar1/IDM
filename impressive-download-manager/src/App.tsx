@@ -109,7 +109,14 @@ function App() {
     const saved = localStorage.getItem("autostart");
     return saved !== null ? saved === "true" : true;
   });
-  const [minimizeToTray, setMinimizeToTray] = useState(true);
+  const [minimizeToTray, setMinimizeToTray] = useState(() => {
+    const saved = localStorage.getItem("minimize_to_tray");
+    return saved !== null ? saved === "true" : true;
+  });
+
+  useEffect(() => {
+    invoke("set_minimize_to_tray", { enabled: minimizeToTray }).catch(console.error);
+  }, []);
   const [maxChunks, setMaxChunks] = useState(() => {
     const saved = localStorage.getItem("max_chunks");
     return saved ? Math.min(32, Math.max(1, parseInt(saved, 10) || 8)) : 8;
@@ -207,7 +214,7 @@ function App() {
             setUpdateStatus(`New update v${update.version} is available! Go to Settings to install.`);
           }
         })
-        .catch(() => {});
+        .catch(() => { });
     }, 15 * 60 * 1000);
     return () => clearInterval(interval);
   }, []);
@@ -412,8 +419,8 @@ function App() {
       document.documentElement.setAttribute("data-theme", resolvedTheme);
 
       try {
-        invoke("sync_theme_mode", { themeMode: resolvedTheme, theme_mode: resolvedTheme }).catch(() => {});
-      } catch (e) {}
+        invoke("sync_theme_mode", { themeMode: resolvedTheme, theme_mode: resolvedTheme }).catch(() => { });
+      } catch (e) { }
     };
 
     applyTheme();
@@ -879,10 +886,23 @@ function App() {
     if (e) e.stopPropagation();
     try {
       let targetPath = path;
-      if (filename && path) {
+      if (filename && path && !path.endsWith(filename)) {
         targetPath = (path.endsWith("/") || path.endsWith("\\")) ? `${path}${filename}` : `${path}/${filename}`;
       }
       await invoke("open_file_dir", { path: targetPath });
+    } catch (err) {
+      console.error(err);
+    }
+  };
+
+  const handleOpenFile = async (e: React.MouseEvent | null, path: string, filename?: string) => {
+    if (e) e.stopPropagation();
+    try {
+      let targetPath = path;
+      if (filename && path && !path.endsWith(filename)) {
+        targetPath = (path.endsWith("/") || path.endsWith("\\")) ? `${path}${filename}` : `${path}/${filename}`;
+      }
+      await invoke("open_file", { path: targetPath });
     } catch (err) {
       console.error(err);
     }
@@ -1395,7 +1415,12 @@ function App() {
                       type="checkbox"
                       className="switch-input"
                       checked={minimizeToTray}
-                      onChange={(e) => setMinimizeToTray(e.target.checked)}
+                      onChange={(e) => {
+                        const val = e.target.checked;
+                        setMinimizeToTray(val);
+                        localStorage.setItem("minimize_to_tray", String(val));
+                        invoke("set_minimize_to_tray", { enabled: val }).catch(console.error);
+                      }}
                     />
                     <span className="switch-slider"></span>
                   </label>
@@ -1628,7 +1653,7 @@ function App() {
                 <div className="settings-control-row">
                   <div className="settings-info-col">
                     <span className="settings-title">Intercept Browser Downloads</span>
-                    <span className="settings-desc">Enable connection socket to capture video links and documents from browser extensions.</span>
+                    <span className="settings-desc">Enable connection socket to capture downloads from browser extensions.</span>
                   </div>
                   <label className="switch-container">
                     <input
@@ -1816,12 +1841,12 @@ function App() {
                     {updateProgressInfo.status === "relaunching"
                       ? "Relaunching..."
                       : updateProgressInfo.status === "installing"
-                      ? "Installing..."
-                      : checkingUpdate
-                      ? "Checking..."
-                      : isDownloadingUpdate
-                      ? "Downloading Update..."
-                      : "Check for Updates"}
+                        ? "Installing..."
+                        : checkingUpdate
+                          ? "Checking..."
+                          : isDownloadingUpdate
+                            ? "Downloading Update..."
+                            : "Check for Updates"}
                   </button>
                 </div>
               </div>
@@ -1891,52 +1916,57 @@ function App() {
 
                         <div className="card-right-hover-actions">
                           {isTrash ? (
-                            <>
+                            <div className="hover-actions-card">
                               {!d.file_exists && (
-                                <button className="hover-action-btn" onClick={(e) => { e.stopPropagation(); handleRedownload(e, d.id); }} onMouseEnter={(e) => showTooltip("Re-download", e, "top")} onMouseLeave={hideTooltip}>
-                                  <Play size={16} />
+                                <button className="hover-card-btn success" onClick={(e) => { e.stopPropagation(); handleRedownload(e, d.id); }}>
+                                  <Play size={14} /> Re-download
                                 </button>
                               )}
-                              <button className="hover-action-btn danger" onClick={(e) => { e.stopPropagation(); promptRemoveTask(e, d); }} onMouseEnter={(e) => showTooltip("Delete Permanently", e, "top")} onMouseLeave={hideTooltip}>
-                                <Trash2 size={16} />
+                              <button className="hover-card-btn danger" onClick={(e) => { e.stopPropagation(); promptRemoveTask(e, d); }}>
+                                <Trash2 size={14} /> Delete
                               </button>
-                            </>
+                            </div>
                           ) : (
-                            <>
+                            <div className="hover-actions-card">
+                              {isCompleted && (
+                                <>
+                                  <button className="hover-card-btn success" onClick={(e) => { e.stopPropagation(); handleOpenFile(e, d.save_path || "", d.filename); }}>
+                                    <FileText size={14} /> Open File
+                                  </button>
+                                  <button className="hover-card-btn success" onClick={(e) => { e.stopPropagation(); handleOpenFileDir(e, d.save_path || "", d.filename); }}>
+                                    <FolderOpen size={14} /> Open Folder
+                                  </button>
+                                  {!d.file_exists && (
+                                    <button className="hover-card-btn" onClick={(e) => { e.stopPropagation(); handleRedownload(e, d.id); }}>
+                                      <Play size={14} /> Re-download
+                                    </button>
+                                  )}
+                                </>
+                              )}
                               {isDownloading && (
-                                <button className="hover-action-btn" onClick={(e) => { e.stopPropagation(); handlePause(e, d.id); }} onMouseEnter={(e) => showTooltip("Pause", e, "top")} onMouseLeave={hideTooltip}>
-                                  <Pause size={16} />
+                                <button className="hover-card-btn" onClick={(e) => { e.stopPropagation(); handlePause(e, d.id); }}>
+                                  <Pause size={14} /> Pause
                                 </button>
                               )}
                               {isPaused && (
-                                <button className="hover-action-btn" onClick={(e) => { e.stopPropagation(); handleResume(e, d.id); }} onMouseEnter={(e) => showTooltip("Resume", e, "top")} onMouseLeave={hideTooltip}>
-                                  <Play size={16} />
+                                <button className="hover-card-btn" onClick={(e) => { e.stopPropagation(); handleResume(e, d.id); }}>
+                                  <Play size={14} /> Resume
                                 </button>
                               )}
                               {(isFailed || isPaused) && (
-                                <button className="hover-action-btn" onClick={(e) => { e.stopPropagation(); handleRefreshLink(e, d.id); }} onMouseEnter={(e) => showTooltip("Refresh Link", e, "top")} onMouseLeave={hideTooltip}>
-                                  <RefreshCw size={16} />
+                                <button className="hover-card-btn" onClick={(e) => { e.stopPropagation(); handleRefreshLink(e, d.id); }}>
+                                  <RefreshCw size={14} /> Refresh
                                 </button>
                               )}
                               {isFailed && !d.file_exists && (
-                                <button className="hover-action-btn" onClick={(e) => { e.stopPropagation(); handleRedownload(e, d.id); }} onMouseEnter={(e) => showTooltip("Re-download", e, "top")} onMouseLeave={hideTooltip}>
-                                  <Play size={16} />
+                                <button className="hover-card-btn" onClick={(e) => { e.stopPropagation(); handleRedownload(e, d.id); }}>
+                                  <Play size={14} /> Re-download
                                 </button>
                               )}
-                              {isCompleted && (
-                                <button className="hover-action-btn success" onClick={(e) => { e.stopPropagation(); handleOpenFileDir(e, d.save_path || "", d.filename); }} onMouseEnter={(e) => showTooltip("Open Folder", e, "top")} onMouseLeave={hideTooltip}>
-                                  <FolderOpen size={16} />
-                                </button>
-                              )}
-                              {isCompleted && !d.file_exists && (
-                                <button className="hover-action-btn" onClick={(e) => { e.stopPropagation(); handleRedownload(e, d.id); }} onMouseEnter={(e) => showTooltip("Re-download", e, "top")} onMouseLeave={hideTooltip}>
-                                  <Play size={16} />
-                                </button>
-                              )}
-                              <button className="hover-action-btn danger" onClick={(e) => { e.stopPropagation(); promptRemoveTask(e, d); }} onMouseEnter={(e) => showTooltip("Delete", e, "top")} onMouseLeave={hideTooltip}>
-                                <Trash2 size={16} />
+                              <button className="hover-card-btn danger" onClick={(e) => { e.stopPropagation(); promptRemoveTask(e, d); }}>
+                                <Trash2 size={14} /> Delete
                               </button>
-                            </>
+                            </div>
                           )}
                         </div>
                       </div>
@@ -2056,9 +2086,15 @@ function App() {
             </div>
 
             <div className="drawer-section">
-              <span className="drawer-section-title">Download Segments</span>
+              <span className="drawer-section-title">
+                {getStatusText(selectedTask.status) === "Completed"
+                  ? "Completion Summary"
+                  : "Download Segments"}
+              </span>
               <p style={{ fontSize: "0.8rem", color: "var(--text-secondary)" }}>
-                Active parallel download segments:
+                {getStatusText(selectedTask.status) === "Completed"
+                  ? "All parallel segments assembled & verified successfully:"
+                  : "Active parallel download segments:"}
               </p>
               <div className="segments-preview-grid">
                 {[...Array(8)].map((_, idx) => {
@@ -2082,6 +2118,12 @@ function App() {
                   );
                 })}
               </div>
+              {getStatusText(selectedTask.status) === "Completed" && (
+                <div style={{ marginTop: "8px", fontSize: "0.78rem", color: "var(--accent-green)", display: "flex", alignItems: "center", gap: "6px", fontWeight: 600 }}>
+                  <CheckCircle size={14} />
+                  <span>100% verified — 8 of 8 parallel streams merged</span>
+                </div>
+              )}
             </div>
 
             <div className="drawer-section">
@@ -2143,16 +2185,28 @@ function App() {
                     </button>
                   )}
                   {getStatusText(selectedTask.status) === "Completed" && (
-                    <button
-                      className="action-btn"
-                      style={{ flex: 1, color: "var(--accent-green)", borderColor: "rgba(16, 185, 129, 0.2)", background: "rgba(16, 185, 129, 0.05)" }}
-                      onClick={(e) => handleOpenFileDir(e, selectedTask.save_path || "", selectedTask.filename)}
-                      onMouseEnter={(e) => showTooltip("Open File Directory", e, "top")}
-                      onMouseLeave={hideTooltip}
-                    >
-                      <FolderOpen size={14} />
-                      <span>Open Folder</span>
-                    </button>
+                    <>
+                      <button
+                        className="action-btn"
+                        style={{ flex: 1, color: "var(--accent-cyan)", borderColor: "rgba(6, 182, 212, 0.2)", background: "rgba(6, 182, 212, 0.05)" }}
+                        onClick={(e) => handleOpenFile(e, selectedTask.save_path || "", selectedTask.filename)}
+                        onMouseEnter={(e) => showTooltip("Open File Directly", e, "top")}
+                        onMouseLeave={hideTooltip}
+                      >
+                        <FileText size={14} />
+                        <span>Open File</span>
+                      </button>
+                      <button
+                        className="action-btn"
+                        style={{ flex: 1, color: "var(--accent-green)", borderColor: "rgba(16, 185, 129, 0.2)", background: "rgba(16, 185, 129, 0.05)" }}
+                        onClick={(e) => handleOpenFileDir(e, selectedTask.save_path || "", selectedTask.filename)}
+                        onMouseEnter={(e) => showTooltip("Open File Directory", e, "top")}
+                        onMouseLeave={hideTooltip}
+                      >
+                        <FolderOpen size={14} />
+                        <span>Open Folder</span>
+                      </button>
+                    </>
                   )}
                   {getStatusText(selectedTask.status) === "Completed" && !selectedTask.file_exists && (
                     <button className="action-btn" style={{ flex: 1 }} onClick={(e) => handleRedownload(e, selectedTask.id)} onMouseEnter={(e) => showTooltip("Re-download Task", e, "top")} onMouseLeave={hideTooltip}>

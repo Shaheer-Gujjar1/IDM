@@ -275,6 +275,12 @@
   flex-direction: column;
   gap: 6px;
   min-width: 0;
+  overflow: hidden;
+  transition: padding-right 0.25s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.download-card-v2:hover .card-middle-v2 {
+  padding-right: 220px !important;
 }
 
 .file-name-v2 {
@@ -286,6 +292,7 @@
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+  width: 100%;
 }
 
 .file-meta-v2 {
@@ -323,17 +330,19 @@
 
 /* Card Right Hover Actions */
 .card-right-hover-actions {
-  display: flex;
-  gap: 8px;
+  position: absolute;
+  right: 16px;
+  top: 50%;
+  transform: translateY(-50%) translateX(12px);
   opacity: 0;
-  transform: translateX(10px);
-  transition: all 0.3s cubic-bezier(0.16, 1, 0.3, 1);
+  transition: all 0.25s cubic-bezier(0.16, 1, 0.3, 1);
   pointer-events: none;
+  z-index: 10;
 }
 
 .download-card-v2:hover .card-right-hover-actions {
   opacity: 1;
-  transform: translateX(0);
+  transform: translateY(-50%) translateX(0);
   pointer-events: auto;
 }
 
@@ -455,8 +464,79 @@ html[data-theme="light"] .hover-action-btn:hover {
 html[data-theme="light"] .global-tooltip-v2 {
   background: rgba(255, 255, 255, 0.96);
   color: #0f172a;
+  border: 1px solid rgba(0, 0, 0, 0.12);
   box-shadow: 0 8px 24px rgba(0, 0, 0, 0.12);
-  border: 1px solid rgba(0, 0, 0, 0.08);
+}
+
+/* Hover Actions Card Layout (2 Items per row) */
+.hover-actions-card {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 6px;
+  background: rgba(15, 22, 32, 0.96);
+  backdrop-filter: blur(14px);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 12px;
+  padding: 6px;
+  box-shadow: 0 10px 28px rgba(0, 0, 0, 0.45);
+}
+
+html[data-theme="light"] .hover-actions-card {
+  background: rgba(255, 255, 255, 0.96);
+  border-color: rgba(0, 0, 0, 0.1);
+  box-shadow: 0 10px 28px rgba(0, 0, 0, 0.15);
+}
+
+.hover-card-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  padding: 6px 12px;
+  border-radius: 8px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  background: rgba(255, 255, 255, 0.05);
+  color: var(--text-primary);
+  font-size: 0.78rem;
+  font-weight: 600;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: all 0.2s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+html[data-theme="light"] .hover-card-btn {
+  border-color: rgba(0, 0, 0, 0.08);
+  background: rgba(0, 0, 0, 0.04);
+}
+
+.hover-card-btn:not(.danger):hover {
+  background: var(--accent-cyan) !important;
+  color: #000000 !important;
+  border-color: var(--accent-cyan) !important;
+  box-shadow: none !important;
+  transform: translateY(-1px);
+}
+
+html[data-theme="light"] .hover-card-btn:not(.danger):hover {
+  background: var(--accent-cyan) !important;
+  color: #ffffff !important;
+  border-color: var(--accent-cyan) !important;
+  box-shadow: none !important;
+  transform: translateY(-1px);
+}
+
+.hover-card-btn.danger {
+  color: #ef4444 !important;
+  background: rgba(239, 68, 68, 0.1) !important;
+  border-color: rgba(239, 68, 68, 0.25) !important;
+}
+
+.hover-card-btn.danger:hover {
+  background: #ef4444 !important;
+  color: #ffffff !important;
+  border-color: #ef4444 !important;
+  box-shadow: none !important;
+  transform: translateY(-1px);
 }
 
 .sidebar-menu-v2 {

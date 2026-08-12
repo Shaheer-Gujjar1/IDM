@@ -164,30 +164,63 @@ async fn open_file_dir(path: String) -> Result<(), String> {
         let _ = tokio::task::spawn_blocking(move || {
             let raw_p = std::path::Path::new(&path_clone);
             let p = raw_p.canonicalize().unwrap_or_else(|_| raw_p.to_path_buf());
+            let canonical_str = p.to_string_lossy().to_string();
 
             let parent_dir = if p.is_dir() {
-                p
+                p.clone()
             } else {
-                p.parent().map(|parent| parent.to_path_buf()).unwrap_or(p)
+                p.parent().map(|parent| parent.to_path_buf()).unwrap_or_else(|| p.clone())
             };
 
-            // Open the containing folder directory directly in desktop file manager (matching XDM)
+            if !p.is_dir() && p.exists() {
+                let file_uri = format!("file://{}", canonical_str);
+                let gdbus_cmd = format!(
+                    "gdbus call --session --dest org.freedesktop.FileManager1 --object-path /org/freedesktop/FileManager1 --method org.freedesktop.FileManager1.ShowItems \"['{}']\" \"\"",
+                    file_uri
+                );
+
+                // 1. Freedesktop DBus ShowItems via sh -c gdbus (Highlights file in Nautilus/Zorin, Dolphin, Nemo, Deepin, Thunar, etc.)
+                if let Ok(mut child) = std::process::Command::new("sh")
+                    .args(["-c", &gdbus_cmd])
+                    .spawn()
+                {
+                    if let Ok(status) = child.wait() {
+                        if status.success() {
+                            return;
+                        }
+                    }
+                }
+
+                // 2. GNOME / Zorin OS (nautilus --select)
+                if std::process::Command::new("nautilus")
+                    .args(["--select", &canonical_str])
+                    .spawn()
+                    .is_ok()
+                {
+                    return;
+                }
+
+                // 3. KDE (dolphin --select)
+                if std::process::Command::new("dolphin")
+                    .args(["--select", &canonical_str])
+                    .spawn()
+                    .is_ok()
+                {
+                    return;
+                }
+
+                // 4. Cinnamon (nemo --select)
+                if std::process::Command::new("nemo")
+                    .args(["--select", &canonical_str])
+                    .spawn()
+                    .is_ok()
+                {
+                    return;
+                }
+            }
+
+            // 5. Desktop Fallback: Open containing folder directory with dde-file-manager or xdg-open
             if std::process::Command::new("dde-file-manager").arg(&parent_dir).spawn().is_ok() {
-                return;
-            }
-            if std::process::Command::new("nautilus").arg(&parent_dir).spawn().is_ok() {
-                return;
-            }
-            if std::process::Command::new("dolphin").arg(&parent_dir).spawn().is_ok() {
-                return;
-            }
-            if std::process::Command::new("nemo").arg(&parent_dir).spawn().is_ok() {
-                return;
-            }
-            if std::process::Command::new("thunar").arg(&parent_dir).spawn().is_ok() {
-                return;
-            }
-            if std::process::Command::new("pcmanfm").arg(&parent_dir).spawn().is_ok() {
                 return;
             }
             let _ = std::process::Command::new("xdg-open").arg(&parent_dir).spawn();
@@ -223,6 +256,32 @@ async fn open_file_dir(path: String) -> Result<(), String> {
         })
         .await;
     }
+    Ok(())
+}
+
+#[tauri::command]
+async fn open_file(path: String) -> Result<(), String> {
+    let path_clone = path.clone();
+    let _ = tokio::task::spawn_blocking(move || {
+        let raw_p = std::path::Path::new(&path_clone);
+        let p = raw_p.canonicalize().unwrap_or_else(|_| raw_p.to_path_buf());
+        let canonical_str = p.to_string_lossy().to_string();
+
+        #[cfg(target_os = "linux")]
+        {
+            let _ = std::process::Command::new("xdg-open").arg(&canonical_str).spawn();
+        }
+        #[cfg(target_os = "windows")]
+        {
+            let win_path = canonical_str.replace('/', "\\");
+            let _ = std::process::Command::new("cmd").args(["/C", "start", "", &win_path]).spawn();
+        }
+        #[cfg(target_os = "macos")]
+        {
+            let _ = std::process::Command::new("open").arg(&canonical_str).spawn();
+        }
+    })
+    .await;
     Ok(())
 }
 
@@ -368,6 +427,15 @@ async fn set_intercept_downloads(
     enabled: bool,
 ) -> Result<(), String> {
     manager.intercept_downloads.store(enabled, std::sync::atomic::Ordering::Relaxed);
+    Ok(())
+}
+
+#[tauri::command]
+async fn set_minimize_to_tray(
+    manager: tauri::State<'_, Arc<DownloadManager>>,
+    enabled: bool,
+) -> Result<(), String> {
+    manager.minimize_to_tray.store(enabled, std::sync::atomic::Ordering::Relaxed);
     Ok(())
 }
 
@@ -597,9 +665,19 @@ pub fn run() {
             if let tauri::WindowEvent::CloseRequested { api, .. } = event {
                 let label = window.label().to_string();
                 if label == "main" {
-                    // Keep daemon alive — hide instead of exit
-                    let _ = window.hide();
-                    api.prevent_close();
+                    let minimize = if let Some(mgr) = window.app_handle().try_state::<Arc<DownloadManager>>() {
+                        mgr.minimize_to_tray.load(std::sync::atomic::Ordering::Relaxed)
+                    } else {
+                        true
+                    };
+
+                    if minimize {
+                        let _ = window.hide();
+                        api.prevent_close();
+                    } else {
+                        // Minimize to tray is turned OFF: exit process completely like killall command
+                        std::process::exit(0);
+                    }
                 } else if label.starts_with("popup-progress-") {
                     // Auto-pause the download when the progress popup is closed
                     let task_id = label.trim_start_matches("popup-progress-").to_string();
@@ -858,6 +936,23 @@ pub fn run() {
                                 return;
                             }
 
+                            // Check status
+                            if req_str.starts_with("GET /status") || req_str.contains("GET /status") {
+                                let theme = manager.theme_mode.lock().await.clone();
+                                let enabled = manager.intercept_downloads.load(std::sync::atomic::Ordering::Relaxed);
+                                let body = format!("{{\"enabled\":{},\"theme\":\"{}\"}}", enabled, theme);
+                                let response = format!(
+                                    "HTTP/1.1 200 OK\r\n\
+                                     Access-Control-Allow-Origin: *\r\n\
+                                     Content-Type: application/json\r\n\
+                                     Content-Length: {}\r\n\r\n{}",
+                                    body.len(),
+                                    body
+                                );
+                                let _ = stream.write_all(response.as_bytes()).await;
+                                return;
+                            }
+
                             // Check if it is a POST to /download
                             if req_str.starts_with("POST /download") || req_str.contains("POST /download") {
                                 if !manager.intercept_downloads.load(std::sync::atomic::Ordering::Relaxed) {
@@ -1042,6 +1137,7 @@ pub fn run() {
             restore_task,
             redownload_task,
             refresh_download_link,
+            open_file,
             open_file_dir,
             select_folder,
             get_default_download_dir,
@@ -1054,6 +1150,7 @@ pub fn run() {
             sync_theme_mode,
             set_speed_limit,
             set_intercept_downloads,
+            set_minimize_to_tray,
             set_max_chunks,
             start_proxy_server,
             stop_proxy_server
