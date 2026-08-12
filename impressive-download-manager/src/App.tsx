@@ -353,15 +353,32 @@ function App() {
 
   const [isThemeDropdownOpen, setIsThemeDropdownOpen] = useState(false);
   const themeDropdownRef = useRef<HTMLDivElement>(null);
-  const [activeTooltip, setActiveTooltip] = useState<{ title: string; x: number; y: number } | null>(null);
+  const [activeTooltip, setActiveTooltip] = useState<{ title: string; x: number; y: number; pos?: "right" | "top" | "bottom" } | null>(null);
 
-  const showTooltip = (title: string, e: React.MouseEvent) => {
+  const showTooltip = (title: string, e: React.MouseEvent, pos: "right" | "top" | "bottom" = "right") => {
     const rect = e.currentTarget.getBoundingClientRect();
-    setActiveTooltip({
-      title,
-      x: rect.right + 12,
-      y: rect.top + rect.height / 2
-    });
+    if (pos === "top") {
+      setActiveTooltip({
+        title,
+        x: rect.left + rect.width / 2,
+        y: rect.top - 8,
+        pos: "top"
+      });
+    } else if (pos === "bottom") {
+      setActiveTooltip({
+        title,
+        x: rect.left + rect.width / 2,
+        y: rect.bottom + 8,
+        pos: "bottom"
+      });
+    } else {
+      setActiveTooltip({
+        title,
+        x: rect.right + 12,
+        y: rect.top + rect.height / 2,
+        pos: "right"
+      });
+    }
   };
 
   const hideTooltip = () => setActiveTooltip(null);
@@ -858,10 +875,14 @@ function App() {
     }
   };
 
-  const handleOpenFileDir = async (e: React.MouseEvent | null, path: string) => {
+  const handleOpenFileDir = async (e: React.MouseEvent | null, path: string, filename?: string) => {
     if (e) e.stopPropagation();
     try {
-      await invoke("open_file_dir", { path });
+      let targetPath = path;
+      if (filename && path) {
+        targetPath = (path.endsWith("/") || path.endsWith("\\")) ? `${path}${filename}` : `${path}/${filename}`;
+      }
+      await invoke("open_file_dir", { path: targetPath });
     } catch (err) {
       console.error(err);
     }
@@ -1138,7 +1159,7 @@ function App() {
             <button
               className="hover-action-btn"
               style={{ flex: 1, padding: "14px", borderRadius: "12px", color: "var(--accent-green)", fontWeight: 700, fontSize: "0.95rem", background: "rgba(16, 185, 129, 0.05)", border: "1px solid rgba(16, 185, 129, 0.15)" }}
-              onClick={() => handleOpenFileDir(null, popupSavePath)}
+              onClick={() => handleOpenFileDir(null, popupSavePath, popupFilename)}
             >
               Open Folder
             </button>
@@ -1872,47 +1893,47 @@ function App() {
                           {isTrash ? (
                             <>
                               {!d.file_exists && (
-                                <button className="hover-action-btn" onClick={(e) => { e.stopPropagation(); handleRedownload(e, d.id); }} title="Re-download">
+                                <button className="hover-action-btn" onClick={(e) => { e.stopPropagation(); handleRedownload(e, d.id); }} onMouseEnter={(e) => showTooltip("Re-download", e, "top")} onMouseLeave={hideTooltip}>
                                   <Play size={16} />
                                 </button>
                               )}
-                              <button className="hover-action-btn danger" onClick={(e) => { e.stopPropagation(); promptRemoveTask(e, d); }} title="Delete Permanently">
+                              <button className="hover-action-btn danger" onClick={(e) => { e.stopPropagation(); promptRemoveTask(e, d); }} onMouseEnter={(e) => showTooltip("Delete Permanently", e, "top")} onMouseLeave={hideTooltip}>
                                 <Trash2 size={16} />
                               </button>
                             </>
                           ) : (
                             <>
                               {isDownloading && (
-                                <button className="hover-action-btn" onClick={(e) => { e.stopPropagation(); handlePause(e, d.id); }} title="Pause">
+                                <button className="hover-action-btn" onClick={(e) => { e.stopPropagation(); handlePause(e, d.id); }} onMouseEnter={(e) => showTooltip("Pause", e, "top")} onMouseLeave={hideTooltip}>
                                   <Pause size={16} />
                                 </button>
                               )}
                               {isPaused && (
-                                <button className="hover-action-btn" onClick={(e) => { e.stopPropagation(); handleResume(e, d.id); }} title="Resume">
+                                <button className="hover-action-btn" onClick={(e) => { e.stopPropagation(); handleResume(e, d.id); }} onMouseEnter={(e) => showTooltip("Resume", e, "top")} onMouseLeave={hideTooltip}>
                                   <Play size={16} />
                                 </button>
                               )}
                               {(isFailed || isPaused) && (
-                                <button className="hover-action-btn" onClick={(e) => { e.stopPropagation(); handleRefreshLink(e, d.id); }} title="Refresh Link">
+                                <button className="hover-action-btn" onClick={(e) => { e.stopPropagation(); handleRefreshLink(e, d.id); }} onMouseEnter={(e) => showTooltip("Refresh Link", e, "top")} onMouseLeave={hideTooltip}>
                                   <RefreshCw size={16} />
                                 </button>
                               )}
                               {isFailed && !d.file_exists && (
-                                <button className="hover-action-btn" onClick={(e) => { e.stopPropagation(); handleRedownload(e, d.id); }} title="Re-download">
+                                <button className="hover-action-btn" onClick={(e) => { e.stopPropagation(); handleRedownload(e, d.id); }} onMouseEnter={(e) => showTooltip("Re-download", e, "top")} onMouseLeave={hideTooltip}>
                                   <Play size={16} />
                                 </button>
                               )}
                               {isCompleted && (
-                                <button className="hover-action-btn success" onClick={(e) => { e.stopPropagation(); handleOpenFileDir(e, d.save_path || ""); }} title="Open Folder">
+                                <button className="hover-action-btn success" onClick={(e) => { e.stopPropagation(); handleOpenFileDir(e, d.save_path || "", d.filename); }} onMouseEnter={(e) => showTooltip("Open Folder", e, "top")} onMouseLeave={hideTooltip}>
                                   <FolderOpen size={16} />
                                 </button>
                               )}
                               {isCompleted && !d.file_exists && (
-                                <button className="hover-action-btn" onClick={(e) => { e.stopPropagation(); handleRedownload(e, d.id); }} title="Re-download">
+                                <button className="hover-action-btn" onClick={(e) => { e.stopPropagation(); handleRedownload(e, d.id); }} onMouseEnter={(e) => showTooltip("Re-download", e, "top")} onMouseLeave={hideTooltip}>
                                   <Play size={16} />
                                 </button>
                               )}
-                              <button className="hover-action-btn danger" onClick={(e) => { e.stopPropagation(); promptRemoveTask(e, d); }} title="Delete">
+                              <button className="hover-action-btn danger" onClick={(e) => { e.stopPropagation(); promptRemoveTask(e, d); }} onMouseEnter={(e) => showTooltip("Delete", e, "top")} onMouseLeave={hideTooltip}>
                                 <X size={16} />
                               </button>
                             </>
@@ -2081,12 +2102,14 @@ function App() {
                       className="action-btn"
                       style={{ flex: 1, color: "var(--accent-green)", borderColor: "rgba(16, 185, 129, 0.2)", background: "rgba(16, 185, 129, 0.05)" }}
                       onClick={(e) => handleRedownload(e, selectedTask.id)}
+                      onMouseEnter={(e) => showTooltip("Re-download Task", e, "top")}
+                      onMouseLeave={hideTooltip}
                     >
                       <Play size={14} />
                       <span>Re-download</span>
                     </button>
                   )}
-                  <button className="action-btn action-btn-danger" style={{ flex: 1 }} onClick={(e) => promptRemoveTask(e, selectedTask)}>
+                  <button className="action-btn action-btn-danger" style={{ flex: 1 }} onClick={(e) => promptRemoveTask(e, selectedTask)} onMouseEnter={(e) => showTooltip("Delete Permanently", e, "top")} onMouseLeave={hideTooltip}>
                     <Trash2 size={14} />
                     <span>Delete Permanently</span>
                   </button>
@@ -2094,13 +2117,13 @@ function App() {
               ) : (
                 <>
                   {getStatusText(selectedTask.status) === "Downloading" && (
-                    <button className="action-btn" style={{ flex: 1 }} onClick={(e) => handlePause(e, selectedTask.id)}>
+                    <button className="action-btn" style={{ flex: 1 }} onClick={(e) => handlePause(e, selectedTask.id)} onMouseEnter={(e) => showTooltip("Pause Download", e, "top")} onMouseLeave={hideTooltip}>
                       <Pause size={14} />
                       <span>Pause</span>
                     </button>
                   )}
                   {getStatusText(selectedTask.status) === "Paused" && (
-                    <button className="action-btn" style={{ flex: 1 }} onClick={(e) => handleResume(e, selectedTask.id)}>
+                    <button className="action-btn" style={{ flex: 1 }} onClick={(e) => handleResume(e, selectedTask.id)} onMouseEnter={(e) => showTooltip("Resume Download", e, "top")} onMouseLeave={hideTooltip}>
                       <Play size={14} />
                       <span>Resume</span>
                     </button>
@@ -2110,6 +2133,8 @@ function App() {
                       className="action-btn"
                       style={{ flex: 1, color: "var(--accent-orange)", borderColor: "rgba(245, 158, 11, 0.2)", background: "rgba(245, 158, 11, 0.05)" }}
                       onClick={(e) => handleRefreshLink(e, selectedTask.id)}
+                      onMouseEnter={(e) => showTooltip("Refresh Download Link", e, "top")}
+                      onMouseLeave={hideTooltip}
                     >
                       <RefreshCw size={14} />
                       <span>Refresh Link</span>
@@ -2119,19 +2144,21 @@ function App() {
                     <button
                       className="action-btn"
                       style={{ flex: 1, color: "var(--accent-green)", borderColor: "rgba(16, 185, 129, 0.2)", background: "rgba(16, 185, 129, 0.05)" }}
-                      onClick={(e) => handleOpenFileDir(e, selectedTask.save_path || "")}
+                      onClick={(e) => handleOpenFileDir(e, selectedTask.save_path || "", selectedTask.filename)}
+                      onMouseEnter={(e) => showTooltip("Open File Directory", e, "top")}
+                      onMouseLeave={hideTooltip}
                     >
                       <FolderOpen size={14} />
                       <span>Open Folder</span>
                     </button>
                   )}
                   {getStatusText(selectedTask.status) === "Completed" && !selectedTask.file_exists && (
-                    <button className="action-btn" style={{ flex: 1 }} onClick={(e) => handleRedownload(e, selectedTask.id)}>
+                    <button className="action-btn" style={{ flex: 1 }} onClick={(e) => handleRedownload(e, selectedTask.id)} onMouseEnter={(e) => showTooltip("Re-download Task", e, "top")} onMouseLeave={hideTooltip}>
                       <Play size={14} />
                       <span>Re-download</span>
                     </button>
                   )}
-                  <button className="action-btn action-btn-danger" style={{ flex: 1 }} onClick={(e) => promptRemoveTask(e, selectedTask)}>
+                  <button className="action-btn action-btn-danger" style={{ flex: 1 }} onClick={(e) => promptRemoveTask(e, selectedTask)} onMouseEnter={(e) => showTooltip("Delete Task", e, "top")} onMouseLeave={hideTooltip}>
                     <X size={14} />
                     <span>Delete</span>
                   </button>
@@ -2268,7 +2295,7 @@ function App() {
 
       {activeTooltip && (
         <div
-          className="global-tooltip-v2"
+          className={`global-tooltip-v2 pos-${activeTooltip.pos || "right"}`}
           style={{
             left: `${activeTooltip.x}px`,
             top: `${activeTooltip.y}px`

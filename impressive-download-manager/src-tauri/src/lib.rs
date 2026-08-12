@@ -162,71 +162,120 @@ async fn open_file_dir(path: String) -> Result<(), String> {
     {
         let path_clone = path.clone();
         let _ = tokio::task::spawn_blocking(move || {
-            let abs_path = std::path::Path::new(&path_clone);
-            let file_uri = format!("file://{}", abs_path.to_string_lossy());
+            let raw_p = std::path::Path::new(&path_clone);
+            let p = raw_p.canonicalize().unwrap_or_else(|_| raw_p.to_path_buf());
+            let canonical_str = p.to_string_lossy().to_string();
 
-            // 1. Freedesktop DBus FileManager1 (Highlights file in Nautilus, Dolphin, Nemo, Thunar, PCManFM, etc.)
-            if let Ok(mut child) = std::process::Command::new("dbus-send")
-                .args([
-                    "--session",
-                    "--dest=org.freedesktop.FileManager1",
-                    "/org/freedesktop/FileManager1",
-                    "org.freedesktop.FileManager1.ShowItems",
-                    &format!("array:string:{}", file_uri),
-                    "string:",
-                ])
-                .spawn()
-            {
-                if let Ok(status) = child.wait() {
-                    if status.success() {
-                        return;
+            let parent_dir = if p.is_dir() {
+                p.clone()
+            } else {
+                p.parent().map(|parent| parent.to_path_buf()).unwrap_or_else(|| p.clone())
+            };
+
+            let is_package_or_executable = p.extension()
+                .and_then(|ext| ext.to_str())
+                .map(|ext| {
+                    let lower = ext.to_lowercase();
+                    matches!(lower.as_str(), "run" | "deb" | "rpm" | "sh" | "appimage" | "bin" | "apk")
+                })
+                .unwrap_or(false);
+
+            if !p.is_dir() && p.exists() && !is_package_or_executable {
+                let file_uri = format!("file://{}", canonical_str);
+
+                // 1. Freedesktop Standard DBus ShowItems (Highlights non-package files in Nautilus/Zorin, Dolphin, Nemo, Deepin, etc.)
+                if let Ok(mut child) = std::process::Command::new("dbus-send")
+                    .args([
+                        "--session",
+                        "--print-reply",
+                        "--dest=org.freedesktop.FileManager1",
+                        "/org/freedesktop/FileManager1",
+                        "org.freedesktop.FileManager1.ShowItems",
+                        &format!("array:string:{}", file_uri),
+                        "string:",
+                    ])
+                    .spawn()
+                {
+                    if let Ok(status) = child.wait() {
+                        if status.success() {
+                            return;
+                        }
                     }
                 }
+
+                // 2. GNOME / Zorin OS (nautilus --select)
+                if std::process::Command::new("nautilus")
+                    .args(["--select", &canonical_str])
+                    .spawn()
+                    .is_ok()
+                {
+                    return;
+                }
+
+                // 3. KDE (dolphin --select)
+                if std::process::Command::new("dolphin")
+                    .args(["--select", &canonical_str])
+                    .spawn()
+                    .is_ok()
+                {
+                    return;
+                }
+
+                // 4. Cinnamon (nemo --select)
+                if std::process::Command::new("nemo")
+                    .args(["--select", &canonical_str])
+                    .spawn()
+                    .is_ok()
+                {
+                    return;
+                }
             }
-            // 2. Nautilus (GNOME) — selects the file
-            if std::process::Command::new("nautilus")
-                .args(["--select", &path_clone])
-                .spawn()
-                .is_ok()
-            {
+
+            // For package/installer files OR general fallback: Open containing folder directory directly
+            if std::process::Command::new("dde-file-manager").arg(&parent_dir).spawn().is_ok() {
                 return;
             }
-            // 3. Dolphin (KDE) — selects the file
-            if std::process::Command::new("dolphin")
-                .args(["--select", &path_clone])
-                .spawn()
-                .is_ok()
-            {
+            if std::process::Command::new("nautilus").arg(&parent_dir).spawn().is_ok() {
                 return;
             }
-            // 4. Nemo (Cinnamon) — opens and highlights
-            if std::process::Command::new("nemo")
-                .arg(&path_clone)
-                .spawn()
-                .is_ok()
-            {
+            if std::process::Command::new("dolphin").arg(&parent_dir).spawn().is_ok() {
                 return;
             }
-            // 5. Generic fallback: open parent directory
-            if let Some(parent) = std::path::Path::new(&path_clone).parent() {
-                let _ = std::process::Command::new("xdg-open")
-                    .arg(parent)
-                    .spawn();
+            if std::process::Command::new("nemo").arg(&parent_dir).spawn().is_ok() {
+                return;
             }
+            let _ = std::process::Command::new("xdg-open").arg(&parent_dir).spawn();
         })
         .await;
     }
     #[cfg(target_os = "windows")]
     {
-        // /select, highlights the exact file in Windows Explorer
-        let win_path = path.replace('/', "\\");
-        let arg = format!("/select,\"{}\"", win_path);
-        let _ = std::process::Command::new("explorer").arg(arg).spawn();
+        let path_clone = path.clone();
+        let _ = tokio::task::spawn_blocking(move || {
+            let raw_p = std::path::Path::new(&path_clone);
+            let p = raw_p.canonicalize().unwrap_or_else(|_| raw_p.to_path_buf());
+            if p.is_dir() {
+                let _ = std::process::Command::new("explorer").arg(&p).spawn();
+            } else {
+                let win_path = p.to_string_lossy().replace('/', "\\");
+                let _ = std::process::Command::new("explorer").args(["/select,", &win_path]).spawn();
+            }
+        })
+        .await;
     }
     #[cfg(target_os = "macos")]
     {
-        // -R reveals and selects in Finder
-        let _ = std::process::Command::new("open").args(["-R", &path]).spawn();
+        let path_clone = path.clone();
+        let _ = tokio::task::spawn_blocking(move || {
+            let raw_p = std::path::Path::new(&path_clone);
+            let p = raw_p.canonicalize().unwrap_or_else(|_| raw_p.to_path_buf());
+            if p.is_dir() {
+                let _ = std::process::Command::new("open").arg(&p).spawn();
+            } else {
+                let _ = std::process::Command::new("open").args(["-R", &p.to_string_lossy()]).spawn();
+            }
+        })
+        .await;
     }
     Ok(())
 }
@@ -453,36 +502,32 @@ async fn get_all_downloads(
     Ok(manager.get_all_progress().await)
 }
 
-/// Resume a paused download AND immediately open/focus its progress popup window
-#[allow(dead_code)]
 #[tauri::command]
 async fn resume_and_open_progress(
     id: String,
     app_handle: tauri::AppHandle,
     manager: State<'_, Arc<DownloadManager>>,
 ) -> Result<(), String> {
-    manager.resume_download(&id).await?;
+    let _ = manager.resume_download(&id).await;
 
     let progress_url = format!("index.html#popup=progress&id={}", id);
     let window_label = format!("popup-progress-{}", id);
 
-    // If the window already exists, just focus it; otherwise create it
     if let Some(win) = app_handle.get_webview_window(&window_label) {
-        let _ = win.unminimize();
-        let _ = win.show();
-        let _ = win.set_focus();
-    } else {
-        let _ = tauri::WebviewWindowBuilder::new(
-            &app_handle,
-            &window_label,
-            tauri::WebviewUrl::App(progress_url.into()),
-        )
-        .title("Downloading...")
-        .inner_size(520.0, 340.0)
-        .center()
-        .build()
-        .map_err(|e| e.to_string())?;
+        let _ = win.close();
     }
+
+    let _ = tauri::WebviewWindowBuilder::new(
+        &app_handle,
+        &window_label,
+        tauri::WebviewUrl::App(progress_url.into()),
+    )
+    .title("Downloading...")
+    .inner_size(520.0, 340.0)
+    .center()
+    .build()
+    .map_err(|e| e.to_string())?;
+
     Ok(())
 }
 
@@ -495,36 +540,32 @@ async fn sync_theme_mode(
     Ok(())
 }
 
-
-
-
 #[tauri::command]
 async fn redownload_and_open_progress(
     id: String,
     app_handle: tauri::AppHandle,
     manager: State<'_, Arc<DownloadManager>>,
 ) -> Result<(), String> {
-    manager.redownload_task(&id).await?;
+    let _ = manager.redownload_task(&id).await;
 
     let progress_url = format!("index.html#popup=progress&id={}", id);
     let window_label = format!("popup-progress-{}", id);
 
-    // If the window already exists, just focus it; otherwise create it
     if let Some(win) = app_handle.get_webview_window(&window_label) {
-        let _ = win.show();
-        let _ = win.set_focus();
-    } else {
-        let _ = tauri::WebviewWindowBuilder::new(
-            &app_handle,
-            &window_label,
-            tauri::WebviewUrl::App(progress_url.into()),
-        )
-        .title("Downloading...")
-        .inner_size(520.0, 340.0)
-        .center()
-        .build()
-        .map_err(|e| e.to_string())?;
+        let _ = win.close();
     }
+
+    let _ = tauri::WebviewWindowBuilder::new(
+        &app_handle,
+        &window_label,
+        tauri::WebviewUrl::App(progress_url.into()),
+    )
+    .title("Downloading...")
+    .inner_size(520.0, 340.0)
+    .center()
+    .build()
+    .map_err(|e| e.to_string())?;
+
     Ok(())
 }
 

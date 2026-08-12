@@ -425,25 +425,38 @@ html[data-theme="light"] .hover-action-btn:hover {
 /* Global React-based Tooltip V2 */
 .global-tooltip-v2 {
   position: fixed;
-  background: rgba(10, 12, 17, 0.95);
-  color: #fff;
-  padding: 6px 12px;
+  background: rgba(15, 20, 28, 0.95);
+  color: #f1f5f9;
+  padding: 5px 11px;
   border-radius: 8px;
-  font-size: 0.8rem;
+  font-size: 0.78rem;
   font-weight: 600;
   pointer-events: none;
   z-index: 999999;
-  backdrop-filter: blur(8px);
-  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.2);
+  backdrop-filter: blur(10px);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.35);
+  border: 1px solid rgba(255, 255, 255, 0.12);
   white-space: nowrap;
+  transition: opacity 0.15s ease, transform 0.15s ease;
+}
+
+.global-tooltip-v2.pos-right {
   transform: translateY(-50%);
 }
 
+.global-tooltip-v2.pos-top {
+  transform: translate(-50%, -100%);
+}
+
+.global-tooltip-v2.pos-bottom {
+  transform: translate(-50%, 0);
+}
+
 html[data-theme="light"] .global-tooltip-v2 {
-  background: rgba(255, 255, 255, 0.95);
-  color: #000;
-  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.1);
-  border: 1px solid rgba(0, 0, 0, 0.05);
+  background: rgba(255, 255, 255, 0.96);
+  color: #0f172a;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.12);
+  border: 1px solid rgba(0, 0, 0, 0.08);
 }
 
 .sidebar-menu-v2 {
