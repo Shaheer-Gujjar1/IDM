@@ -42,6 +42,9 @@
     "linux": {
       "deb": {
         "depends": []
+      },
+      "rpm": {
+        "postRemoveScript": "../scripts/postrm.sh"
       }
     },
     "windows": {

@@ -288,6 +288,41 @@ async fn toggle_autostart(enabled: bool) -> Result<(), String> {
             }
         }
     }
+    #[cfg(target_os = "macos")]
+    {
+        if let Ok(home) = std::env::var("HOME") {
+            let plist_path = std::path::Path::new(&home)
+                .join("Library")
+                .join("LaunchAgents")
+                .join("com.impressive.idm.plist");
+            if enabled {
+                if let Ok(current_exe) = std::env::current_exe().and_then(|p| p.canonicalize()) {
+                    let exe_str = current_exe.to_string_lossy().to_string();
+                    let launch_agents_dir = std::path::Path::new(&home).join("Library").join("LaunchAgents");
+                    let _ = std::fs::create_dir_all(&launch_agents_dir);
+                    let plist_content = format!(
+                        "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n\
+                         <!DOCTYPE plist PUBLIC \"-//Apple//DTD PLIST 1.0//EN\" \"http://www.apple.com/DTDs/PropertyList-1.0.dtd\">\n\
+                         <plist version=\"1.0\">\n\
+                         <dict>\n\
+                           <key>Label</key><string>com.impressive.idm</string>\n\
+                           <key>ProgramArguments</key>\n\
+                           <array>\n\
+                             <string>{}</string>\n\
+                             <string>--background</string>\n\
+                           </array>\n\
+                           <key>RunAtLoad</key><true/>\n\
+                         </dict>\n\
+                         </plist>\n",
+                        exe_str
+                    );
+                    let _ = std::fs::write(plist_path, plist_content);
+                }
+            } else {
+                let _ = std::fs::remove_file(plist_path);
+            }
+        }
+    }
     #[cfg(target_os = "windows")]
     {
         if enabled {
@@ -606,7 +641,6 @@ pub fn run() {
             };
 
             std_listener.set_nonblocking(true).ok();
-            let tokio_listener = tokio::net::TcpListener::from_std(std_listener).expect("valid tokio listener");
 
             let handle = app.handle().clone();
             proxy_for_setup.set_app_handle(app.handle().clone());
@@ -627,32 +661,12 @@ pub fn run() {
                 manager_for_init.set_app_handle(handle).await;
                 let _ = manager_for_init.load_history().await;
 
-                // Write linux autostart .desktop configuration automatically
+                // Write Native Messaging Host manifests for Linux browsers (Chrome, Brave, Chromium, Edge, Opera, Vivaldi, Firefox)
                 #[cfg(target_os = "linux")]
                 {
                     if let Ok(home) = std::env::var("HOME") {
                         if let Ok(current_exe) = std::env::current_exe().and_then(|p| p.canonicalize()) {
                             let exe_str = current_exe.to_string_lossy().to_string();
-                            let autostart_dir = std::path::Path::new(&home).join(".config").join("autostart");
-                            let _ = std::fs::create_dir_all(&autostart_dir);
-                            let desktop_path = autostart_dir.join("impressive-download-manager.desktop");
-                            let desktop_content = format!(
-                                "[Desktop Entry]\n\
-                                 Type=Application\n\
-                                 Exec=\"{}\" --background\n\
-                                 Hidden=false\n\
-                                 NoDisplay=false\n\
-                                 X-GNOME-Autostart-enabled=true\n\
-                                 Name=Impressive Download Manager\n\
-                                 Comment=Start Impressive Download Manager in the background\n",
-                                exe_str
-                            );
-                            if std::fs::write(&desktop_path, desktop_content).is_ok() {
-                                use std::os::unix::fs::PermissionsExt;
-                                let _ = std::fs::set_permissions(&desktop_path, std::fs::Permissions::from_mode(0o755));
-                            }
-
-                            // Write Native Messaging Host manifests for Linux browsers (Chrome, Brave, Chromium, Edge, Opera, Vivaldi, Firefox)
                             let browser_dirs = [
                                 std::path::Path::new(&home).join(".config").join("BraveSoftware").join("Brave-Browser").join("NativeMessagingHosts"),
                                 std::path::Path::new(&home).join(".config").join("google-chrome").join("NativeMessagingHosts"),
@@ -776,7 +790,13 @@ pub fn run() {
 
             // Spawn local capture server on Tauri's async runtime reusing the bound listener
             tauri::async_runtime::spawn(async move {
-                let listener = tokio_listener;
+                let listener = match tokio::net::TcpListener::from_std(std_listener) {
+                    Ok(l) => l,
+                    Err(e) => {
+                        eprintln!("Failed to convert std TcpListener to Tokio TcpListener: {}", e);
+                        return;
+                    }
+                };
 
                 loop {
                     if let Ok((mut stream, _)) = listener.accept().await {
