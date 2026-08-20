@@ -85,20 +85,82 @@ if (chrome.webRequest && chrome.webRequest.onBeforeRequest) {
   }
 }
 
-// 2. HTTPS Download Detection Pipeline (Instant Interception)
-async function processDownloadItem(item) {
-  if (!item || !extensionEnabled || desktopAppInterceptionDisabled || handledDownloadIds.has(item.id)) return false;
-  if (item.state === "interrupted" || item.state === "complete") return false;
+// Helper to probe chunked / unknown size streams (e.g. Google Docs/Drive exports)
+async function checkUnknownSizeIsSmall(url, cookies) {
+  const ONE_MB = 1024 * 1024;
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), 2500);
+
+  try {
+    const headers = {};
+    if (cookies) {
+      headers["Cookie"] = cookies;
+    }
+    const res = await fetch(url, {
+      method: "GET",
+      headers,
+      signal: controller.signal,
+      credentials: "include"
+    });
+
+    clearTimeout(timeoutId);
+
+    if (!res.ok && res.status !== 206) {
+      return null;
+    }
+
+    const cl = res.headers.get("content-length");
+    if (cl) {
+      const len = parseInt(cl, 10);
+      if (!isNaN(len) && len > 0) {
+        return len < ONE_MB;
+      }
+    }
+
+    // Read chunked stream up to 1MB to check if it finishes before reaching 1MB
+    if (res.body) {
+      const reader = res.body.getReader();
+      let bytesRead = 0;
+
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) {
+          return bytesRead < ONE_MB;
+        }
+        bytesRead += (value ? value.length : 0);
+        if (bytesRead >= ONE_MB) {
+          try {
+            reader.cancel();
+          } catch (e) {}
+          return false;
+        }
+      }
+    }
+
+    return null;
+  } catch (err) {
+    clearTimeout(timeoutId);
+    return null;
+  }
+}
+
+// 2. HTTPS Download Detection Pipeline (Instant Interception via onDeterminingFilename)
+async function interceptDownloadItem(item) {
+  if (!item || !extensionEnabled || desktopAppInterceptionDisabled || handledDownloadIds.has(item.id)) {
+    return false;
+  }
+  if (item.state === "interrupted" || item.state === "complete") {
+    return false;
+  }
 
   const url = item.url || "";
   const finalUrl = item.finalUrl || url;
   const mime = item.mime || "";
   const filenameStr = item.filename ? item.filename.replace(/^.*[\\\/]/, "") : "";
+  const fileSize = (item.fileSize && item.fileSize > 0) ? item.fileSize : (item.totalBytes && item.totalBytes > 0 ? item.totalBytes : 0);
 
   // Check direct webRequest mirror signal
   const directUrlSignal = filenameStr ? webRequestCapturedUrls.get(filenameStr) : null;
-  
-  // For SourceForge links, always prefer the primary project URL (url) over temporary single-use mirrors
   let targetRealUrl = directUrlSignal || finalUrl;
   if ((url.includes("sourceforge.net") || targetRealUrl.includes("sourceforge.net")) && url.includes("/project/")) {
     targetRealUrl = url;
@@ -117,14 +179,33 @@ async function processDownloadItem(item) {
     }
   } catch (e) {}
 
-  const isBinaryExt =
-    /\.(run|exe|zip|deb|dmg|msi|tar|gz|iso|apk|appimage)$/i.test(filenameStr) ||
-    /\.(run|exe|zip|deb|dmg|msi|tar|gz|iso|apk|appimage)$/i.test(url) ||
-    /\.(run|exe|zip|deb|dmg|msi|tar|gz|iso|apk|appimage)$/i.test(targetRealUrl);
-  const isNonTextMime = mime && !mime.startsWith("text/");
-  const hasSize = item.fileSize && item.fileSize > 0;
+  // FEATURE: Do not download files < 1MB (1,048,576 bytes) - let native browser download engine handle them
+  const ONE_MB = 1024 * 1024;
+  if (fileSize > 0 && fileSize < ONE_MB) {
+    console.log(`[IDM Extension] File size (${fileSize} bytes) < 1MB. Letting native browser download engine handle: ${filenameStr || targetRealUrl}`);
+    return false;
+  }
 
-  const isRealFile = (hasSize || isNonTextMime || isBinaryExt);
+  // Edge Case: If fileSize is unknown (0 or -1, e.g., chunked streams like Google Docs / Drive exports)
+  if (fileSize <= 0) {
+    const cookies = await getCookiesForUrl(targetRealUrl);
+    const isSmall = await checkUnknownSizeIsSmall(targetRealUrl, cookies);
+    if (isSmall === true) {
+      console.log(`[IDM Extension] Verified chunked stream is < 1MB (e.g. Google Docs/Sheets export). Letting native browser download engine handle: ${filenameStr || targetRealUrl}`);
+      return false;
+    }
+  }
+
+  const cleanFilename = filenameStr || extractFilename(targetRealUrl);
+
+  const isBinaryExt =
+    /\.(run|exe|zip|deb|dmg|msi|tar|gz|iso|apk|appimage|7z|rar|bz2|xz|pdf|docx?|xlsx?|pptx?|mp4|mkv|webm|mp3|wav|flac|bin|pkg|csv|epub|mobi)$/i.test(cleanFilename) ||
+    /\.(run|exe|zip|deb|dmg|msi|tar|gz|iso|apk|appimage|7z|rar|bz2|xz|pdf|docx?|xlsx?|pptx?|mp4|mkv|webm|mp3|wav|flac|bin|pkg|csv|epub|mobi)$/i.test(url) ||
+    /\.(run|exe|zip|deb|dmg|msi|tar|gz|iso|apk|appimage|7z|rar|bz2|xz|pdf|docx?|xlsx?|pptx?|mp4|mkv|webm|mp3|wav|flac|bin|pkg|csv|epub|mobi)$/i.test(targetRealUrl);
+  const isNonTextMime = mime && !mime.startsWith("text/");
+  const hasSubstantialSize = fileSize >= ONE_MB;
+
+  const isRealFile = (hasSubstantialSize || isNonTextMime || isBinaryExt);
 
   if (isRealFile) {
     handledDownloadIds.add(item.id);
@@ -138,7 +219,6 @@ async function processDownloadItem(item) {
       });
     } catch (e) {}
 
-    const cleanFilename = filenameStr || extractFilename(targetRealUrl);
     const cookies = await getCookiesForUrl(targetRealUrl);
     let referrer = item.referrer || "";
     if (!referrer) {
@@ -153,7 +233,7 @@ async function processDownloadItem(item) {
     const payload = {
       url: targetRealUrl,
       filename: cleanFilename,
-      size: item.fileSize && item.fileSize > 0 ? item.fileSize : 0,
+      size: fileSize,
       mime: mime,
       referrer: referrer,
       cookie: cookies,
@@ -167,73 +247,15 @@ async function processDownloadItem(item) {
   return false;
 }
 
-function checkAndProcessDownload(id) {
-  if (!extensionEnabled || handledDownloadIds.has(id)) return;
-
-  chrome.downloads.search({ id }, async (items) => {
-    if (!items || items.length === 0) return;
-    const handled = await processDownloadItem(items[0]);
-    if (!handled) {
-      let attempts = 0;
-      const interval = setInterval(() => {
-        attempts++;
-        chrome.downloads.search({ id }, async (pollItems) => {
-          if (!pollItems || pollItems.length === 0) {
-            clearInterval(interval);
-            return;
-          }
-          const pollHandled = await processDownloadItem(pollItems[0]);
-          if (pollHandled || attempts >= 10) {
-            clearInterval(interval);
-          }
-        });
-      }, 300);
-    }
-  });
-}
-
-chrome.downloads.onCreated.addListener((item) => {
-  if (item && item.id && extensionEnabled) {
-    checkAndProcessDownload(item.id);
-  }
-});
-
-chrome.downloads.onChanged.addListener((delta) => {
-  if (delta && delta.id && extensionEnabled) {
-    checkAndProcessDownload(delta.id);
-  }
-});
-
 if (chrome.downloads && chrome.downloads.onDeterminingFilename) {
-  chrome.downloads.onDeterminingFilename.addListener((item) => {
-    if (!extensionEnabled || desktopAppInterceptionDisabled) return;
-    const filenameStr = item.filename ? item.filename.replace(/^.*[\\\/]/, "") : "";
-    const mime = item.mime || "";
-    const url = item.url || "";
-    const targetRealUrl = item.finalUrl || url;
-
-    if (mime === "text/html" || mime === "text/plain" || mime.includes("html")) return;
-    try {
-      const pUrl = new URL(targetRealUrl);
-      if (pUrl.hostname.includes("sourceforge.net") && pUrl.pathname.endsWith("/download")) return;
-    } catch (e) {}
-
-    const isBinaryExt =
-      /\.(run|exe|zip|deb|dmg|msi|tar|gz|iso|apk|appimage)$/i.test(filenameStr) ||
-      /\.(run|exe|zip|deb|dmg|msi|tar|gz|iso|apk|appimage)$/i.test(url) ||
-      /\.(run|exe|zip|deb|dmg|msi|tar|gz|iso|apk|appimage)$/i.test(targetRealUrl);
-    const isNonTextMime = mime && !mime.startsWith("text/");
-    const hasSize = item.fileSize && item.fileSize > 0;
-
-    if (hasSize || isNonTextMime || isBinaryExt) {
-      try {
-        chrome.downloads.cancel(item.id, () => {
-          try {
-            chrome.downloads.erase({ id: item.id }, () => {});
-          } catch (e) {}
-        });
-      } catch (e) {}
-    }
+  chrome.downloads.onDeterminingFilename.addListener((item, suggest) => {
+    (async () => {
+      const intercepted = await interceptDownloadItem(item);
+      if (!intercepted && typeof suggest === "function") {
+        suggest();
+      }
+    })();
+    return true;
   });
 }
 
@@ -301,9 +323,32 @@ async function sendToDesktopApp(payload) {
 
 function extractFilename(url) {
   try {
-    const pathname = new URL(url).pathname;
+    const parsed = new URL(url);
+    // Check if filename is present in query parameters (e.g. ?filename=..., ?file=..., ?name=...)
+    for (const [key, val] of parsed.searchParams.entries()) {
+      const k = key.toLowerCase();
+      if ((k.includes("file") || k.includes("name") || k.includes("title")) && val.includes(".")) {
+        const seg = val.split("/").pop()?.split("\\").pop();
+        if (seg && seg.includes(".")) {
+          try {
+            return decodeURIComponent(seg);
+          } catch {
+            return seg;
+          }
+        }
+      }
+    }
+
+    const pathname = parsed.pathname;
     const last = pathname.substring(pathname.lastIndexOf("/") + 1).split("?")[0];
-    return last || "captured_download";
+    if (last && last !== "download") {
+      try {
+        return decodeURIComponent(last);
+      } catch {
+        return last;
+      }
+    }
+    return "captured_download";
   } catch {
     return "captured_download";
   }

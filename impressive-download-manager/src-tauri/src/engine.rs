@@ -278,8 +278,8 @@ impl DownloadManager {
     pub async fn start_download(
         self: &Arc<Self>,
         url: String,
-        filename: String,
-        save_path: String,
+        mut filename: String,
+        mut save_path: String,
         cookie: String,
         referrer: String,
         user_agent: String,
@@ -301,6 +301,19 @@ impl DownloadManager {
         let mut total_size = 0u64;
         let mut accept_ranges = false;
         let mut final_url = url.clone();
+
+        let update_save_path_filename = |current_path: &str, new_name: &str| -> String {
+            let path = std::path::Path::new(current_path);
+            if let Some(parent) = path.parent() {
+                if parent.as_os_str().is_empty() {
+                    new_name.to_string()
+                } else {
+                    parent.join(new_name).to_string_lossy().to_string()
+                }
+            } else {
+                new_name.to_string()
+            }
+        };
 
         if let Ok(res) = tokio::time::timeout(
             Duration::from_secs(10),
@@ -325,7 +338,62 @@ impl DownloadManager {
                         .and_then(|s| s.parse::<u64>().ok())
                         .unwrap_or(0);
                 }
+
+                // Check Content-Disposition header to resolve better filename if current is generic or missing extension
+                if let Some(cd) = res.headers().get(reqwest::header::CONTENT_DISPOSITION).and_then(|h| h.to_str().ok()) {
+                    if let Some(cd_name) = crate::proxy::parse_content_disposition(cd) {
+                        if !crate::proxy::is_generic_filename(&cd_name) {
+                            let should_update = crate::proxy::is_generic_filename(&filename)
+                                || filename.is_empty()
+                                || (!filename.contains('.') && cd_name.contains('.'));
+                            if should_update {
+                                save_path = update_save_path_filename(&save_path, &cd_name);
+                                filename = cd_name;
+                            }
+                        }
+                    }
+                }
+
+                // Check redirected URL if filename is still generic or missing extension
+                if crate::proxy::is_generic_filename(&filename) || filename.is_empty() || !filename.contains('.') {
+                    if let Ok(parsed_res_url) = reqwest::Url::parse(&final_url) {
+                        let mut candidate = String::new();
+                        for (k, v) in parsed_res_url.query_pairs() {
+                            let k_lower = k.to_lowercase();
+                            if (k_lower.contains("file") || k_lower.contains("name") || k_lower.contains("title")) && v.contains('.') {
+                                if let Ok(decoded) = urlencoding::decode(&v) {
+                                    let sanitized = crate::proxy::sanitize_filename(&decoded);
+                                    if !crate::proxy::is_generic_filename(&sanitized) && sanitized.contains('.') {
+                                        candidate = sanitized;
+                                        break;
+                                    }
+                                }
+                            }
+                        }
+                        if candidate.is_empty() {
+                            if let Some(last_seg) = parsed_res_url.path_segments().and_then(|s| s.last()) {
+                                if !last_seg.is_empty() && last_seg.contains('.') {
+                                    if let Ok(decoded) = urlencoding::decode(last_seg) {
+                                        let sanitized = crate::proxy::sanitize_filename(&decoded);
+                                        if !crate::proxy::is_generic_filename(&sanitized) && sanitized.contains('.') {
+                                            candidate = sanitized;
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        if !candidate.is_empty() {
+                            save_path = update_save_path_filename(&save_path, &candidate);
+                            filename = candidate;
+                        }
+                    }
+                }
             }
+        }
+
+        if crate::proxy::is_generic_filename(&filename) || filename.is_empty() {
+            filename = "downloaded_file".to_string();
+            save_path = update_save_path_filename(&save_path, &filename);
         }
 
         let (abort_tx, _) = broadcast::channel(1);

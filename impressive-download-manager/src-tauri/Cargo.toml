@@ -1,6 +1,6 @@
 [package]
 name = "impressive-download-manager"
-version = "0.7.1"
+version = "0.7.3"
 description = "A Tauri App"
 authors = ["you"]
 edition = "2021"

@@ -260,15 +260,15 @@ fn download_captured_response() -> Response<BoxBody<Bytes, hyper::Error>> {
     resp
 }
 
-fn sanitize_filename(name: &str) -> String {
+pub fn sanitize_filename(name: &str) -> String {
     let mut clean = name.trim().trim_matches('"').trim_matches('\'').to_string();
-    for invalid in ['/', '\\', ':', '*', '?', '"', '<', '>', '|'] {
+    for invalid in ['/', '\\', ':', '*', '?', '"', '<', '>', '|', '\r', '\n', '\0'] {
         clean = clean.replace(invalid, "_");
     }
     clean.trim().to_string()
 }
 
-fn parse_content_disposition(value: &str) -> Option<String> {
+pub fn parse_content_disposition(value: &str) -> Option<String> {
     if value.is_empty() { return None; }
     
     // Pass 1: filename*= (RFC 5987)
@@ -284,7 +284,7 @@ fn parse_content_disposition(value: &str) -> Option<String> {
                 };
                 if let Ok(decoded) = urlencoding::decode(encoded_str) {
                     let sanitized = sanitize_filename(&decoded);
-                    if !sanitized.is_empty() {
+                    if !sanitized.is_empty() && !is_generic_filename(&sanitized) {
                         return Some(sanitized);
                     }
                 }
@@ -300,7 +300,7 @@ fn parse_content_disposition(value: &str) -> Option<String> {
                 let clean = val.trim_matches('"').trim();
                 if let Ok(decoded) = urlencoding::decode(clean) {
                     let sanitized = sanitize_filename(&decoded);
-                    if !sanitized.is_empty() {
+                    if !sanitized.is_empty() && !is_generic_filename(&sanitized) {
                         return Some(sanitized);
                     }
                 }
@@ -311,16 +311,19 @@ fn parse_content_disposition(value: &str) -> Option<String> {
     None
 }
 
-fn is_generic_filename(name: &str) -> bool {
-    let lower = name.to_lowercase();
-    lower == "captured_download"
+pub fn is_generic_filename(name: &str) -> bool {
+    let lower = name.trim().to_lowercase();
+    lower.is_empty()
+        || lower == "captured_download"
         || lower == "download"
+        || lower == "downloaded_file"
         || lower == "download.php"
         || lower == "file.php"
         || lower == "index.php"
         || lower == "index.cgi"
         || lower == "get_file.php"
         || lower == "attachment.php"
+        || lower == "file"
 }
 
 fn extension_from_content_type(ct: &str) -> Option<&'static str> {
@@ -476,4 +479,43 @@ fn empty_body() -> BoxBody<Bytes, hyper::Error> {
     Empty::<Bytes>::new()
         .map_err(|never| match never {})
         .boxed()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_parse_content_disposition_standard() {
+        let header = r#"attachment; filename="setup_v2.0.exe""#;
+        assert_eq!(parse_content_disposition(header), Some("setup_v2.0.exe".to_string()));
+    }
+
+    #[test]
+    fn test_parse_content_disposition_unquoted() {
+        let header = "attachment; filename=document.pdf";
+        assert_eq!(parse_content_disposition(header), Some("document.pdf".to_string()));
+    }
+
+    #[test]
+    fn test_parse_content_disposition_utf8_rfc5987() {
+        let header = "attachment; filename*=UTF-8''%e2%82%ac%20rates.pdf";
+        assert_eq!(parse_content_disposition(header), Some("€ rates.pdf".to_string()));
+    }
+
+    #[test]
+    fn test_sanitize_filename() {
+        assert_eq!(sanitize_filename("my:file/name?.zip"), "my_file_name_.zip");
+        assert_eq!(sanitize_filename(r#""test.tar.gz""#), "test.tar.gz");
+    }
+
+    #[test]
+    fn test_is_generic_filename() {
+        assert!(is_generic_filename("download"));
+        assert!(is_generic_filename("captured_download"));
+        assert!(is_generic_filename("downloaded_file"));
+        assert!(is_generic_filename("download.php"));
+        assert!(!is_generic_filename("node-v20.tar.gz"));
+        assert!(!is_generic_filename("installer.exe"));
+    }
 }

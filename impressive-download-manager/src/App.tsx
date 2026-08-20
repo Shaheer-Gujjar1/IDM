@@ -152,7 +152,7 @@ function App() {
   const [deleteFileFromDisk, setDeleteFileFromDisk] = useState(false);
 
   // Updater State & Metrics
-  const CURRENT_APP_VERSION = "0.7.1";
+  const CURRENT_APP_VERSION = "0.7.3";
   const [checkingUpdate, setCheckingUpdate] = useState(false);
   const [updateStatus, setUpdateStatus] = useState<string | null>(null);
   const [pendingRelaunch, setPendingRelaunch] = useState(false);
@@ -457,9 +457,29 @@ function App() {
   const extractFilename = (url: string): string => {
     try {
       const parsed = new URL(url);
+      for (const [key, val] of parsed.searchParams.entries()) {
+        const k = key.toLowerCase();
+        if ((k.includes("file") || k.includes("name") || k.includes("title")) && val.includes(".")) {
+          const seg = val.split("/").pop()?.split("\\").pop();
+          if (seg && seg.includes(".")) {
+            try {
+              return decodeURIComponent(seg);
+            } catch {
+              return seg;
+            }
+          }
+        }
+      }
       const pathname = parsed.pathname;
-      const lastSegment = pathname.substring(pathname.lastIndexOf("/") + 1);
-      return lastSegment || "downloaded_file";
+      const lastSegment = pathname.substring(pathname.lastIndexOf("/") + 1).split("?")[0];
+      if (lastSegment && lastSegment !== "download") {
+        try {
+          return decodeURIComponent(lastSegment);
+        } catch {
+          return lastSegment;
+        }
+      }
+      return "downloaded_file";
     } catch {
       return "downloaded_file";
     }
@@ -552,11 +572,23 @@ function App() {
     if (mode) {
       setPopupMode(mode);
       setPopupUrl(url);
-      setPopupFilename(decodeURIComponent(filename));
-      if (savePath) {
-        setSavePath(decodeURIComponent(savePath));
+      let safeFilename = filename;
+      try {
+        safeFilename = filename ? decodeURIComponent(filename) : "";
+      } catch {
+        safeFilename = filename;
       }
-      setPopupSavePath(decodeURIComponent(savePath));
+      setPopupFilename(safeFilename);
+      if (savePath) {
+        let safeSavePath = savePath;
+        try {
+          safeSavePath = decodeURIComponent(savePath);
+        } catch {
+          safeSavePath = savePath;
+        }
+        setSavePath(safeSavePath);
+        setPopupSavePath(safeSavePath);
+      }
       setPopupCookie(cookie);
       setPopupReferrer(referrer);
       setPopupUserAgent(userAgent);
@@ -2305,34 +2337,34 @@ function App() {
 
             <div style={{ display: "flex", flexDirection: "column", gap: "10px" }}>
               <div className="celebration-feature-card">
-                <Layers size={20} style={{ color: "var(--accent-cyan)", flexShrink: 0, marginTop: "2px" }} />
+                <FileText size={20} style={{ color: "var(--accent-cyan)", flexShrink: 0, marginTop: "2px" }} />
                 <div>
-                  <div style={{ fontWeight: 800, fontSize: "0.92rem", color: "var(--text-primary)" }}>Isolated Part File Architecture</div>
-                  <div style={{ fontSize: "0.82rem", color: "var(--text-secondary)", marginTop: "2px" }}>Segmented per-chunk temporary storage written independently to prevent thread-lock contention and random disk seek overhead.</div>
+                  <div style={{ fontWeight: 800, fontSize: "0.92rem", color: "var(--text-primary)" }}>Accurate Filename Resolution</div>
+                  <div style={{ fontSize: "0.82rem", color: "var(--text-secondary)", marginTop: "2px" }}>Captures clean filenames directly from server headers and RFC 5987 Content-Disposition, eliminating random hashes and endpoint slugs.</div>
                 </div>
               </div>
 
               <div className="celebration-feature-card">
-                <RefreshCw size={20} style={{ color: "var(--accent-cyan)", flexShrink: 0, marginTop: "2px" }} />
+                <Globe size={20} style={{ color: "var(--accent-cyan)", flexShrink: 0, marginTop: "2px" }} />
                 <div>
-                  <div style={{ fontWeight: 800, fontSize: "0.92rem", color: "var(--text-primary)" }}>Post-Download File Assembly</div>
-                  <div style={{ fontSize: "0.82rem", color: "var(--text-secondary)", marginTop: "2px" }}>Sequential fast file-merging phase with automatic background temporary file cleanup upon 100% download completion.</div>
+                  <div style={{ fontWeight: 800, fontSize: "0.92rem", color: "var(--text-primary)" }}>Smart &lt; 1MB Native Browser Handling</div>
+                  <div style={{ fontSize: "0.82rem", color: "var(--text-secondary)", marginTop: "2px" }}>Downloads smaller than 1MB are seamlessly routed to your browser's native engine to prevent unnecessary capture popups for small files.</div>
                 </div>
               </div>
 
               <div className="celebration-feature-card">
                 <Activity size={20} style={{ color: "var(--accent-cyan)", flexShrink: 0, marginTop: "2px" }} />
                 <div>
-                  <div style={{ fontWeight: 800, fontSize: "0.92rem", color: "var(--text-primary)" }}>Real-Time Progress Streams</div>
-                  <div style={{ fontSize: "0.82rem", color: "var(--text-secondary)", marginTop: "2px" }}>Continuous progress updates reflecting live network byte streams rather than jumping in 1MB disk-flush ticks.</div>
+                  <div style={{ fontWeight: 800, fontSize: "0.92rem", color: "var(--text-primary)" }}>Dynamic Document & Stream Probing</div>
+                  <div style={{ fontSize: "0.82rem", color: "var(--text-secondary)", marginTop: "2px" }}>Asynchronously inspects chunked streams (like Google Docs and Drive exports) so small documents download natively without unknown-size prompts.</div>
                 </div>
               </div>
 
               <div className="celebration-feature-card">
                 <Zap size={20} style={{ color: "var(--accent-cyan)", flexShrink: 0, marginTop: "2px" }} />
                 <div>
-                  <div style={{ fontWeight: 800, fontSize: "0.92rem", color: "var(--text-primary)" }}>Wire-Speed Throughput & Protection</div>
-                  <div style={{ fontSize: "0.82rem", color: "var(--text-secondary)", marginTop: "2px" }}>Tuned piece-splitting limits and 15s stream timeouts to sustain peak bandwidth and eliminate flatline speed drops.</div>
+                  <div style={{ fontWeight: 800, fontSize: "0.92rem", color: "var(--text-primary)" }}>Multi-Browser Native Messaging Host</div>
+                  <div style={{ fontSize: "0.82rem", color: "var(--text-secondary)", marginTop: "2px" }}>Automatic background daemon wakeup and Native Messaging Host support across Chrome, Firefox, Edge, Brave, Opera, and Vivaldi.</div>
                 </div>
               </div>
             </div>

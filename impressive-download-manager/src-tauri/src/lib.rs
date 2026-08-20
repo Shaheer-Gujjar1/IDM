@@ -601,30 +601,18 @@ pub fn extract_sourceforge_mirror_url(html_body: &str) -> Option<String> {
 }
 
 #[allow(dead_code)]
-fn parse_content_disposition(value: &str) -> Option<String> {
-    if let Some(pos) = value.find("filename=") {
-        let mut filename = value[pos + 9..].trim().to_string();
-        if let Some(semi) = filename.find(';') {
-            filename = filename[..semi].trim().to_string();
-        }
-        if filename.starts_with('"') && filename.ends_with('"') {
-            filename = filename[1..filename.len() - 1].to_string();
-        }
-        return Some(filename);
-    }
-    if let Some(pos) = value.find("filename*=") {
-        let mut filename = value[pos + 10..].trim().to_string();
-        if let Some(semi) = filename.find(';') {
-            filename = filename[..semi].trim().to_string();
-        }
-        if filename.to_lowercase().starts_with("utf-8''") {
-            filename = filename[7..].to_string();
-        }
-        if let Ok(decoded) = urlencoding::decode(&filename) {
-            return Some(decoded.to_string());
-        }
-    }
-    None
+pub fn parse_content_disposition(value: &str) -> Option<String> {
+    proxy::parse_content_disposition(value)
+}
+
+#[allow(dead_code)]
+pub fn sanitize_filename(name: &str) -> String {
+    proxy::sanitize_filename(name)
+}
+
+#[allow(dead_code)]
+pub fn is_generic_filename(name: &str) -> bool {
+    proxy::is_generic_filename(name)
 }
 
 #[allow(dead_code)]
@@ -981,21 +969,42 @@ pub fn run() {
 
                                     let body_clean = body.trim_end_matches('\0').trim();
                                     if let Ok(payload) = serde_json::from_str::<DownloadPayload>(body_clean) {
-                                        let mut filename = payload.filename.clone();
+                                        let mut filename = proxy::sanitize_filename(&payload.filename);
                                         let target_download_url = payload.url.clone();
                                         let total_size = payload.size.unwrap_or(0);
 
-                                        if filename.is_empty() || filename == "download" || filename == "captured_download" {
+                                        if proxy::is_generic_filename(&filename) {
                                             if let Ok(parsed_url) = reqwest::Url::parse(&target_download_url) {
-                                                if let Some(last_seg) = parsed_url.path_segments().and_then(|s| s.last()) {
-                                                    if !last_seg.is_empty() && last_seg != "download" {
-                                                        filename = last_seg.to_string();
+                                                let mut found_in_query = false;
+                                                for (k, v) in parsed_url.query_pairs() {
+                                                    let k_lower = k.to_lowercase();
+                                                    if (k_lower.contains("file") || k_lower.contains("name") || k_lower.contains("title")) && v.contains('.') {
+                                                        if let Ok(decoded) = urlencoding::decode(&v) {
+                                                            let sanitized = proxy::sanitize_filename(&decoded);
+                                                            if !proxy::is_generic_filename(&sanitized) {
+                                                                filename = sanitized;
+                                                                found_in_query = true;
+                                                                break;
+                                                            }
+                                                        }
+                                                    }
+                                                }
+                                                if !found_in_query {
+                                                    if let Some(last_seg) = parsed_url.path_segments().and_then(|s| s.last()) {
+                                                        if !last_seg.is_empty() && !proxy::is_generic_filename(last_seg) {
+                                                            if let Ok(decoded) = urlencoding::decode(last_seg) {
+                                                                let sanitized = proxy::sanitize_filename(&decoded);
+                                                                if !proxy::is_generic_filename(&sanitized) {
+                                                                    filename = sanitized;
+                                                                }
+                                                            }
+                                                        }
                                                     }
                                                 }
                                             }
                                         }
-                                        if filename.is_empty() {
-                                            filename = "captured_download".to_string();
+                                        if proxy::is_generic_filename(&filename) {
+                                            filename = "downloaded_file".to_string();
                                         }
 
                                         println!(

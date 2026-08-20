@@ -1,5 +1,16 @@
 # CHANGELOG
 
+## [0.7.3] – 2026-08-20
+
+### Added
+- **Native Browser Handling for Files < 1MB**: Browser extension now automatically bypasses interception and allows the native browser download engine to download files smaller than 1MB (< 1,048,576 bytes) without opening IDM.
+- **Dynamic Chunked Stream Inspection (Google Docs/Drive/Sheets)**: Added `checkUnknownSizeIsSmall()` in the browser extension to inspect chunked `Transfer-Encoding` downloads with unknown initial sizes. Small dynamic document exports (< 1MB) are detected and handled natively by the browser rather than being intercepted as unknown-size files.
+
+### Fixed
+- **Accurate Filename Resolution on Intercepted Downloads**: Shifted browser extension download interception to `chrome.downloads.onDeterminingFilename`, allowing the browser to receive HTTP response headers (`Content-Disposition`, `Content-Length`) and resolve redirects first. Eliminates the bug where downloads received weird random alphanumeric hashes or URL endpoint slugs.
+- **Server Header & Redirect Inspection in Backend Engine**: Updated `start_download` in Rust engine (`engine.rs`) to parse `Content-Disposition` (both RFC 5987 `filename*=` and standard `filename=`) and final redirected URLs during URL probe, automatically refining generic or extensionless filenames and updating save paths.
+- **Query-Aware Filename Extraction**: Enhanced URL filename parsing in frontend (`App.tsx`), backend (`lib.rs`), and browser extension (`background.js`) to extract file names from URL query parameters (`file=`, `filename=`, `name=`, `title=`) and decode safely with error handling.
+
 ## [0.7.1] – 2026-08-12 (Commit Reference Tag: `e1c0cb669f42a9cd4d2b0d31c2d9724fca6e958c`)
 
 ### Added
