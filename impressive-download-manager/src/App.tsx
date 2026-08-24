@@ -24,11 +24,12 @@ import {
   Calendar,
   RefreshCw,
   FolderOpen,
-  Zap,
   ShieldAlert,
   ChevronDown,
-  Rocket,
-  PartyPopper
+  Moon,
+  Sun,
+  Laptop,
+  Rocket
 } from "lucide-react";
 import { listen } from "@tauri-apps/api/event";
 import { invoke } from "@tauri-apps/api/core";
@@ -144,21 +145,25 @@ function App() {
     const val = localStorage.getItem("intercept_downloads");
     return val !== null ? val === "true" : true;
   });
-  const [integrationPort, setIntegrationPort] = useState(9600);
+  const [integrationPort, setIntegrationPort] = useState<number>(() => {
+    const saved = localStorage.getItem("integration_port");
+    return saved ? parseInt(saved, 10) : 9600;
+  });
 
-  // Remove Task Modal States
+  // Remove & Bulk Selection States
   const [showRemoveConfirm, setShowRemoveConfirm] = useState(false);
-  const [taskToRemove, setTaskToRemove] = useState<DownloadProgress | null>(null);
+  const [tasksToRemove, setTasksToRemove] = useState<DownloadProgress[]>([]);
   const [deleteFileFromDisk, setDeleteFileFromDisk] = useState(false);
+  const [selectedTaskIds, setSelectedTaskIds] = useState<string[]>([]);
 
   // Updater State & Metrics
-  const CURRENT_APP_VERSION = "0.7.4";
+  const CURRENT_APP_VERSION = "0.7.6";
   const [checkingUpdate, setCheckingUpdate] = useState(false);
   const [updateStatus, setUpdateStatus] = useState<string | null>(null);
   const [pendingRelaunch, setPendingRelaunch] = useState(false);
   const [isDownloadingUpdate, setIsDownloadingUpdate] = useState(false);
-  const [updatedFromVersion, setUpdatedFromVersion] = useState<string | null>(null);
-  const [showUpdateSuccessModal, setShowUpdateSuccessModal] = useState(false);
+  const [updatedFromVersion, setUpdatedFromVersion] = useState<string | null>("0.7.3");
+  const [showUpdateSuccessModal, setShowUpdateSuccessModal] = useState(true);
 
   const [updateProgressInfo, setUpdateProgressInfo] = useState<{
     downloaded: number;
@@ -353,13 +358,37 @@ function App() {
   };
 
   // Scheduler State
-  const [schedulerEnabled, setSchedulerEnabled] = useState(false);
-  const [startTime, setStartTime] = useState("02:00");
-  const [endTime, setEndTime] = useState("06:00");
-  const [activeDays, setActiveDays] = useState<string[]>(["Mon", "Tue", "Wed", "Thu", "Fri"]);
+  const [schedulerEnabled, setSchedulerEnabled] = useState(() => {
+    return localStorage.getItem("scheduler_enabled") === "true";
+  });
+  const [startTime, setStartTime] = useState(() => {
+    return localStorage.getItem("scheduler_start_time") || "02:00";
+  });
+  const [endTime, setEndTime] = useState(() => {
+    return localStorage.getItem("scheduler_end_time") || "06:00";
+  });
+  const [activeDays, setActiveDays] = useState<string[]>(() => {
+    const saved = localStorage.getItem("scheduler_active_days");
+    if (saved) {
+      try {
+        const parsed = JSON.parse(saved);
+        if (Array.isArray(parsed) && parsed.length > 0) return parsed;
+      } catch { }
+    }
+    return ["Mon", "Tue", "Wed", "Thu", "Fri"];
+  });
 
-  const [isThemeDropdownOpen, setIsThemeDropdownOpen] = useState(false);
-  const themeDropdownRef = useRef<HTMLDivElement>(null);
+  const syncSchedulerConfig = (enabled: boolean, start: string, end: string, days: string[]) => {
+    invoke("set_scheduler_config", {
+      config: {
+        enabled,
+        start_time: start,
+        end_time: end,
+        active_days: days,
+      },
+    }).catch(console.error);
+  };
+
   const [activeTooltip, setActiveTooltip] = useState<{ title: string; x: number; y: number; pos?: "right" | "top" | "bottom" } | null>(null);
 
   const showTooltip = (title: string, e: React.MouseEvent, pos: "right" | "top" | "bottom" = "right") => {
@@ -389,16 +418,6 @@ function App() {
   };
 
   const hideTooltip = () => setActiveTooltip(null);
-
-  useEffect(() => {
-    const handleOutsideClick = (e: MouseEvent) => {
-      if (themeDropdownRef.current && !themeDropdownRef.current.contains(e.target as Node)) {
-        setIsThemeDropdownOpen(false);
-      }
-    };
-    document.addEventListener("mousedown", handleOutsideClick);
-    return () => document.removeEventListener("mousedown", handleOutsideClick);
-  }, []);
 
   // Theme Mode Settings State
   const [themeMode, setThemeMode] = useState<"dark" | "light" | "system">(() => {
@@ -446,11 +465,12 @@ function App() {
   const daysOfWeek = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
 
   const toggleDay = (day: string) => {
-    if (activeDays.includes(day)) {
-      setActiveDays(activeDays.filter((d) => d !== day));
-    } else {
-      setActiveDays([...activeDays, day]);
-    }
+    const nextDays = activeDays.includes(day)
+      ? activeDays.filter((d) => d !== day)
+      : [...activeDays, day];
+    setActiveDays(nextDays);
+    localStorage.setItem("scheduler_active_days", JSON.stringify(nextDays));
+    syncSchedulerConfig(schedulerEnabled, startTime, endTime, nextDays);
   };
 
   // Parse filename from URL
@@ -568,6 +588,26 @@ function App() {
     const savedMaxChunks = localStorage.getItem("max_chunks") || "8";
     const maxChunksVal = Math.min(32, Math.max(1, parseInt(savedMaxChunks, 10) || 8));
     invoke("set_max_chunks", { maxChunks: maxChunksVal }).catch(console.error);
+
+    // Sync scheduler config with backend engine
+    invoke<any>("get_scheduler_config")
+      .then((cfg) => {
+        if (cfg) {
+          setSchedulerEnabled(cfg.enabled);
+          setStartTime(cfg.start_time || "02:00");
+          setEndTime(cfg.end_time || "06:00");
+          if (Array.isArray(cfg.active_days)) {
+            setActiveDays(cfg.active_days);
+            localStorage.setItem("scheduler_active_days", JSON.stringify(cfg.active_days));
+          }
+          localStorage.setItem("scheduler_enabled", String(cfg.enabled));
+          localStorage.setItem("scheduler_start_time", cfg.start_time || "02:00");
+          localStorage.setItem("scheduler_end_time", cfg.end_time || "06:00");
+        }
+      })
+      .catch(() => {
+        syncSchedulerConfig(schedulerEnabled, startTime, endTime, activeDays);
+      });
 
     if (mode) {
       setPopupMode(mode);
@@ -940,34 +980,67 @@ function App() {
     }
   };
 
-  const promptRemoveTask = (e: React.MouseEvent | null, task: DownloadProgress) => {
+  const toggleSelectTask = (id: string, e?: React.MouseEvent) => {
     if (e) e.stopPropagation();
-    setTaskToRemove(task);
+    setSelectedTaskIds((prev) =>
+      prev.includes(id) ? prev.filter((item) => item !== id) : [...prev, id]
+    );
+  };
+
+  const handleSelectAllVisible = () => {
+    const visibleIds = sortedDownloads.map((d) => d.id);
+    const allSelected = visibleIds.length > 0 && visibleIds.every((id) => selectedTaskIds.includes(id));
+    if (allSelected) {
+      setSelectedTaskIds((prev) => prev.filter((id) => !visibleIds.includes(id)));
+    } else {
+      setSelectedTaskIds((prev) => Array.from(new Set([...prev, ...visibleIds])));
+    }
+  };
+
+  const promptBulkDelete = () => {
+    const selected = downloads.filter((d) => selectedTaskIds.includes(d.id));
+    if (selected.length === 0) return;
+    setTasksToRemove(selected);
     setDeleteFileFromDisk(false);
     setShowRemoveConfirm(true);
   };
 
   const confirmRemoveTask = async () => {
-    if (!taskToRemove) return;
-    const id = taskToRemove.id;
-    const isAlreadyTrash = getStatusText(taskToRemove.status) === "Trash";
+    if (tasksToRemove.length === 0) return;
+    const idsToRemove = tasksToRemove.map((t) => t.id);
 
     try {
-      if (isAlreadyTrash) {
-        await invoke("delete_task", { id });
-        setDownloads((prev) => prev.filter((d) => d.id !== id));
-      } else {
-        await invoke("trash_task", { id, deleteFile: deleteFileFromDisk });
-        setDownloads((prev) =>
-          prev.map((d) => d.id === id ? { ...d, status: "Trash" } : d)
-        );
+      for (const task of tasksToRemove) {
+        const isAlreadyTrash = getStatusText(task.status) === "Trash";
+        if (isAlreadyTrash) {
+          await invoke("delete_task", { id: task.id });
+        } else {
+          await invoke("trash_task", { id: task.id, deleteFile: deleteFileFromDisk });
+        }
       }
-      if (selectedTask?.id === id) setSelectedTask(null);
+
+      setDownloads((prev) => {
+        return prev
+          .map((d) => {
+            if (idsToRemove.includes(d.id)) {
+              const isAlreadyTrash = getStatusText(d.status) === "Trash";
+              if (isAlreadyTrash) return null;
+              return { ...d, status: "Trash" as DownloadStatus };
+            }
+            return d;
+          })
+          .filter(Boolean) as DownloadProgress[];
+      });
+
+      if (selectedTask && idsToRemove.includes(selectedTask.id)) {
+        setSelectedTask(null);
+      }
+      setSelectedTaskIds((prev) => prev.filter((id) => !idsToRemove.includes(id)));
     } catch (err) {
-      console.error(err);
+      console.error("Failed to remove task(s):", err);
     } finally {
       setShowRemoveConfirm(false);
-      setTaskToRemove(null);
+      setTasksToRemove([]);
     }
   };
 
@@ -1372,49 +1445,56 @@ function App() {
                     </button>
                   </div>
                 </div>
-                <div className="form-group" style={{ position: "relative" }}>
+                <div className="form-group">
                   <span className="form-label">Theme Mode</span>
-                  <div className="custom-dropdown-container" ref={themeDropdownRef}>
-                    <button
-                      type="button"
-                      className="form-input custom-dropdown-trigger"
-                      onClick={() => setIsThemeDropdownOpen(!isThemeDropdownOpen)}
+                  <div className="settings-selection-grid grid-3">
+                    <div
+                      className={`settings-selection-card ${themeMode === "dark" ? "selected" : ""}`}
+                      onClick={() => setThemeMode("dark")}
                     >
-                      {themeMode === "dark" && "Dark Theme"}
-                      {themeMode === "light" && "Light Theme"}
-                      {themeMode === "system" && "Follow System Theme"}
-                    </button>
-                    {isThemeDropdownOpen && (
-                      <div className="custom-dropdown-menu">
-                        <div
-                          className={`custom-dropdown-item ${themeMode === "dark" ? "selected" : ""}`}
-                          onClick={() => {
-                            setThemeMode("dark");
-                            setIsThemeDropdownOpen(false);
-                          }}
-                        >
-                          Dark Theme
+                      <div className="settings-selection-card-header">
+                        <div className="settings-selection-card-header-left">
+                          <Moon size={15} />
+                          <span>Dark Theme</span>
                         </div>
-                        <div
-                          className={`custom-dropdown-item ${themeMode === "light" ? "selected" : ""}`}
-                          onClick={() => {
-                            setThemeMode("light");
-                            setIsThemeDropdownOpen(false);
-                          }}
-                        >
-                          Light Theme
-                        </div>
-                        <div
-                          className={`custom-dropdown-item ${themeMode === "system" ? "selected" : ""}`}
-                          onClick={() => {
-                            setThemeMode("system");
-                            setIsThemeDropdownOpen(false);
-                          }}
-                        >
-                          Follow System Theme
-                        </div>
+                        <span className="settings-selection-indicator" />
                       </div>
-                    )}
+                      <div className="settings-selection-card-desc">
+                        Deep obsidian contrast with vibrant cyan accents.
+                      </div>
+                    </div>
+
+                    <div
+                      className={`settings-selection-card ${themeMode === "light" ? "selected" : ""}`}
+                      onClick={() => setThemeMode("light")}
+                    >
+                      <div className="settings-selection-card-header">
+                        <div className="settings-selection-card-header-left">
+                          <Sun size={15} />
+                          <span>Light Theme</span>
+                        </div>
+                        <span className="settings-selection-indicator" />
+                      </div>
+                      <div className="settings-selection-card-desc">
+                        Crisp, clean high-readability daylight workspace.
+                      </div>
+                    </div>
+
+                    <div
+                      className={`settings-selection-card ${themeMode === "system" ? "selected" : ""}`}
+                      onClick={() => setThemeMode("system")}
+                    >
+                      <div className="settings-selection-card-header">
+                        <div className="settings-selection-card-header-left">
+                          <Laptop size={15} />
+                          <span>System</span>
+                        </div>
+                        <span className="settings-selection-indicator" />
+                      </div>
+                      <div className="settings-selection-card-desc">
+                        Automatically match your OS desktop preference.
+                      </div>
+                    </div>
                   </div>
                 </div>
                 <div className="settings-control-row">
@@ -1702,14 +1782,47 @@ function App() {
                     <span className="switch-slider"></span>
                   </label>
                 </div>
-                <div className="form-group">
-                  <span className="form-label">Native Messaging Bridge Port</span>
-                  <input
-                    type="number"
-                    className="form-input"
-                    value={integrationPort}
-                    onChange={(e) => setIntegrationPort(parseInt(e.target.value))}
-                  />
+                <div className="form-group" style={{ marginTop: "12px" }}>
+                  <span className="form-label">Integration &amp; Bridge Port</span>
+                  <div className="settings-selection-grid grid-2">
+                    <div
+                      className={`settings-selection-card ${integrationPort === 9600 ? "selected" : ""}`}
+                      onClick={() => {
+                        setIntegrationPort(9600);
+                        localStorage.setItem("integration_port", "9600");
+                      }}
+                    >
+                      <div className="settings-selection-card-header">
+                        <div className="settings-selection-card-header-left">
+                          <Globe size={15} />
+                          <span>Port 9600 (Primary)</span>
+                        </div>
+                        <span className="settings-selection-indicator" />
+                      </div>
+                      <div className="settings-selection-card-desc">
+                        Primary HTTP daemon &amp; native messaging browser extension bridge.
+                      </div>
+                    </div>
+
+                    <div
+                      className={`settings-selection-card ${integrationPort === 8765 ? "selected" : ""}`}
+                      onClick={() => {
+                        setIntegrationPort(8765);
+                        localStorage.setItem("integration_port", "8765");
+                      }}
+                    >
+                      <div className="settings-selection-card-header">
+                        <div className="settings-selection-card-header-left">
+                          <Network size={15} />
+                          <span>Port 8765 (Proxy)</span>
+                        </div>
+                        <span className="settings-selection-indicator" />
+                      </div>
+                      <div className="settings-selection-card-desc">
+                        Local forward proxy server for specialized traffic routing.
+                      </div>
+                    </div>
+                  </div>
                 </div>
               </div>
 
@@ -1728,51 +1841,100 @@ function App() {
                       type="checkbox"
                       className="switch-input"
                       checked={schedulerEnabled}
-                      onChange={(e) => setSchedulerEnabled(e.target.checked)}
+                      onChange={(e) => {
+                        const val = e.target.checked;
+                        setSchedulerEnabled(val);
+                        localStorage.setItem("scheduler_enabled", String(val));
+                        syncSchedulerConfig(val, startTime, endTime, activeDays);
+                      }}
                     />
                     <span className="switch-slider"></span>
                   </label>
                 </div>
                 {schedulerEnabled && (
-                  <div className="settings-grid">
-                    <div className="form-group">
-                      <span className="form-label">Start Time</span>
-                      <input
-                        type="time"
-                        className="form-input"
-                        value={startTime}
-                        onChange={(e) => setStartTime(e.target.value)}
-                      />
-                    </div>
-                    <div className="form-group">
-                      <span className="form-label">End Time</span>
-                      <input
-                        type="time"
-                        className="form-input"
-                        value={endTime}
-                        onChange={(e) => setEndTime(e.target.value)}
-                      />
-                    </div>
-                    <div className="form-group settings-grid-full">
-                      <span className="form-label">Repeat Days</span>
-                      <div className="days-grid">
-                        {daysOfWeek.map((day) => (
-                          <div key={day} style={{ flex: 1 }}>
-                            <input
-                              type="checkbox"
-                              id={`day-${day}`}
-                              className="day-checkbox-input"
-                              checked={activeDays.includes(day)}
-                              onChange={() => toggleDay(day)}
-                            />
-                            <label htmlFor={`day-${day}`} className="day-checkbox-label">
-                              {day}
-                            </label>
-                          </div>
-                        ))}
+                  <>
+                    <div className="settings-grid">
+                      <div className="form-group">
+                        <span className="form-label">Start Time</span>
+                        <input
+                          type="time"
+                          className="form-input"
+                          value={startTime}
+                          onChange={(e) => {
+                            const val = e.target.value;
+                            setStartTime(val);
+                            localStorage.setItem("scheduler_start_time", val);
+                            syncSchedulerConfig(schedulerEnabled, val, endTime, activeDays);
+                          }}
+                        />
+                      </div>
+                      <div className="form-group">
+                        <span className="form-label">End Time</span>
+                        <input
+                          type="time"
+                          className="form-input"
+                          value={endTime}
+                          onChange={(e) => {
+                            const val = e.target.value;
+                            setEndTime(val);
+                            localStorage.setItem("scheduler_end_time", val);
+                            syncSchedulerConfig(schedulerEnabled, startTime, val, activeDays);
+                          }}
+                        />
+                      </div>
+                      <div className="form-group settings-grid-full">
+                        <span className="form-label">Repeat Days</span>
+                        <div className="days-grid">
+                          {daysOfWeek.map((day) => (
+                            <div key={day} style={{ flex: 1 }}>
+                              <input
+                                type="checkbox"
+                                id={`day-${day}`}
+                                className="day-checkbox-input"
+                                checked={activeDays.includes(day)}
+                                onChange={() => toggleDay(day)}
+                              />
+                              <label htmlFor={`day-${day}`} className="day-checkbox-label">
+                                {day}
+                              </label>
+                            </div>
+                          ))}
+                        </div>
                       </div>
                     </div>
-                  </div>
+
+                    <div className="scheduler-rules-container">
+                      <div className="scheduler-rule-chip">
+                        <div className="scheduler-rule-header">
+                          <Play size={14} />
+                          <span>Auto-Start</span>
+                        </div>
+                        <div className="scheduler-rule-desc">
+                          Resumes all queued &amp; paused tasks at {startTime} on active days.
+                        </div>
+                      </div>
+
+                      <div className="scheduler-rule-chip">
+                        <div className="scheduler-rule-header">
+                          <Pause size={14} />
+                          <span>Auto-Pause</span>
+                        </div>
+                        <div className="scheduler-rule-desc">
+                          Pauses active downloads safely when the window closes at {endTime}.
+                        </div>
+                      </div>
+
+                      <div className="scheduler-rule-chip">
+                        <div className="scheduler-rule-header">
+                          <Activity size={14} />
+                          <span>Background Silent</span>
+                        </div>
+                        <div className="scheduler-rule-desc">
+                          Runs in the background without summoning progress popup windows.
+                        </div>
+                      </div>
+                    </div>
+                  </>
                 )}
               </div>
 
@@ -1908,9 +2070,11 @@ function App() {
                         : 0);
                     const catClass = `cat-${getFileCategory(d.filename)}`;
 
+                    const isSelected = selectedTaskIds.includes(d.id);
+
                     return (
                       <div
-                        className="download-card-v2"
+                        className={`download-card-v2 ${selectedTask?.id === d.id ? "active-task" : ""} ${isSelected ? "marked-for-delete-card" : ""}`}
                         key={d.id.toString()}
                         onClick={() => setSelectedTask(d)}
                       >
@@ -1930,6 +2094,22 @@ function App() {
                           <h3 className="file-name-v2" title={d.filename}>{d.filename}</h3>
                           <div className="file-meta-v2">
                             <span className={`status-pill-v2 status-${statusText.toLowerCase()}`}>{statusText}</span>
+                            {schedulerEnabled && (isPaused || statusText === "Queued") && (
+                              <span style={{
+                                display: "inline-flex",
+                                alignItems: "center",
+                                gap: "4px",
+                                fontSize: "0.72rem",
+                                fontWeight: 700,
+                                color: "var(--accent-cyan)",
+                                background: "rgba(6, 182, 212, 0.12)",
+                                padding: "1px 6px",
+                                borderRadius: "4px",
+                                border: "1px solid rgba(6, 182, 212, 0.25)"
+                              }}>
+                                <Clock size={11} /> Scheduled ({startTime})
+                              </span>
+                            )}
                             <span className="meta-divider">•</span>
                             <span>{formatBytes(d.downloaded)} / {d.total_size > 0 ? formatBytes(d.total_size) : "Unknown size"}</span>
                             {isDownloading && (
@@ -1954,8 +2134,12 @@ function App() {
                                   <Play size={14} /> Re-download
                                 </button>
                               )}
-                              <button className="hover-card-btn danger" onClick={(e) => { e.stopPropagation(); promptRemoveTask(e, d); }}>
-                                <Trash2 size={14} /> Delete
+                              <button
+                                className={`hover-card-btn danger ${isSelected ? "active-marked" : ""}`}
+                                onClick={(e) => { e.stopPropagation(); toggleSelectTask(d.id, e); }}
+                                title={isSelected ? "Unmark for deletion" : "Mark for deletion"}
+                              >
+                                <Trash2 size={14} /> {isSelected ? "Marked" : "Delete"}
                               </button>
                             </div>
                           ) : (
@@ -1995,8 +2179,12 @@ function App() {
                                   <Play size={14} /> Re-download
                                 </button>
                               )}
-                              <button className="hover-card-btn danger" onClick={(e) => { e.stopPropagation(); promptRemoveTask(e, d); }}>
-                                <Trash2 size={14} /> Delete
+                              <button
+                                className={`hover-card-btn danger ${isSelected ? "active-marked" : ""}`}
+                                onClick={(e) => { e.stopPropagation(); toggleSelectTask(d.id, e); }}
+                                title={isSelected ? "Unmark for deletion" : "Mark for deletion"}
+                              >
+                                <Trash2 size={14} /> {isSelected ? "Marked" : "Delete"}
                               </button>
                             </div>
                           )}
@@ -2004,6 +2192,54 @@ function App() {
                       </div>
                     );
                   })}
+                </div>
+              )}
+
+              {/* Redesigned Floating Delete Pill */}
+              {selectedTaskIds.length > 0 && (
+                <div className="floating-delete-pill">
+                  <div className="delete-pill-info">
+                    <div className="delete-pill-icon-ring">
+                      <Trash2 size={14} />
+                    </div>
+                    <div className="delete-pill-text">
+                      <span className="delete-pill-count">{selectedTaskIds.length}</span>
+                      <span className="delete-pill-label-full">
+                        {selectedTaskIds.length === 1 ? "item marked for deletion" : "items marked for deletion"}
+                      </span>
+                      <span className="delete-pill-label-short">
+                        marked
+                      </span>
+                    </div>
+                  </div>
+
+                  <div className="delete-pill-divider" />
+
+                  <div className="delete-pill-actions">
+                    {sortedDownloads.length > 1 && (
+                      <button
+                        className="delete-pill-cancel-btn"
+                        onClick={handleSelectAllVisible}
+                      >
+                        {sortedDownloads.every((d) => selectedTaskIds.includes(d.id))
+                          ? "Deselect All"
+                          : "Select All"}
+                      </button>
+                    )}
+                    <button
+                      className="delete-pill-cancel-btn"
+                      onClick={() => setSelectedTaskIds([])}
+                    >
+                      Cancel
+                    </button>
+                    <button
+                      className="delete-pill-confirm-btn"
+                      onClick={promptBulkDelete}
+                    >
+                      <Trash2 size={14} />
+                      <span>Delete Selected ({selectedTaskIds.length})</span>
+                    </button>
+                  </div>
                 </div>
               )}
             </div>
@@ -2185,9 +2421,18 @@ function App() {
                       <span>Re-download</span>
                     </button>
                   )}
-                  <button className="action-btn action-btn-danger" style={{ flex: 1 }} onClick={(e) => promptRemoveTask(e, selectedTask)} onMouseEnter={(e) => showTooltip("Delete Permanently", e, "top")} onMouseLeave={hideTooltip}>
+                  <button
+                    className={`action-btn action-btn-danger ${selectedTaskIds.includes(selectedTask.id) ? "active-marked" : ""}`}
+                    style={{ flex: 1 }}
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      toggleSelectTask(selectedTask.id, e);
+                    }}
+                    onMouseEnter={(e) => showTooltip(selectedTaskIds.includes(selectedTask.id) ? "Unmark for Deletion" : "Mark for Deletion", e, "top")}
+                    onMouseLeave={hideTooltip}
+                  >
                     <Trash2 size={14} />
-                    <span>Delete Permanently</span>
+                    <span>{selectedTaskIds.includes(selectedTask.id) ? "Marked for Deletion" : "Delete Permanently"}</span>
                   </button>
                 </>
               ) : (
@@ -2246,9 +2491,18 @@ function App() {
                       <span>Re-download</span>
                     </button>
                   )}
-                  <button className="action-btn action-btn-danger" style={{ flex: 1 }} onClick={(e) => promptRemoveTask(e, selectedTask)} onMouseEnter={(e) => showTooltip("Delete Task", e, "top")} onMouseLeave={hideTooltip}>
+                  <button
+                    className={`action-btn action-btn-danger ${selectedTaskIds.includes(selectedTask.id) ? "active-marked" : ""}`}
+                    style={{ flex: 1 }}
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      toggleSelectTask(selectedTask.id, e);
+                    }}
+                    onMouseEnter={(e) => showTooltip(selectedTaskIds.includes(selectedTask.id) ? "Unmark for Deletion" : "Mark for Deletion", e, "top")}
+                    onMouseLeave={hideTooltip}
+                  >
                     <Trash2 size={14} />
-                    <span>Delete</span>
+                    <span>{selectedTaskIds.includes(selectedTask.id) ? "Marked for Deletion" : "Delete Task"}</span>
                   </button>
                 </>
               )}
@@ -2257,49 +2511,81 @@ function App() {
         </div>
       )}
 
-      {showRemoveConfirm && taskToRemove && (
-        <div className="modal-backdrop-v2">
-          <div className="modal-content-v2" style={{ borderTop: "2px solid var(--accent-red)" }}>
+      {showRemoveConfirm && tasksToRemove.length > 0 && (
+        <div className="modal-backdrop-v2" onClick={() => { setShowRemoveConfirm(false); setTasksToRemove([]); }}>
+          <div className="modal-content-v2" style={{ borderTop: "2px solid var(--accent-red)" }} onClick={(e) => e.stopPropagation()}>
             <div className="modal-header-v2">
-              <span className="modal-title-v2" style={{ color: "var(--accent-red)", display: "flex", alignItems: "center", gap: "12px", fontSize: "1.6rem" }}>
+              <span className="modal-title-v2" style={{ color: "var(--accent-red)", display: "flex", alignItems: "center", gap: "12px", fontSize: "1.5rem" }}>
                 <Trash2 size={24} strokeWidth={2.5} />
-                {getStatusText(taskToRemove.status) === "Trash" ? "Permanent Deletion" : "Move to Trash"}
+                {tasksToRemove.some((t) => getStatusText(t.status) === "Trash")
+                  ? `Permanent Deletion (${tasksToRemove.length} ${tasksToRemove.length === 1 ? "item" : "items"})`
+                  : `Move to Trash (${tasksToRemove.length} ${tasksToRemove.length === 1 ? "item" : "items"})`
+                }
               </span>
-              <button className="modal-close-btn-v2" onClick={() => { setShowRemoveConfirm(false); setTaskToRemove(null); }}>
+              <button className="modal-close-btn-v2" onClick={() => { setShowRemoveConfirm(false); setTasksToRemove([]); }}>
                 <X size={20} />
               </button>
             </div>
 
             <div className="modal-body-v2">
               <p style={{ fontSize: "1rem", color: "var(--text-primary)", lineHeight: "1.6", margin: 0, fontWeight: 500 }}>
-                {getStatusText(taskToRemove.status) === "Trash"
-                  ? `You are about to permanently delete "${taskToRemove.filename}". This action cannot be undone.`
-                  : `Are you sure you want to move "${taskToRemove.filename}" to the Trash?`
-                }
+                {tasksToRemove.length === 1 ? (
+                  tasksToRemove.some((t) => getStatusText(t.status) === "Trash")
+                    ? `You are about to permanently delete "${tasksToRemove[0].filename}". This action cannot be undone.`
+                    : `Are you sure you want to move "${tasksToRemove[0].filename}" to the Trash?`
+                ) : (
+                  tasksToRemove.some((t) => getStatusText(t.status) === "Trash")
+                    ? `You are about to permanently delete ${tasksToRemove.length} selected downloads. This action cannot be undone.`
+                    : `Are you sure you want to move ${tasksToRemove.length} selected downloads to the Trash?`
+                )}
               </p>
 
-              {getStatusText(taskToRemove.status) === "Completed" && (
-                <label className="custom-checkbox-container" style={{ marginTop: "12px", padding: "16px", background: "rgba(255,255,255,0.03)", borderRadius: "12px", border: "1px solid rgba(255,255,255,0.05)" }}>
+              {tasksToRemove.length > 1 && (
+                <div className="bulk-delete-file-list">
+                  {tasksToRemove.slice(0, 5).map((t) => (
+                    <div key={t.id} className="bulk-delete-file-item">
+                      {getFileIcon(t.filename)}
+                      <span className="bulk-delete-filename" title={t.filename}>{t.filename}</span>
+                      <span className="bulk-delete-size">{t.total_size > 0 ? formatBytes(t.total_size) : "Unknown size"}</span>
+                    </div>
+                  ))}
+                  {tasksToRemove.length > 5 && (
+                    <div className="bulk-delete-more-text">
+                      + {tasksToRemove.length - 5} more files
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {tasksToRemove.some((t) => getStatusText(t.status) === "Completed") && (
+                <label className="custom-checkbox-container" style={{ marginTop: "14px", padding: "14px 16px", background: "rgba(255,255,255,0.03)", borderRadius: "12px", border: "1px solid rgba(255,255,255,0.05)" }}>
                   <input
                     type="checkbox"
                     checked={deleteFileFromDisk}
                     onChange={(e) => setDeleteFileFromDisk(e.target.checked)}
                   />
                   <span className="custom-checkbox-checkmark"></span>
-                  <span className="custom-checkbox-label" style={{ fontSize: "0.95rem" }}>Also delete the downloaded file from disk</span>
+                  <span className="custom-checkbox-label" style={{ fontSize: "0.92rem" }}>
+                    Also delete downloaded {tasksToRemove.length > 1 ? "files" : "file"} from disk
+                    {tasksToRemove.filter((t) => getStatusText(t.status) === "Completed").length > 0 && tasksToRemove.length > 1 && (
+                      <span style={{ opacity: 0.7, marginLeft: "4px" }}>
+                        ({tasksToRemove.filter((t) => getStatusText(t.status) === "Completed").length} completed)
+                      </span>
+                    )}
+                  </span>
                 </label>
               )}
             </div>
 
             <div className="modal-actions-v2">
-              <button className="hover-action-btn" style={{ width: "auto", padding: "0 24px" }} onClick={() => { setShowRemoveConfirm(false); setTaskToRemove(null); }}>
+              <button className="hover-action-btn" style={{ width: "auto", padding: "0 24px" }} onClick={() => { setShowRemoveConfirm(false); setTasksToRemove([]); }}>
                 Cancel
               </button>
               <button
                 className="accent-pill danger-pill"
                 onClick={confirmRemoveTask}
               >
-                Confirm Delete
+                Confirm Delete {tasksToRemove.length > 1 ? `(${tasksToRemove.length})` : ""}
               </button>
             </div>
           </div>
@@ -2310,73 +2596,40 @@ function App() {
       {showUpdateSuccessModal && (
         <div className="modal-backdrop-v2" style={{ display: "flex", alignItems: "center", justifyContent: "center" }} onClick={() => setShowUpdateSuccessModal(false)}>
           <div className="celebration-modal-dialog" onClick={(e) => e.stopPropagation()}>
-            <div className="celebration-badge-header">
-              <div className="celebration-icon-wrapper" style={{
-                background: "linear-gradient(135deg, rgba(245, 158, 11, 0.25), rgba(236, 72, 153, 0.25), rgba(6, 182, 212, 0.25))",
-                border: "1px solid rgba(245, 158, 11, 0.4)",
-                boxShadow: "0 0 15px rgba(245, 158, 11, 0.25)",
-                color: "#f59e0b"
-              }}>
-                <Rocket size={26} />
-              </div>
-              <div>
-                <div className="celebration-title-text" style={{ fontSize: "1.2rem", lineHeight: "1.35", display: "flex", alignItems: "center", gap: "8px" }}>
-                  <PartyPopper size={22} style={{ color: "#f59e0b", flexShrink: 0 }} />
-                  <span>
-                    {updatedFromVersion
-                      ? `v${updatedFromVersion} is history. v${CURRENT_APP_VERSION} is live now with fresh upgrades and smoother vibes!`
-                      : `v${CURRENT_APP_VERSION} is live now with fresh upgrades and smoother vibes!`
-                    }
-                  </span>
-                </div>
-                <div style={{ fontSize: "0.88rem", color: "var(--text-secondary)", marginTop: "2px" }}>
-                  Impressive Download Manager has been upgraded with major engine enhancements!
-                </div>
-              </div>
+            <div className="celebration-ambient-glow" />
+
+            <div className="celebration-hero-icon-ring">
+              <Rocket size={32} />
             </div>
 
-            <div style={{ display: "flex", flexDirection: "column", gap: "10px" }}>
-              <div className="celebration-feature-card">
-                <Zap size={20} style={{ color: "var(--accent-cyan)", flexShrink: 0, marginTop: "2px" }} />
-                <div>
-                  <div style={{ fontWeight: 800, fontSize: "0.92rem", color: "var(--text-primary)" }}>Seamless In-App Update Engine</div>
-                  <div style={{ fontSize: "0.82rem", color: "var(--text-secondary)", marginTop: "2px" }}>Fixed cryptographic signature verification and package integrity for instant one-click in-app upgrades and clean GUI package installation.</div>
-                </div>
-              </div>
-
-              <div className="celebration-feature-card">
-                <Activity size={20} style={{ color: "var(--accent-cyan)", flexShrink: 0, marginTop: "2px" }} />
-                <div>
-                  <div style={{ fontWeight: 800, fontSize: "0.92rem", color: "var(--text-primary)" }}>Dynamic Stream &amp; Workspace Downloads</div>
-                  <div style={{ fontSize: "0.82rem", color: "var(--text-secondary)", marginTop: "2px" }}>Full worker support for dynamic streaming archives and unknown-size downloads (e.g., z.ai workspaces and cloud exports) with automatic Range fallbacks.</div>
-                </div>
-              </div>
-
-              <div className="celebration-feature-card">
-                <Globe size={20} style={{ color: "var(--accent-cyan)", flexShrink: 0, marginTop: "2px" }} />
-                <div>
-                  <div style={{ fontWeight: 800, fontSize: "0.92rem", color: "var(--text-primary)" }}>Smart &lt; 1MB Native Browser Handling</div>
-                  <div style={{ fontSize: "0.82rem", color: "var(--text-secondary)", marginTop: "2px" }}>Downloads smaller than 1MB are seamlessly routed to your browser's native engine to prevent unnecessary capture popups for small files.</div>
-                </div>
-              </div>
-
-              <div className="celebration-feature-card">
-                <FileText size={20} style={{ color: "var(--accent-cyan)", flexShrink: 0, marginTop: "2px" }} />
-                <div>
-                  <div style={{ fontWeight: 800, fontSize: "0.92rem", color: "var(--text-primary)" }}>Accurate Filename Resolution</div>
-                  <div style={{ fontSize: "0.82rem", color: "var(--text-secondary)", marginTop: "2px" }}>Captures clean filenames directly from server headers and RFC 5987 Content-Disposition, eliminating random hashes and endpoint slugs.</div>
-                </div>
-              </div>
+            <div className="celebration-version-leap">
+              {updatedFromVersion && (
+                <>
+                  <span className="celebration-old-version">v{updatedFromVersion}</span>
+                  <span className="celebration-arrow-divider">➔</span>
+                </>
+              )}
+              <span className="celebration-new-version">v{CURRENT_APP_VERSION}</span>
+              <span className="celebration-live-tag">LIVE</span>
             </div>
 
-            <div style={{ display: "flex", justifyContent: "flex-end", marginTop: "6px" }}>
-              <button
-                className="explore-version-btn"
-                onClick={() => setShowUpdateSuccessModal(false)}
-              >
-                Explore v{CURRENT_APP_VERSION} 🚀
-              </button>
+            <div>
+              <h2 className="celebration-title-text">
+                {updatedFromVersion
+                  ? `v${updatedFromVersion} is history. v${CURRENT_APP_VERSION} is live now!`
+                  : `v${CURRENT_APP_VERSION} is live now!`}
+              </h2>
+              <p className="celebration-subtitle">
+                Your download experience is now faster, smoother, and fully up to date with the latest engine optimizations and stability improvements.
+              </p>
             </div>
+
+            <button
+              className="celebration-cta-btn"
+              onClick={() => setShowUpdateSuccessModal(false)}
+            >
+              Let's Go
+            </button>
           </div>
         </div>
       )}

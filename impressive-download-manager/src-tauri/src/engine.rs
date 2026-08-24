@@ -126,6 +126,82 @@ pub struct PersistentTask {
     pub chunks: Vec<DownloadChunk>,
 }
 
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+pub struct SchedulerConfig {
+    pub enabled: bool,
+    pub start_time: String,
+    pub end_time: String,
+    pub active_days: Vec<String>,
+}
+
+impl Default for SchedulerConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            start_time: "02:00".to_string(),
+            end_time: "06:00".to_string(),
+            active_days: vec![
+                "Mon".to_string(),
+                "Tue".to_string(),
+                "Wed".to_string(),
+                "Thu".to_string(),
+                "Fri".to_string(),
+            ],
+        }
+    }
+}
+
+pub fn is_in_schedule_window(config: &SchedulerConfig, now: &chrono::DateTime<chrono::Local>) -> bool {
+    if !config.enabled {
+        return false;
+    }
+
+    use chrono::Datelike;
+    let current_day = match now.weekday() {
+        chrono::Weekday::Mon => "Mon",
+        chrono::Weekday::Tue => "Tue",
+        chrono::Weekday::Wed => "Wed",
+        chrono::Weekday::Thu => "Thu",
+        chrono::Weekday::Fri => "Fri",
+        chrono::Weekday::Sat => "Sat",
+        chrono::Weekday::Sun => "Sun",
+    };
+
+    if !config.active_days.iter().any(|d| d.eq_ignore_ascii_case(current_day)) {
+        return false;
+    }
+
+    let parse_minutes = |time_str: &str| -> Option<u32> {
+        let parts: Vec<&str> = time_str.split(':').collect();
+        if parts.len() == 2 {
+            let h = parts[0].trim().parse::<u32>().ok()?;
+            let m = parts[1].trim().parse::<u32>().ok()?;
+            if h < 24 && m < 60 {
+                return Some(h * 60 + m);
+            }
+        }
+        None
+    };
+
+    let start_mins = match parse_minutes(&config.start_time) {
+        Some(m) => m,
+        None => return false,
+    };
+    let end_mins = match parse_minutes(&config.end_time) {
+        Some(m) => m,
+        None => return false,
+    };
+
+    use chrono::Timelike;
+    let current_mins = now.hour() * 60 + now.minute();
+
+    if start_mins <= end_mins {
+        current_mins >= start_mins && current_mins < end_mins
+    } else {
+        current_mins >= start_mins || current_mins < end_mins
+    }
+}
+
 pub struct DownloadManager {
     pub tasks: RwLock<HashMap<String, Arc<DownloadTask>>>,
     pub app_handle: Mutex<Option<tauri::AppHandle>>,
@@ -135,6 +211,7 @@ pub struct DownloadManager {
     pub max_chunks: AtomicU64,
     pub intercept_downloads: std::sync::atomic::AtomicBool,
     pub minimize_to_tray: std::sync::atomic::AtomicBool,
+    pub scheduler_config: Arc<tokio::sync::RwLock<SchedulerConfig>>,
 }
 
 impl DownloadManager {
@@ -159,6 +236,7 @@ impl DownloadManager {
             max_chunks: AtomicU64::new(8),
             intercept_downloads: std::sync::atomic::AtomicBool::new(true),
             minimize_to_tray: std::sync::atomic::AtomicBool::new(true),
+            scheduler_config: Arc::new(tokio::sync::RwLock::new(SchedulerConfig::default())),
         }
     }
 
@@ -1453,5 +1531,110 @@ impl DownloadManager {
             });
         }
         list
+    }
+
+    pub async fn get_scheduler_config(&self) -> SchedulerConfig {
+        self.scheduler_config.read().await.clone()
+    }
+
+    pub async fn save_scheduler_config(&self, config: SchedulerConfig) -> Result<(), String> {
+        *self.scheduler_config.write().await = config.clone();
+        let handle_opt = {
+            let guard = self.app_handle.lock().await;
+            guard.clone()
+        };
+        if let Some(handle) = handle_opt {
+            use tauri::Manager;
+            if let Ok(app_dir) = handle.path().app_data_dir() {
+                let _ = tokio::fs::create_dir_all(&app_dir).await;
+                let path = app_dir.join("scheduler.json");
+                if let Ok(serialized) = serde_json::to_string_pretty(&config) {
+                    let _ = tokio::fs::write(path, serialized).await;
+                }
+            }
+        }
+        Ok(())
+    }
+
+    pub async fn load_scheduler_config(&self) -> Result<(), String> {
+        let handle_opt = {
+            let guard = self.app_handle.lock().await;
+            guard.clone()
+        };
+        if let Some(handle) = handle_opt {
+            use tauri::Manager;
+            if let Ok(app_dir) = handle.path().app_data_dir() {
+                let path = app_dir.join("scheduler.json");
+                if path.exists() {
+                    if let Ok(data) = tokio::fs::read_to_string(&path).await {
+                        if let Ok(config) = serde_json::from_str::<SchedulerConfig>(&data) {
+                            *self.scheduler_config.write().await = config;
+                        }
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+
+    pub fn start_scheduler_loop(self: &Arc<Self>) {
+        let manager = self.clone();
+        tokio::spawn(async move {
+            let mut interval = tokio::time::interval(std::time::Duration::from_secs(10));
+            loop {
+                interval.tick().await;
+
+                let config = { manager.scheduler_config.read().await.clone() };
+                if !config.enabled {
+                    continue;
+                }
+
+                let now = chrono::Local::now();
+                let in_window = is_in_schedule_window(&config, &now);
+
+                if in_window {
+                    // Inside scheduled window: auto-resume queued or paused downloads silently
+                    let eligible_ids: Vec<String> = {
+                        let tasks = manager.tasks.read().await;
+                        tasks
+                            .iter()
+                            .filter_map(|(id, task)| {
+                                let status = task.status.lock().unwrap();
+                                if *status == DownloadStatus::Paused || *status == DownloadStatus::Queued {
+                                    Some(id.clone())
+                                } else {
+                                    None
+                                }
+                            })
+                            .collect()
+                    };
+
+                    for id in eligible_ids {
+                        // Silently resumes without summoning popup window
+                        let _ = manager.resume_download(&id).await;
+                    }
+                } else {
+                    // Outside scheduled window: auto-pause active downloading tasks
+                    let active_ids: Vec<String> = {
+                        let tasks = manager.tasks.read().await;
+                        tasks
+                            .iter()
+                            .filter_map(|(id, task)| {
+                                let status = task.status.lock().unwrap();
+                                if *status == DownloadStatus::Downloading {
+                                    Some(id.clone())
+                                } else {
+                                    None
+                                }
+                            })
+                            .collect()
+                    };
+
+                    for id in active_ids {
+                        let _ = manager.pause_download(&id).await;
+                    }
+                }
+            }
+        });
     }
 }

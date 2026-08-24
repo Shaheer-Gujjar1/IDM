@@ -1,10 +1,21 @@
 # CHANGELOG
 
-## [0.7.4] – 2026-08-25
+## [0.7.6] – 2026-08-25
+
+### Added
+- **Full Download Scheduler System**: Complete end-to-end wiring of the background Download Scheduler. Evaluates local time and weekday intervals every 10 seconds, automatically resuming queued/paused downloads during active hours and pausing running downloads when the window closes.
+- **Silent Background Execution**: Scheduled task auto-resumes run silently in the background without summoning progress popup windows.
+- **Persistent Schedule Configuration**: Schedule settings (active days, start time, end time, and enabled state) are fully persisted to `scheduler.json` in the app data directory and synchronized with `localStorage`.
+- **Scheduled Visual Indicators & Micro-Card Rules**: Added `⏰ Scheduled ({startTime})` badges directly on download cards waiting for their scheduled window, and replaced settings text boxes with an interactive 3-pillar micro-card grid (Auto-Start, Auto-Pause, Background Silent).
+- **Multi-Select & Bulk Deletion System**: Added individual card select checkboxes with neon active card highlights, a floating glassmorphic bulk action bar with live count badges, "Select All / Deselect All", and a bottom confirmation dialog previewing selected files with optional disk file deletion for completed downloads.
+- **Tactile Selection Cards UI (Theme & Port)**: Replaced clunky dropdowns with interactive, tactile micro-card grids (`settings-selection-grid`). Theme Mode now features Dark, Light, and System cards with live glow indicators; Port Selection features Port 9600 (Primary Daemon) and Port 8765 (Proxy) cards, completely eliminating z-index stacking conflicts and dropdown clipping.
+- **Evergreen Post-Update Modal**: Redesigned the update celebration dialog with an animated supersonic rocket, ambient glows, upgrade progression leap badges, and punchy headline copy.
 
 ### Fixed
 - **In-App Updater Signature Verification & Package Integrity**: Integrated `postRemoveScript` directly into `tauri.conf.json` for Debian bundles and removed external post-build `dpkg-deb` repacking in `generate_latest_json.js`. Eliminates signature mismatches (`Update Check Failed: The Signature Verification Failed`) caused by repacking after signing, and restores universal `.deb` package compression compatibility for GUI package installers (fixing 22-minute freezes on Deepin / Ubuntu / GDebi).
 - **Dynamic Chunked & Unknown-Size Stream Downloads (e.g., z.ai Workspaces)**: Resolved a critical worker-spawning issue in `engine.rs` where downloads with unknown initial sizes (`total_size == 0`, dynamic zip generators, or servers that do not return `Content-Range`/`Content-Length`) were skipped in the chunk allocator, causing downloads to get stuck in "Connecting..." forever. Also added plain GET probe fallbacks when servers reject `bytes=0-0` Range headers.
+- **Dropdown Z-Index & Stacking Context Elevation**: Fixed stacking order conflicts on `.settings-card` when custom dropdowns are open, ensuring menus float cleanly above subsequent settings cards without being clipped.
+- **Dropdown Multiple Downward Arrows Removed**: Replaced native HTML select artifacts with the custom dropdown component across all settings, removing duplicate arrows in light theme.
 
 ## [0.7.3] – 2026-08-20
 

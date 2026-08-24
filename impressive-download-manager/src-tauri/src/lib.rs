@@ -450,6 +450,21 @@ async fn set_max_chunks(
 }
 
 #[tauri::command]
+async fn get_scheduler_config(
+    manager: tauri::State<'_, Arc<DownloadManager>>,
+) -> Result<engine::SchedulerConfig, String> {
+    Ok(manager.get_scheduler_config().await)
+}
+
+#[tauri::command]
+async fn set_scheduler_config(
+    config: engine::SchedulerConfig,
+    manager: tauri::State<'_, Arc<DownloadManager>>,
+) -> Result<(), String> {
+    manager.save_scheduler_config(config).await
+}
+
+#[tauri::command]
 async fn open_progress_window(app_handle: tauri::AppHandle, id: String) -> Result<(), String> {
     let progress_url = format!("index.html#popup=progress&id={}", id);
     
@@ -713,6 +728,8 @@ pub fn run() {
             tauri::async_runtime::spawn(async move {
                 manager_for_init.set_app_handle(handle).await;
                 let _ = manager_for_init.load_history().await;
+                let _ = manager_for_init.load_scheduler_config().await;
+                manager_for_init.start_scheduler_loop();
 
                 // Write Native Messaging Host manifests for Linux browsers (Chrome, Brave, Chromium, Edge, Opera, Vivaldi, Firefox)
                 #[cfg(target_os = "linux")]
@@ -1161,6 +1178,8 @@ pub fn run() {
             set_intercept_downloads,
             set_minimize_to_tray,
             set_max_chunks,
+            get_scheduler_config,
+            set_scheduler_config,
             start_proxy_server,
             stop_proxy_server
         ])
