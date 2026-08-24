@@ -1,5 +1,11 @@
 # CHANGELOG
 
+## [0.7.4] – 2026-08-25
+
+### Fixed
+- **In-App Updater Signature Verification & Package Integrity**: Integrated `postRemoveScript` directly into `tauri.conf.json` for Debian bundles and removed external post-build `dpkg-deb` repacking in `generate_latest_json.js`. Eliminates signature mismatches (`Update Check Failed: The Signature Verification Failed`) caused by repacking after signing, and restores universal `.deb` package compression compatibility for GUI package installers (fixing 22-minute freezes on Deepin / Ubuntu / GDebi).
+- **Dynamic Chunked & Unknown-Size Stream Downloads (e.g., z.ai Workspaces)**: Resolved a critical worker-spawning issue in `engine.rs` where downloads with unknown initial sizes (`total_size == 0`, dynamic zip generators, or servers that do not return `Content-Range`/`Content-Length`) were skipped in the chunk allocator, causing downloads to get stuck in "Connecting..." forever. Also added plain GET probe fallbacks when servers reject `bytes=0-0` Range headers.
+
 ## [0.7.3] – 2026-08-20
 
 ### Added

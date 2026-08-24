@@ -2,13 +2,8 @@ import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
 
-import { patchDebPackages } from './patch_linux_packages.js';
-
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
-
-// Automatically patch DEB package post-uninstall scripts
-patchDebPackages();
 
 const rootDir = path.resolve(__dirname, '..');
 const pkgPath = path.join(rootDir, 'package.json');
@@ -48,11 +43,15 @@ const findPackageFile = (dir, ext) => {
   return { file: target, signature };
 };
 
-// 1. Linux DEB Target (Debian / Ubuntu / Deepin / Mint) -> 'linux-x86_64-deb' (DEB installer)
+// 1. Linux DEB Target (Debian / Ubuntu / Deepin / Mint) -> 'linux-x86_64-deb' & 'linux-x86_64'
 const debDir = path.join(bundleDir, 'deb');
 const debMatch = findPackageFile(debDir, '.deb');
 if (debMatch) {
   latestJson.platforms['linux-x86_64-deb'] = {
+    signature: debMatch.signature,
+    url: `${baseUrl}/${debMatch.file}`
+  };
+  latestJson.platforms['linux-x86_64'] = {
     signature: debMatch.signature,
     url: `${baseUrl}/${debMatch.file}`
   };

@@ -287,6 +287,8 @@ impl DownloadManager {
         let id = uuid::Uuid::new_v4().to_string();
 
         let mut size_req = self.client.get(&url)
+            .header(reqwest::header::ACCEPT, "*/*")
+            .header(reqwest::header::ACCEPT_LANGUAGE, "en-US,en;q=0.9")
             .header(reqwest::header::RANGE, "bytes=0-0");
         if !cookie.is_empty() {
             size_req = size_req.header(reqwest::header::COOKIE, &cookie);
@@ -316,7 +318,7 @@ impl DownloadManager {
         };
 
         if let Ok(res) = tokio::time::timeout(
-            Duration::from_secs(10),
+            Duration::from_secs(8),
             size_req.send()
         ).await {
             if let Ok(res) = res {
@@ -353,40 +355,71 @@ impl DownloadManager {
                         }
                     }
                 }
+            }
+        }
 
-                // Check redirected URL if filename is still generic or missing extension
-                if crate::proxy::is_generic_filename(&filename) || filename.is_empty() || !filename.contains('.') {
-                    if let Ok(parsed_res_url) = reqwest::Url::parse(&final_url) {
-                        let mut candidate = String::new();
-                        for (k, v) in parsed_res_url.query_pairs() {
-                            let k_lower = k.to_lowercase();
-                            if (k_lower.contains("file") || k_lower.contains("name") || k_lower.contains("title")) && v.contains('.') {
-                                if let Ok(decoded) = urlencoding::decode(&v) {
-                                    let sanitized = crate::proxy::sanitize_filename(&decoded);
-                                    if !crate::proxy::is_generic_filename(&sanitized) && sanitized.contains('.') {
-                                        candidate = sanitized;
-                                        break;
-                                    }
+        // If Range probe failed or was rejected (e.g. 416 or dynamic streaming endpoints like z.ai), try fallback plain GET probe
+        if !accept_ranges && total_size == 0 {
+            let mut plain_req = self.client.get(&url)
+                .header(reqwest::header::ACCEPT, "*/*")
+                .header(reqwest::header::ACCEPT_LANGUAGE, "en-US,en;q=0.9");
+            if !cookie.is_empty() { plain_req = plain_req.header(reqwest::header::COOKIE, &cookie); }
+            if !referrer.is_empty() { plain_req = plain_req.header(reqwest::header::REFERER, &referrer); }
+            if !user_agent.is_empty() { plain_req = plain_req.header(reqwest::header::USER_AGENT, &user_agent); }
+
+            if let Ok(res_plain) = tokio::time::timeout(Duration::from_secs(5), plain_req.send()).await {
+                if let Ok(res) = res_plain {
+                    if res.status().is_success() {
+                        final_url = res.url().to_string();
+                        total_size = res.headers()
+                            .get(reqwest::header::CONTENT_LENGTH)
+                            .and_then(|val| val.to_str().ok())
+                            .and_then(|s| s.parse::<u64>().ok())
+                            .unwrap_or(0);
+                        if let Some(cd) = res.headers().get(reqwest::header::CONTENT_DISPOSITION).and_then(|h| h.to_str().ok()) {
+                            if let Some(cd_name) = crate::proxy::parse_content_disposition(cd) {
+                                if !crate::proxy::is_generic_filename(&cd_name) {
+                                    save_path = update_save_path_filename(&save_path, &cd_name);
+                                    filename = cd_name;
                                 }
                             }
-                        }
-                        if candidate.is_empty() {
-                            if let Some(last_seg) = parsed_res_url.path_segments().and_then(|s| s.last()) {
-                                if !last_seg.is_empty() && last_seg.contains('.') {
-                                    if let Ok(decoded) = urlencoding::decode(last_seg) {
-                                        let sanitized = crate::proxy::sanitize_filename(&decoded);
-                                        if !crate::proxy::is_generic_filename(&sanitized) && sanitized.contains('.') {
-                                            candidate = sanitized;
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                        if !candidate.is_empty() {
-                            save_path = update_save_path_filename(&save_path, &candidate);
-                            filename = candidate;
                         }
                     }
+                }
+            }
+        }
+
+        // Check redirected URL if filename is still generic or missing extension
+        if crate::proxy::is_generic_filename(&filename) || filename.is_empty() || !filename.contains('.') {
+            if let Ok(parsed_res_url) = reqwest::Url::parse(&final_url) {
+                let mut candidate = String::new();
+                for (k, v) in parsed_res_url.query_pairs() {
+                    let k_lower = k.to_lowercase();
+                    if (k_lower.contains("file") || k_lower.contains("name") || k_lower.contains("title")) && v.contains('.') {
+                        if let Ok(decoded) = urlencoding::decode(&v) {
+                            let sanitized = crate::proxy::sanitize_filename(&decoded);
+                            if !crate::proxy::is_generic_filename(&sanitized) && sanitized.contains('.') {
+                                candidate = sanitized;
+                                break;
+                            }
+                        }
+                    }
+                }
+                if candidate.is_empty() {
+                    if let Some(last_seg) = parsed_res_url.path_segments().and_then(|s| s.last()) {
+                        if !last_seg.is_empty() && last_seg.contains('.') {
+                            if let Ok(decoded) = urlencoding::decode(last_seg) {
+                                let sanitized = crate::proxy::sanitize_filename(&decoded);
+                                if !crate::proxy::is_generic_filename(&sanitized) && sanitized.contains('.') {
+                                    candidate = sanitized;
+                                }
+                            }
+                        }
+                    }
+                }
+                if !candidate.is_empty() {
+                    save_path = update_save_path_filename(&save_path, &candidate);
+                    filename = candidate;
                 }
             }
         }
@@ -667,7 +700,12 @@ impl DownloadManager {
                     if !chunk.active.load(Ordering::SeqCst) {
                         let end = chunk.end.load(Ordering::SeqCst);
                         let downloaded = chunk.downloaded.load(Ordering::SeqCst);
-                        if end > 0 && chunk.start + downloaded <= end {
+                        let can_run = if end > 0 {
+                            chunk.start + downloaded <= end
+                        } else {
+                            downloaded == 0
+                        };
+                        if can_run {
                             chunk.active.store(true, Ordering::SeqCst);
                             chunk_to_spawn = Some(chunk.clone());
                             break;
@@ -961,8 +999,13 @@ impl DownloadManager {
 
         if !is_aborted {
             let downloaded_bytes = task.downloaded.load(Ordering::Relaxed);
-            let total_size_val = task.total_size.load(Ordering::Relaxed);
+            let mut total_size_val = task.total_size.load(Ordering::Relaxed);
             
+            if total_size_val == 0 && downloaded_bytes > 0 {
+                task.total_size.store(downloaded_bytes, Ordering::Relaxed);
+                total_size_val = downloaded_bytes;
+            }
+
             let is_success = (total_size_val > 0 && downloaded_bytes >= total_size_val)
                 || (total_size_val == 0 && downloaded_bytes > 0);
 
@@ -1010,7 +1053,7 @@ impl DownloadManager {
                             
                             let downloaded = chunk.downloaded.load(Ordering::SeqCst);
                             let chunk_end = chunk.end.load(Ordering::SeqCst);
-                            let expected_len = if chunk_end >= chunk.start {
+                            let expected_len = if chunk_end >= chunk.start && chunk_end > 0 {
                                 (chunk_end - chunk.start + 1).min(downloaded)
                             } else {
                                 downloaded

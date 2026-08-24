@@ -152,7 +152,7 @@ function App() {
   const [deleteFileFromDisk, setDeleteFileFromDisk] = useState(false);
 
   // Updater State & Metrics
-  const CURRENT_APP_VERSION = "0.7.3";
+  const CURRENT_APP_VERSION = "0.7.4";
   const [checkingUpdate, setCheckingUpdate] = useState(false);
   const [updateStatus, setUpdateStatus] = useState<string | null>(null);
   const [pendingRelaunch, setPendingRelaunch] = useState(false);
@@ -2337,10 +2337,18 @@ function App() {
 
             <div style={{ display: "flex", flexDirection: "column", gap: "10px" }}>
               <div className="celebration-feature-card">
-                <FileText size={20} style={{ color: "var(--accent-cyan)", flexShrink: 0, marginTop: "2px" }} />
+                <Zap size={20} style={{ color: "var(--accent-cyan)", flexShrink: 0, marginTop: "2px" }} />
                 <div>
-                  <div style={{ fontWeight: 800, fontSize: "0.92rem", color: "var(--text-primary)" }}>Accurate Filename Resolution</div>
-                  <div style={{ fontSize: "0.82rem", color: "var(--text-secondary)", marginTop: "2px" }}>Captures clean filenames directly from server headers and RFC 5987 Content-Disposition, eliminating random hashes and endpoint slugs.</div>
+                  <div style={{ fontWeight: 800, fontSize: "0.92rem", color: "var(--text-primary)" }}>Seamless In-App Update Engine</div>
+                  <div style={{ fontSize: "0.82rem", color: "var(--text-secondary)", marginTop: "2px" }}>Fixed cryptographic signature verification and package integrity for instant one-click in-app upgrades and clean GUI package installation.</div>
+                </div>
+              </div>
+
+              <div className="celebration-feature-card">
+                <Activity size={20} style={{ color: "var(--accent-cyan)", flexShrink: 0, marginTop: "2px" }} />
+                <div>
+                  <div style={{ fontWeight: 800, fontSize: "0.92rem", color: "var(--text-primary)" }}>Dynamic Stream &amp; Workspace Downloads</div>
+                  <div style={{ fontSize: "0.82rem", color: "var(--text-secondary)", marginTop: "2px" }}>Full worker support for dynamic streaming archives and unknown-size downloads (e.g., z.ai workspaces and cloud exports) with automatic Range fallbacks.</div>
                 </div>
               </div>
 
@@ -2353,18 +2361,10 @@ function App() {
               </div>
 
               <div className="celebration-feature-card">
-                <Activity size={20} style={{ color: "var(--accent-cyan)", flexShrink: 0, marginTop: "2px" }} />
+                <FileText size={20} style={{ color: "var(--accent-cyan)", flexShrink: 0, marginTop: "2px" }} />
                 <div>
-                  <div style={{ fontWeight: 800, fontSize: "0.92rem", color: "var(--text-primary)" }}>Dynamic Document & Stream Probing</div>
-                  <div style={{ fontSize: "0.82rem", color: "var(--text-secondary)", marginTop: "2px" }}>Asynchronously inspects chunked streams (like Google Docs and Drive exports) so small documents download natively without unknown-size prompts.</div>
-                </div>
-              </div>
-
-              <div className="celebration-feature-card">
-                <Zap size={20} style={{ color: "var(--accent-cyan)", flexShrink: 0, marginTop: "2px" }} />
-                <div>
-                  <div style={{ fontWeight: 800, fontSize: "0.92rem", color: "var(--text-primary)" }}>Multi-Browser Native Messaging Host</div>
-                  <div style={{ fontSize: "0.82rem", color: "var(--text-secondary)", marginTop: "2px" }}>Automatic background daemon wakeup and Native Messaging Host support across Chrome, Firefox, Edge, Brave, Opera, and Vivaldi.</div>
+                  <div style={{ fontWeight: 800, fontSize: "0.92rem", color: "var(--text-primary)" }}>Accurate Filename Resolution</div>
+                  <div style={{ fontSize: "0.82rem", color: "var(--text-secondary)", marginTop: "2px" }}>Captures clean filenames directly from server headers and RFC 5987 Content-Disposition, eliminating random hashes and endpoint slugs.</div>
                 </div>
               </div>
             </div>
