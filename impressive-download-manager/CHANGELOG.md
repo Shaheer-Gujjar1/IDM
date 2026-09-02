@@ -1,4 +1,19 @@
 # CHANGELOG
+ 
+## [0.7.7] – 2026-09-02
+ 
+### Added
+- **Single-Pass Direct Stream Architecture (XDM Engine Parity)**: Re-architected download initialization to eliminate separate pre-flight probe requests that burned single-use authorization or CSRF tokens. Chunk 0 connects directly on the live request with `Range: bytes=0-` and `Accept-Encoding: identity`, seamlessly splitting parallel range segments on `206 Partial Content` without reconnecting or dropping open streams.
+- **Dynamic Chunked & Unknown-Size Live Streaming UI**: For dynamically generated streams, dynamic compressors, and `200 OK` chunked downloads (`total_size == 0`), Chunk 0 downloads directly to EOF. Added live streaming feedback in the UI with real-time byte counters and an animated glowing wave indicator (`.streaming-fill`).
+- **Active Tab & Root Domain Cookie Aggregation**: Upgraded browser extension cookie extraction (`getCookiesForUrl`) to merge session cookies from the download URL, the parent root domain (e.g. `.z.ai`), and the active browser tab, ensuring full authentication sessions are forwarded to IDM.
+- **Full Browser Navigation Fingerprint**: Integrated standard navigation headers (`Sec-Ch-Ua`, `Sec-Fetch-Dest`, `Sec-Fetch-Mode`, `Sec-Fetch-Site`, `Sec-Fetch-User`, `Upgrade-Insecure-Requests`, `Accept-Language`) into reqwest requests for full Cloudflare / WAF verification parity.
+- **Buffer Flushing & Connection Timeout Tuning**: Reduced disk flush threshold to 64KB for real-time progress updates on small files (e.g., 200KB PDFs) and increased connection timeout to 60s for server-side generation workloads.
+ 
+### Fixed
+- **HTTP Header Control Character Sanitization**: Implemented automated sanitization for raw header values to prevent silent `reqwest` request builder failures on malformed cookies or user agents.
+- **Range Rejection Fallback**: If a dynamic endpoint returns `416 Range Not Satisfiable`, `400 Bad Request`, `403 Forbidden`, or `405 Method Not Allowed` when `Range: bytes=0-` is presented, the engine automatically catches this on the first request and seamlessly retries with plain GET.
+- **In-Memory Browser Memory Protocol Guard (`blob:`, `data:`)**: Excluded in-memory client-side URLs (`blob:`, `data:`) from extension interception, matching XDM's protocol filters so in-memory client-side generated files (from tools like ChatGPT, Claude, and `chat.z.ai`) are saved natively by the browser without failing external socket connections.
+- **TLS & Error Propagation**: Added `.danger_accept_invalid_certs(true)`, HTTP/2 adaptive windowing, and TCP keep-alive to `reqwest::Client`, while replacing opaque generic connection retry messages with the exact underlying HTTP or network failure reason.
 
 ## [0.7.6] – 2026-08-25
 

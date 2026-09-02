@@ -66,8 +66,8 @@ pub struct DownloadTask {
     pub id: String,
     pub original_url: String,
     pub final_url: Mutex<String>,
-    pub filename: String,
-    pub save_path: String,
+    pub filename: Arc<std::sync::Mutex<String>>,
+    pub save_path: Arc<std::sync::Mutex<String>>,
     pub cookie: String,
     pub referrer: String,
     pub user_agent: String,
@@ -83,6 +83,30 @@ pub struct DownloadTask {
 }
 
 impl DownloadTask {
+    pub fn get_filename(&self) -> String {
+        self.filename.lock().unwrap().clone()
+    }
+
+    pub fn get_save_path(&self) -> String {
+        self.save_path.lock().unwrap().clone()
+    }
+
+    pub fn update_filename_and_path(&self, new_name: &str) {
+        let mut fn_guard = self.filename.lock().unwrap();
+        let mut sp_guard = self.save_path.lock().unwrap();
+        *fn_guard = new_name.to_string();
+        let path = std::path::Path::new(&*sp_guard);
+        if let Some(parent) = path.parent() {
+            if !parent.as_os_str().is_empty() {
+                *sp_guard = parent.join(new_name).to_string_lossy().to_string();
+            } else {
+                *sp_guard = new_name.to_string();
+            }
+        } else {
+            *sp_guard = new_name.to_string();
+        }
+    }
+
     pub async fn throttle_if_needed(&self, bytes_len: u64, limit_bps: u64) {
         if limit_bps == 0 || bytes_len == 0 {
             return;
@@ -216,13 +240,14 @@ pub struct DownloadManager {
 
 impl DownloadManager {
     pub fn new() -> Self {
-        // We use redirect policy "none" to handle redirects manually, but wait, 
-        // reqwest auto redirects are fine if we get final_url in `start_download`. 
-        // Then workers request final_url which shouldn't redirect further.
         let client = reqwest::Client::builder()
-            .cookie_store(true)
-            .user_agent("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
+            .danger_accept_invalid_certs(true)
+            .user_agent("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36")
             .pool_max_idle_per_host(32)
+            .redirect(reqwest::redirect::Policy::limited(10))
+            .tcp_keepalive(Duration::from_secs(30))
+            .connect_timeout(Duration::from_secs(30))
+            .http2_adaptive_window(true)
             .connection_verbose(false)
             .build()
             .unwrap_or_default();
@@ -277,8 +302,8 @@ impl DownloadManager {
                     id: task.id.clone(),
                     original_url: task.original_url.clone(),
                     final_url,
-                    filename: task.filename.clone(),
-                    save_path: task.save_path.clone(),
+                    filename: task.get_filename(),
+                    save_path: task.get_save_path(),
                     cookie: task.cookie.clone(),
                     referrer: task.referrer.clone(),
                     user_agent: task.user_agent.clone(),
@@ -330,8 +355,8 @@ impl DownloadManager {
                                 id: p_task.id,
                                 original_url: p_task.original_url,
                                 final_url: Mutex::new(p_task.final_url),
-                                filename: p_task.filename,
-                                save_path: p_task.save_path,
+                                filename: Arc::new(std::sync::Mutex::new(p_task.filename)),
+                                save_path: Arc::new(std::sync::Mutex::new(p_task.save_path)),
                                 cookie: p_task.cookie,
                                 referrer: p_task.referrer,
                                 user_agent: p_task.user_agent,
@@ -364,114 +389,14 @@ impl DownloadManager {
     ) -> Result<String, String> {
         let id = uuid::Uuid::new_v4().to_string();
 
-        let mut size_req = self.client.get(&url)
-            .header(reqwest::header::ACCEPT, "*/*")
-            .header(reqwest::header::ACCEPT_LANGUAGE, "en-US,en;q=0.9")
-            .header(reqwest::header::RANGE, "bytes=0-0");
-        if !cookie.is_empty() {
-            size_req = size_req.header(reqwest::header::COOKIE, &cookie);
-        }
-        if !referrer.is_empty() {
-            size_req = size_req.header(reqwest::header::REFERER, &referrer);
-        }
-        if !user_agent.is_empty() {
-            size_req = size_req.header(reqwest::header::USER_AGENT, &user_agent);
+        if !url.starts_with("http://") && !url.starts_with("https://") {
+            return Err("Unsupported URL protocol. Only http:// and https:// URLs can be downloaded over the network. In-memory URLs (e.g. blob:) are generated locally in your browser and saved directly by the browser.".to_string());
         }
 
-        let mut total_size = 0u64;
-        let mut accept_ranges = false;
-        let mut final_url = url.clone();
-
-        let update_save_path_filename = |current_path: &str, new_name: &str| -> String {
-            let path = std::path::Path::new(current_path);
-            if let Some(parent) = path.parent() {
-                if parent.as_os_str().is_empty() {
-                    new_name.to_string()
-                } else {
-                    parent.join(new_name).to_string_lossy().to_string()
-                }
-            } else {
-                new_name.to_string()
-            }
-        };
-
-        if let Ok(res) = tokio::time::timeout(
-            Duration::from_secs(8),
-            size_req.send()
-        ).await {
-            if let Ok(res) = res {
-                final_url = res.url().to_string();
-                let status = res.status();
-                if status == reqwest::StatusCode::PARTIAL_CONTENT {
-                    accept_ranges = true;
-                    if let Some(cr_val) = res.headers().get("Content-Range").and_then(|h| h.to_str().ok()) {
-                        if let Some(slash_idx) = cr_val.rfind('/') {
-                            if let Ok(s) = cr_val[slash_idx + 1..].trim().parse::<u64>() {
-                                total_size = s;
-                            }
-                        }
-                    }
-                } else if status.is_success() {
-                    total_size = res.headers()
-                        .get(reqwest::header::CONTENT_LENGTH)
-                        .and_then(|val| val.to_str().ok())
-                        .and_then(|s| s.parse::<u64>().ok())
-                        .unwrap_or(0);
-                }
-
-                // Check Content-Disposition header to resolve better filename if current is generic or missing extension
-                if let Some(cd) = res.headers().get(reqwest::header::CONTENT_DISPOSITION).and_then(|h| h.to_str().ok()) {
-                    if let Some(cd_name) = crate::proxy::parse_content_disposition(cd) {
-                        if !crate::proxy::is_generic_filename(&cd_name) {
-                            let should_update = crate::proxy::is_generic_filename(&filename)
-                                || filename.is_empty()
-                                || (!filename.contains('.') && cd_name.contains('.'));
-                            if should_update {
-                                save_path = update_save_path_filename(&save_path, &cd_name);
-                                filename = cd_name;
-                            }
-                        }
-                    }
-                }
-            }
-        }
-
-        // If Range probe failed or was rejected (e.g. 416 or dynamic streaming endpoints like z.ai), try fallback plain GET probe
-        if !accept_ranges && total_size == 0 {
-            let mut plain_req = self.client.get(&url)
-                .header(reqwest::header::ACCEPT, "*/*")
-                .header(reqwest::header::ACCEPT_LANGUAGE, "en-US,en;q=0.9");
-            if !cookie.is_empty() { plain_req = plain_req.header(reqwest::header::COOKIE, &cookie); }
-            if !referrer.is_empty() { plain_req = plain_req.header(reqwest::header::REFERER, &referrer); }
-            if !user_agent.is_empty() { plain_req = plain_req.header(reqwest::header::USER_AGENT, &user_agent); }
-
-            if let Ok(res_plain) = tokio::time::timeout(Duration::from_secs(5), plain_req.send()).await {
-                if let Ok(res) = res_plain {
-                    if res.status().is_success() {
-                        final_url = res.url().to_string();
-                        total_size = res.headers()
-                            .get(reqwest::header::CONTENT_LENGTH)
-                            .and_then(|val| val.to_str().ok())
-                            .and_then(|s| s.parse::<u64>().ok())
-                            .unwrap_or(0);
-                        if let Some(cd) = res.headers().get(reqwest::header::CONTENT_DISPOSITION).and_then(|h| h.to_str().ok()) {
-                            if let Some(cd_name) = crate::proxy::parse_content_disposition(cd) {
-                                if !crate::proxy::is_generic_filename(&cd_name) {
-                                    save_path = update_save_path_filename(&save_path, &cd_name);
-                                    filename = cd_name;
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        }
-
-        // Check redirected URL if filename is still generic or missing extension
-        if crate::proxy::is_generic_filename(&filename) || filename.is_empty() || !filename.contains('.') {
-            if let Ok(parsed_res_url) = reqwest::Url::parse(&final_url) {
+        if crate::proxy::is_generic_filename(&filename) || filename.is_empty() {
+            if let Ok(parsed) = reqwest::Url::parse(&url) {
                 let mut candidate = String::new();
-                for (k, v) in parsed_res_url.query_pairs() {
+                for (k, v) in parsed.query_pairs() {
                     let k_lower = k.to_lowercase();
                     if (k_lower.contains("file") || k_lower.contains("name") || k_lower.contains("title")) && v.contains('.') {
                         if let Ok(decoded) = urlencoding::decode(&v) {
@@ -484,11 +409,11 @@ impl DownloadManager {
                     }
                 }
                 if candidate.is_empty() {
-                    if let Some(last_seg) = parsed_res_url.path_segments().and_then(|s| s.last()) {
+                    if let Some(last_seg) = parsed.path_segments().and_then(|s| s.last()) {
                         if !last_seg.is_empty() && last_seg.contains('.') {
                             if let Ok(decoded) = urlencoding::decode(last_seg) {
                                 let sanitized = crate::proxy::sanitize_filename(&decoded);
-                                if !crate::proxy::is_generic_filename(&sanitized) && sanitized.contains('.') {
+                                if !crate::proxy::is_generic_filename(&sanitized) {
                                     candidate = sanitized;
                                 }
                             }
@@ -496,28 +421,37 @@ impl DownloadManager {
                     }
                 }
                 if !candidate.is_empty() {
-                    save_path = update_save_path_filename(&save_path, &candidate);
                     filename = candidate;
+                } else {
+                    filename = "downloaded_file".to_string();
                 }
+            } else {
+                filename = "downloaded_file".to_string();
             }
-        }
 
-        if crate::proxy::is_generic_filename(&filename) || filename.is_empty() {
-            filename = "downloaded_file".to_string();
-            save_path = update_save_path_filename(&save_path, &filename);
+            let path = std::path::Path::new(&save_path);
+            if let Some(parent) = path.parent() {
+                if !parent.as_os_str().is_empty() {
+                    save_path = parent.join(&filename).to_string_lossy().to_string();
+                } else {
+                    save_path = filename.clone();
+                }
+            } else {
+                save_path = filename.clone();
+            }
         }
 
         let (abort_tx, _) = broadcast::channel(1);
         let task = Arc::new(DownloadTask {
             id: id.clone(),
             original_url: url.clone(),
-            final_url: Mutex::new(final_url),
-            filename: filename.clone(),
-            save_path: save_path.clone(),
-            cookie: cookie.clone(),
-            referrer: referrer.clone(),
-            user_agent: user_agent.clone(),
-            total_size: AtomicU64::new(total_size),
+            final_url: Mutex::new(url.clone()),
+            filename: Arc::new(std::sync::Mutex::new(filename)),
+            save_path: Arc::new(std::sync::Mutex::new(save_path)),
+            cookie,
+            referrer,
+            user_agent,
+            total_size: AtomicU64::new(0),
             downloaded: Arc::new(AtomicU64::new(0)),
             network_downloaded: Arc::new(AtomicU64::new(0)),
             speed_limiter: Mutex::new(Instant::now()),
@@ -537,24 +471,21 @@ impl DownloadManager {
 
         let manager_clone = self.clone();
         tokio::spawn(async move {
-            if let Err(e) = manager_clone.run_task(task, accept_ranges).await {
-                eprintln!("Download failed: {}", e);
+            if let Err(e) = manager_clone.run_task(task, false).await {
+                eprintln!("Download error: {}", e);
             }
         });
 
         Ok(id)
     }
 
-    pub async fn run_task(self: &Arc<Self>, task: Arc<DownloadTask>, accept_ranges: bool) -> Result<(), String> {
+    pub async fn run_task(self: &Arc<Self>, task: Arc<DownloadTask>, is_resume: bool) -> Result<(), String> {
         *task.status.lock().unwrap() = DownloadStatus::Downloading;
 
-        let is_new = task.downloaded.load(Ordering::Relaxed) == 0;
-        
-        if let Some(parent) = std::path::Path::new(&task.save_path).parent() {
+        let save_path_val = task.get_save_path();
+        if let Some(parent) = std::path::Path::new(&save_path_val).parent() {
             let _ = tokio::fs::create_dir_all(parent).await;
         }
-
-        let total_size_val = task.total_size.load(Ordering::Relaxed);
 
         let temp_dir = {
             let handle_opt = self.app_handle.lock().await;
@@ -570,38 +501,29 @@ impl DownloadManager {
 
         let temp_dir_exists = temp_dir.exists();
         let chunks_empty = task.chunks.lock().unwrap().is_empty();
-        let should_initialize = is_new || chunks_empty || !temp_dir_exists;
+        let should_initialize = !is_resume || chunks_empty || !temp_dir_exists;
 
         if should_initialize {
             task.downloaded.store(0, Ordering::Relaxed);
             task.network_downloaded.store(0, Ordering::Relaxed);
-            
+
             if temp_dir.exists() {
                 let _ = std::fs::remove_dir_all(&temp_dir);
             }
             if let Err(e) = std::fs::create_dir_all(&temp_dir) {
                 return Err(format!("Could not create temp directory: {}", e));
             }
-            
+
             let mut chunks = task.chunks.lock().unwrap();
             chunks.clear();
-            if total_size_val > 0 {
-                chunks.push(ActiveChunk {
-                    id: uuid::Uuid::new_v4().to_string(),
-                    start: 0,
-                    end: Arc::new(AtomicU64::new(total_size_val - 1)),
-                    downloaded: Arc::new(AtomicU64::new(0)),
-                    active: Arc::new(std::sync::atomic::AtomicBool::new(false)),
-                });
-            } else {
-                chunks.push(ActiveChunk {
-                    id: uuid::Uuid::new_v4().to_string(),
-                    start: 0,
-                    end: Arc::new(AtomicU64::new(0)),
-                    downloaded: Arc::new(AtomicU64::new(0)),
-                    active: Arc::new(std::sync::atomic::AtomicBool::new(false)),
-                });
-            }
+            // Initial Chunk 0 is open-ended until probe or worker receives response headers
+            chunks.push(ActiveChunk {
+                id: uuid::Uuid::new_v4().to_string(),
+                start: 0,
+                end: Arc::new(AtomicU64::new(0)),
+                downloaded: Arc::new(AtomicU64::new(0)),
+                active: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            });
         } else {
             if !temp_dir.exists() {
                 if let Err(e) = std::fs::create_dir_all(&temp_dir) {
@@ -610,11 +532,13 @@ impl DownloadManager {
             }
         }
 
-        let abort_tx = task.abort_tx.as_ref().unwrap();
-        
+        let abort_tx = match task.abort_tx.as_ref() {
+            Some(tx) => tx,
+            None => return Err("Missing abort channel".to_string()),
+        };
+
         let id_clone = task.id.clone();
-        let filename_clone = task.filename.clone();
-        let save_path_clone = task.save_path.clone();
+        let task_for_reporting = task.clone();
         let status_ref = task.status.clone();
         let mut abort_rx = abort_tx.subscribe();
         let app_handle_opt = self.app_handle.lock().await.clone();
@@ -622,7 +546,6 @@ impl DownloadManager {
         let task_eta = task.eta.clone();
         let manager_for_save = self.clone();
         let manager_for_reporting = self.clone();
-        let task_for_reporting = task.clone();
 
         // Speed & Progress reporting loop
         tokio::spawn(async move {
@@ -674,17 +597,20 @@ impl DownloadManager {
                         let status = status_ref.lock().unwrap().clone();
                         *task_eta.lock().unwrap() = eta.clone();
 
+                        let current_filename = task_for_reporting.get_filename();
+                        let current_save_path = task_for_reporting.get_save_path();
+
                         let progress = DownloadProgress {
                             id: id_clone.clone(),
                             url: task_for_reporting.original_url.clone(),
-                            filename: filename_clone.clone(),
-                            save_path: save_path_clone.clone(),
+                            filename: current_filename,
+                            save_path: current_save_path.clone(),
                             total_size: current_total_size,
                             downloaded: current_bytes,
                             speed,
                             eta,
                             status: status.clone(),
-                            file_exists: std::path::Path::new(&save_path_clone).exists(),
+                            file_exists: std::path::Path::new(&current_save_path).exists(),
                             speed_limited: is_speed_limited,
                         };
 
@@ -708,19 +634,11 @@ impl DownloadManager {
             }
         });
 
-        // Shared Blocking Writer Thread removed in favor of Part File Assembly
-
         // XDM Dynamic Chunk Spawner Logic
         let (worker_completed_tx, mut worker_completed_rx) = tokio::sync::mpsc::unbounded_channel::<String>();
         let mut active_tasks: HashMap<String, tokio::task::JoinHandle<()>> = HashMap::new();
 
-        let target_workers = if accept_ranges && task.total_size.load(Ordering::Relaxed) > 0 { 
-            self.max_chunks.load(Ordering::Relaxed) as usize 
-        } else { 
-            1 
-        };
-
-        // Initialize active flags to false
+        // Reset active flags
         {
             let chunks = task.chunks.lock().unwrap();
             for c in chunks.iter() {
@@ -729,7 +647,9 @@ impl DownloadManager {
         }
 
         let mut loop_abort_rx = abort_tx.subscribe();
-        
+        let is_first_request = Arc::new(std::sync::atomic::AtomicBool::new(should_initialize));
+        let accept_ranges_flag = Arc::new(std::sync::atomic::AtomicBool::new(false));
+
         // Dynamic Piece Grabber Manager
         loop {
             // Check for abort
@@ -748,8 +668,15 @@ impl DownloadManager {
                 break;
             }
 
+            let current_total_size = task.total_size.load(Ordering::Relaxed);
+            let can_multi_segment = accept_ranges_flag.load(Ordering::SeqCst) && current_total_size > 2 * 1024 * 1024;
+            let target_workers = if can_multi_segment {
+                self.max_chunks.load(Ordering::Relaxed).max(1) as usize
+            } else {
+                1
+            };
+
             if active_tasks.len() >= target_workers {
-                // Wait for a worker to finish or abort
                 tokio::select! {
                     res = loop_abort_rx.recv() => {
                         if res.is_ok() {
@@ -768,17 +695,17 @@ impl DownloadManager {
                 continue;
             }
 
-            // Find an inactive chunk or split the largest active chunk
+            // Find an inactive chunk or dynamically split the largest chunk
             let mut chunk_to_spawn = None;
             {
                 let mut chunks = task.chunks.lock().unwrap();
-                
+
                 // 1. Find inactive chunk
                 for chunk in chunks.iter() {
                     if !chunk.active.load(Ordering::SeqCst) {
                         let end = chunk.end.load(Ordering::SeqCst);
                         let downloaded = chunk.downloaded.load(Ordering::SeqCst);
-                        let can_run = if end > 0 {
+                        let can_run = if end > 0 && end >= chunk.start {
                             chunk.start + downloaded <= end
                         } else {
                             downloaded == 0
@@ -790,16 +717,16 @@ impl DownloadManager {
                         }
                     }
                 }
-                
-                // 2. If no inactive chunks, try to split the largest one
-                if chunk_to_spawn.is_none() && accept_ranges {
+
+                // 2. Dynamic split of the largest remaining chunk (if range requests supported)
+                if chunk_to_spawn.is_none() && can_multi_segment {
                     let mut max_rem = 0;
                     let mut best_idx = None;
                     for (i, chunk) in chunks.iter().enumerate() {
                         let end = chunk.end.load(Ordering::SeqCst);
                         let downloaded = chunk.downloaded.load(Ordering::SeqCst);
                         let start = chunk.start;
-                        
+
                         if end > 0 && start + downloaded <= end {
                             let rem = (end + 1) - (start + downloaded);
                             if rem > max_rem {
@@ -808,20 +735,20 @@ impl DownloadManager {
                             }
                         }
                     }
-                    
+
                     if max_rem > 1024 * 1024 { // Minimum split size 1MB
                         if let Some(idx) = best_idx {
                             let end = chunks[idx].end.load(Ordering::SeqCst);
                             let downloaded = chunks[idx].downloaded.load(Ordering::SeqCst);
                             let start = chunks[idx].start;
-                            
+
                             let rem = (end + 1) - (start + downloaded);
                             let split_len = rem / 2;
                             let new_start = end + 1 - split_len;
-                            
-                            // Reduce the end of the existing active chunk. The active worker will naturally stop!
+
+                            // Adjust end of active chunk
                             chunks[idx].end.store(new_start - 1, Ordering::SeqCst);
-                            
+
                             let new_chunk = ActiveChunk {
                                 id: uuid::Uuid::new_v4().to_string(),
                                 start: new_start,
@@ -829,7 +756,7 @@ impl DownloadManager {
                                 downloaded: Arc::new(AtomicU64::new(0)),
                                 active: Arc::new(std::sync::atomic::AtomicBool::new(true)),
                             };
-                            
+
                             chunk_to_spawn = Some(new_chunk.clone());
                             chunks.push(new_chunk);
                         }
@@ -846,13 +773,22 @@ impl DownloadManager {
                 let completed_tx = worker_completed_tx.clone();
                 let chunk_id = chunk.id.clone();
                 let mut worker_abort_rx = abort_tx.subscribe();
-                let accept_ranges_clone = accept_ranges;
-                
+                let is_first_req_clone = is_first_request.clone();
+                let accept_ranges_flag_clone = accept_ranges_flag.clone();
+
                 let worker = tokio::spawn(async move {
-                    let max_retries: u32 = 20;
+                    let max_retries: u32 = 5;
                     let mut retry_count: u32 = 0;
-                    
-                    let mut net_buffer = Vec::with_capacity(256 * 1024);
+                    let mut retry_with_no_range: bool = false;
+                    let mut last_error_msg = String::new();
+                    let mut net_buffer = Vec::with_capacity(64 * 1024);
+
+                    let clean_header_val = |v: &str| -> Option<reqwest::header::HeaderValue> {
+                        let sanitized: String = v.chars()
+                            .filter(|c| !c.is_control() && (*c as u32) < 256)
+                            .collect();
+                        reqwest::header::HeaderValue::from_str(&sanitized).ok()
+                    };
 
                     'reconnect: loop {
                         use tokio::io::{AsyncSeekExt, AsyncWriteExt};
@@ -861,60 +797,202 @@ impl DownloadManager {
                         let chunk_path = temp_dir_clone.join(&chunk_id);
                         let mut file = match tokio::fs::OpenOptions::new().write(true).create(true).open(&chunk_path).await {
                             Ok(f) => f,
-                            Err(_) => { retry_count += 1; tokio::time::sleep(Duration::from_millis(1000)).await; continue 'reconnect; }
+                            Err(e) => {
+                                last_error_msg = format!("Disk file error: {}", e);
+                                retry_count += 1;
+                                if retry_count >= max_retries {
+                                    *task_clone.status.lock().unwrap() = DownloadStatus::Failed(last_error_msg);
+                                    break 'reconnect;
+                                }
+                                tokio::time::sleep(Duration::from_millis(1000)).await;
+                                continue 'reconnect;
+                            }
                         };
-                        
+
                         let local_downloaded = chunk.downloaded.load(Ordering::SeqCst);
-                        if let Err(_) = file.seek(std::io::SeekFrom::Start(local_downloaded)).await {
-                            retry_count += 1; tokio::time::sleep(Duration::from_millis(1000)).await; continue 'reconnect;
+                        if let Err(e) = file.seek(std::io::SeekFrom::Start(local_downloaded)).await {
+                            last_error_msg = format!("Disk seek error: {}", e);
+                            retry_count += 1;
+                            if retry_count >= max_retries {
+                                *task_clone.status.lock().unwrap() = DownloadStatus::Failed(last_error_msg);
+                                break 'reconnect;
+                            }
+                            tokio::time::sleep(Duration::from_millis(1000)).await;
+                            continue 'reconnect;
                         }
-                        
+
                         let current_end = chunk.end.load(Ordering::SeqCst);
-                        let local_downloaded = chunk.downloaded.load(Ordering::SeqCst);
                         let current_start = chunk.start + local_downloaded;
-                        
-                        if accept_ranges_clone && current_end > 0 && current_start > current_end {
-                            break 'reconnect;
-                        }
-                        
-                        if retry_count >= max_retries {
-                            *task_clone.status.lock().unwrap() = DownloadStatus::Failed("Max retries exceeded".to_string());
+
+                        if current_end > 0 && current_end >= chunk.start && current_start > current_end {
                             break 'reconnect;
                         }
 
-                        if retry_count > 0 { tokio::time::sleep(Duration::from_millis(1000)).await; }
+                        if retry_count >= max_retries {
+                            let failure_reason = if !last_error_msg.is_empty() {
+                                format!("Failed: {}", last_error_msg)
+                            } else {
+                                "Failed: Connection retries exceeded".to_string()
+                            };
+                            *task_clone.status.lock().unwrap() = DownloadStatus::Failed(failure_reason);
+                            break 'reconnect;
+                        }
+
+                        if retry_count > 0 {
+                            tokio::time::sleep(Duration::from_millis(1000 * retry_count as u64)).await;
+                        }
 
                         let worker_url = task_clone.final_url.lock().await.clone();
                         let mut req = client.get(&worker_url)
-                            .header(reqwest::header::ACCEPT, "*/*")
+                            .header(reqwest::header::ACCEPT, "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7")
+                            .header(reqwest::header::ACCEPT_ENCODING, "identity")
                             .header(reqwest::header::ACCEPT_LANGUAGE, "en-US,en;q=0.9")
+                            .header("sec-ch-ua", "\"Chromium\";v=\"124\", \"Google Chrome\";v=\"124\", \"Not-A.Brand\";v=\"99\"")
+                            .header("sec-ch-ua-mobile", "?0")
+                            .header("sec-ch-ua-platform", "\"Windows\"")
+                            .header("sec-fetch-dest", "document")
+                            .header("sec-fetch-mode", "navigate")
+                            .header("sec-fetch-site", "cross-site")
+                            .header("sec-fetch-user", "?1")
+                            .header("upgrade-insecure-requests", "1")
                             .header(reqwest::header::CONNECTION, "keep-alive");
 
-                        if !task_clone.cookie.is_empty() { req = req.header(reqwest::header::COOKIE, &task_clone.cookie); }
-                        if !task_clone.referrer.is_empty() { req = req.header(reqwest::header::REFERER, &task_clone.referrer); }
-                        if !task_clone.user_agent.is_empty() { req = req.header(reqwest::header::USER_AGENT, &task_clone.user_agent); }
-
-                        if accept_ranges_clone && current_end > 0 {
-                            req = req.header(reqwest::header::RANGE, format!("bytes={}-{}", current_start, current_end));
-                        } else if local_downloaded > 0 {
-                            req = req.header(reqwest::header::RANGE, format!("bytes={}-", current_start));
+                        if let Some(ua) = clean_header_val(&task_clone.user_agent) {
+                            req = req.header(reqwest::header::USER_AGENT, ua);
+                        } else {
+                            req = req.header(reqwest::header::USER_AGENT, "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36");
                         }
 
-                        let res = match req.send().await {
-                            Ok(r) => r,
-                            Err(_) => { retry_count += 1; continue 'reconnect; }
+                        if !task_clone.cookie.is_empty() {
+                            if let Some(hv) = clean_header_val(&task_clone.cookie) {
+                                req = req.header(reqwest::header::COOKIE, hv);
+                            }
+                        }
+                        if !task_clone.referrer.is_empty() {
+                            if let Some(hv) = clean_header_val(&task_clone.referrer) {
+                                req = req.header(reqwest::header::REFERER, hv);
+                            }
+                        }
+
+                        // Send Range header: unless fallback without Range requested
+                        if !retry_with_no_range {
+                            if current_end > 0 && current_end >= chunk.start {
+                                req = req.header(reqwest::header::RANGE, format!("bytes={}-{}", current_start, current_end));
+                            } else {
+                                req = req.header(reqwest::header::RANGE, format!("bytes={}-", current_start));
+                            }
+                        }
+
+                        let res = match tokio::time::timeout(Duration::from_secs(60), req.send()).await {
+                            Ok(Ok(r)) => r,
+                            Ok(Err(e)) => {
+                                last_error_msg = format!("Network error: {}", e);
+                                eprintln!("[Worker Error] Network error for chunk {}: {}", chunk_id, e);
+                                retry_count += 1;
+                                continue 'reconnect;
+                            }
+                            Err(_) => {
+                                last_error_msg = "Connection timed out (60s)".to_string();
+                                eprintln!("[Worker Error] Connection timed out (60s) for chunk {}", chunk_id);
+                                retry_count += 1;
+                                continue 'reconnect;
+                            }
                         };
 
-                        if !res.status().is_success() && res.status() != reqwest::StatusCode::PARTIAL_CONTENT {
-                            retry_count += 1; continue 'reconnect;
+                        let status = res.status();
+                        if !status.is_success() && status != reqwest::StatusCode::PARTIAL_CONTENT {
+                            last_error_msg = format!("HTTP {}", status);
+                            eprintln!("[Worker Error] HTTP status {} for chunk {}", status, chunk_id);
+
+                            // If Range failed on Chunk 0 with 416, 400, 403, or 405, immediately retry without Range header!
+                            if is_first_req_clone.load(Ordering::SeqCst) && !retry_with_no_range && (status == reqwest::StatusCode::RANGE_NOT_SATISFIABLE || status == reqwest::StatusCode::BAD_REQUEST || status == reqwest::StatusCode::FORBIDDEN || status == reqwest::StatusCode::METHOD_NOT_ALLOWED) {
+                                eprintln!("[Worker] Range header rejected with status {}. Retrying without Range...", status);
+                                retry_with_no_range = true;
+                                continue 'reconnect;
+                            }
+
+                            if is_first_req_clone.load(Ordering::SeqCst) && (status.is_client_error() || status.is_server_error()) {
+                                *task_clone.status.lock().unwrap() = DownloadStatus::Failed(format!("HTTP Error {}", status));
+                                break 'reconnect;
+                            }
+                            retry_count += 1;
+                            continue 'reconnect;
                         }
 
-                        if retry_count == 0 {
-                            if let Some(cr_val) = res.headers().get("Content-Range").and_then(|h| h.to_str().ok()) {
-                                if let Some(slash_idx) = cr_val.rfind('/') {
-                                    if let Ok(s) = cr_val[slash_idx + 1..].trim().parse::<u64>() {
-                                        if s > task_clone.total_size.load(Ordering::Relaxed) {
-                                            task_clone.total_size.store(s, Ordering::Relaxed);
+                        // First Connection Inspection (XDM Single-Pass Pattern)
+                        if is_first_req_clone.swap(false, Ordering::SeqCst) {
+                            let final_res_url = res.url().to_string();
+                            *task_clone.final_url.lock().await = final_res_url.clone();
+
+                            let is_partial = status == reqwest::StatusCode::PARTIAL_CONTENT;
+                            let mut probed_total_size = 0u64;
+
+                            if is_partial {
+                                accept_ranges_flag_clone.store(true, Ordering::SeqCst);
+                                if let Some(cr_val) = res.headers().get("Content-Range").and_then(|h| h.to_str().ok()) {
+                                    if let Some(slash_idx) = cr_val.rfind('/') {
+                                        if let Ok(s) = cr_val[slash_idx + 1..].trim().parse::<u64>() {
+                                            probed_total_size = s;
+                                        }
+                                    }
+                                }
+                            }
+
+                            if probed_total_size == 0 {
+                                probed_total_size = res.headers()
+                                    .get(reqwest::header::CONTENT_LENGTH)
+                                    .and_then(|val| val.to_str().ok())
+                                    .and_then(|s| s.parse::<u64>().ok())
+                                    .unwrap_or(0);
+                            }
+
+                            if probed_total_size > 0 {
+                                task_clone.total_size.store(probed_total_size, Ordering::Relaxed);
+                            }
+
+                            // Dynamic filename refinement from Content-Disposition
+                            if let Some(cd) = res.headers().get(reqwest::header::CONTENT_DISPOSITION).and_then(|h| h.to_str().ok()) {
+                                if let Some(cd_name) = crate::proxy::parse_content_disposition(cd) {
+                                    if !crate::proxy::is_generic_filename(&cd_name) {
+                                        task_clone.update_filename_and_path(&cd_name);
+                                    }
+                                }
+                            }
+
+                            // Dynamic filename refinement from Content-Type if missing extension
+                            let cur_fn = task_clone.get_filename();
+                            if !cur_fn.contains('.') {
+                                if let Some(ct) = res.headers().get(reqwest::header::CONTENT_TYPE).and_then(|h| h.to_str().ok()) {
+                                    if let Some(ext) = crate::proxy::extension_from_content_type(ct) {
+                                        let updated = format!("{}{}", cur_fn, ext);
+                                        task_clone.update_filename_and_path(&updated);
+                                    }
+                                }
+                            }
+
+                            // If ranges supported and file > 2MB, dynamically split segments for parallel workers!
+                            let max_c = manager_for_worker.max_chunks.load(Ordering::Relaxed).max(1) as usize;
+                            if is_partial && probed_total_size > 2 * 1024 * 1024 && max_c > 1 {
+                                let num_workers = ((probed_total_size / (1024 * 1024)) as usize).clamp(1, max_c);
+                                if num_workers > 1 {
+                                    let seg_size = probed_total_size / (num_workers as u64);
+                                    let mut chunks_guard = task_clone.chunks.lock().unwrap();
+                                    if chunks_guard.len() == 1 {
+                                        chunks_guard[0].end.store(seg_size - 1, Ordering::SeqCst);
+                                        for i in 1..num_workers {
+                                            let c_start = (i as u64) * seg_size;
+                                            let c_end = if i == num_workers - 1 {
+                                                probed_total_size - 1
+                                            } else {
+                                                (i as u64 + 1) * seg_size - 1
+                                            };
+                                            chunks_guard.push(ActiveChunk {
+                                                id: uuid::Uuid::new_v4().to_string(),
+                                                start: c_start,
+                                                end: Arc::new(AtomicU64::new(c_end)),
+                                                downloaded: Arc::new(AtomicU64::new(0)),
+                                                active: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+                                            });
                                         }
                                     }
                                 }
@@ -929,7 +1007,7 @@ impl DownloadManager {
                                 res = worker_abort_rx.recv() => {
                                     if res.is_ok() {
                                         if !net_buffer.is_empty() {
-                                            let flushed = std::mem::replace(&mut net_buffer, Vec::with_capacity(1024 * 1024));
+                                            let flushed = std::mem::replace(&mut net_buffer, Vec::with_capacity(64 * 1024));
                                             if let Ok(_) = file.write_all(&flushed).await {
                                                 chunk.downloaded.fetch_add(flushed.len() as u64, Ordering::SeqCst);
                                                 downloaded_counter_clone.fetch_add(flushed.len() as u64, Ordering::Relaxed);
@@ -938,43 +1016,43 @@ impl DownloadManager {
                                         break 'reconnect;
                                     }
                                 }
-                                bytes_chunk_res = tokio::time::timeout(Duration::from_secs(15), stream.next()) => {
+                                bytes_chunk_res = tokio::time::timeout(Duration::from_secs(60), stream.next()) => {
                                     let bytes_chunk = match bytes_chunk_res {
                                         Ok(b) => b,
                                         Err(_) => {
                                             if !net_buffer.is_empty() {
-                                                let flushed = std::mem::replace(&mut net_buffer, Vec::with_capacity(1024 * 1024));
+                                                let flushed = std::mem::replace(&mut net_buffer, Vec::with_capacity(64 * 1024));
                                                 if let Ok(_) = file.write_all(&flushed).await {
                                                     chunk.downloaded.fetch_add(flushed.len() as u64, Ordering::SeqCst);
                                                     downloaded_counter_clone.fetch_add(flushed.len() as u64, Ordering::Relaxed);
                                                 }
                                             }
                                             retry_count += 1;
-                                            continue 'reconnect; // timeout, force reconnect
+                                            continue 'reconnect;
                                         }
                                     };
+
                                     match bytes_chunk {
                                         Some(Ok(bytes)) => {
                                             retry_count = 0;
                                             let mut bytes_to_add = bytes.as_ref();
 
-                                            // Re-evaluate end in case of dynamic split
                                             let dynamic_end = chunk.end.load(Ordering::SeqCst);
                                             let current_downloaded = chunk.downloaded.load(Ordering::SeqCst);
                                             let current_pos = chunk.start + current_downloaded + net_buffer.len() as u64;
 
-                                            if accept_ranges_clone && dynamic_end > 0 {
+                                            if dynamic_end > 0 && dynamic_end >= chunk.start {
                                                 if current_pos >= dynamic_end + 1 {
                                                     if !net_buffer.is_empty() {
-                                                        let flushed = std::mem::replace(&mut net_buffer, Vec::with_capacity(1024 * 1024));
+                                                        let flushed = std::mem::replace(&mut net_buffer, Vec::with_capacity(64 * 1024));
                                                         if let Ok(_) = file.write_all(&flushed).await {
                                                             chunk.downloaded.fetch_add(flushed.len() as u64, Ordering::SeqCst);
                                                             downloaded_counter_clone.fetch_add(flushed.len() as u64, Ordering::Relaxed);
                                                         }
                                                     }
-                                                    break 'reconnect; // Reached end
+                                                    break 'reconnect; // Chunk completed!
                                                 }
-                                                
+
                                                 let remaining = (dynamic_end + 1).saturating_sub(current_pos);
                                                 if bytes_to_add.len() as u64 > remaining {
                                                     bytes_to_add = &bytes_to_add[..remaining as usize];
@@ -987,43 +1065,31 @@ impl DownloadManager {
                                             let limit_bps = manager_for_worker.speed_limit_bps.load(Ordering::Relaxed);
                                             task_clone.throttle_if_needed(bytes_to_add.len() as u64, limit_bps).await;
 
-                                            if net_buffer.len() >= 1024 * 1024 { // 1MB buffer
-                                                let flushed = std::mem::replace(&mut net_buffer, Vec::with_capacity(1024 * 1024));
+                                            if net_buffer.len() >= 64 * 1024 {
+                                                let flushed = std::mem::replace(&mut net_buffer, Vec::with_capacity(64 * 1024));
                                                 if let Err(_) = file.write_all(&flushed).await {
-                                                    retry_count += 1; continue 'reconnect;
+                                                    retry_count += 1;
+                                                    continue 'reconnect;
                                                 }
                                                 chunk.downloaded.fetch_add(flushed.len() as u64, Ordering::SeqCst);
                                                 downloaded_counter_clone.fetch_add(flushed.len() as u64, Ordering::Relaxed);
                                             }
-
-                                            if accept_ranges_clone && dynamic_end > 0 {
-                                                let current_dl = chunk.downloaded.load(Ordering::SeqCst);
-                                                let current_pos = chunk.start + current_dl + net_buffer.len() as u64;
-                                                if current_pos >= dynamic_end + 1 {
-                                                    if !net_buffer.is_empty() {
-                                                        let flushed = std::mem::replace(&mut net_buffer, Vec::with_capacity(1024 * 1024));
-                                                        if let Ok(_) = file.write_all(&flushed).await {
-                                                            chunk.downloaded.fetch_add(flushed.len() as u64, Ordering::SeqCst);
-                                                            downloaded_counter_clone.fetch_add(flushed.len() as u64, Ordering::Relaxed);
-                                                        }
-                                                    }
-                                                    break 'reconnect;
-                                                }
-                                            }
                                         }
                                         Some(Err(_)) => {
                                             if !net_buffer.is_empty() {
-                                                let flushed = std::mem::replace(&mut net_buffer, Vec::with_capacity(1024 * 1024));
+                                                let flushed = std::mem::replace(&mut net_buffer, Vec::with_capacity(64 * 1024));
                                                 if let Ok(_) = file.write_all(&flushed).await {
                                                     chunk.downloaded.fetch_add(flushed.len() as u64, Ordering::SeqCst);
                                                     downloaded_counter_clone.fetch_add(flushed.len() as u64, Ordering::Relaxed);
                                                 }
                                             }
-                                            retry_count += 1; continue 'reconnect;
+                                            retry_count += 1;
+                                            continue 'reconnect;
                                         }
                                         None => {
+                                            // Stream reached EOF cleanly
                                             if !net_buffer.is_empty() {
-                                                let flushed = std::mem::replace(&mut net_buffer, Vec::with_capacity(1024 * 1024));
+                                                let flushed = std::mem::replace(&mut net_buffer, Vec::with_capacity(64 * 1024));
                                                 if let Ok(_) = file.write_all(&flushed).await {
                                                     chunk.downloaded.fetch_add(flushed.len() as u64, Ordering::SeqCst);
                                                     downloaded_counter_clone.fetch_add(flushed.len() as u64, Ordering::Relaxed);
@@ -1037,9 +1103,6 @@ impl DownloadManager {
                         }
                     }
 
-                    // net_buffer is already guaranteed empty when breaking loop, 
-                    // or flushed before break, because we replaced tx_clone with file.write_all
-                    
                     let final_dl = chunk.downloaded.load(Ordering::SeqCst);
                     let chunk_path = temp_dir_clone.join(&chunk_id);
                     if let Ok(f) = tokio::fs::OpenOptions::new().write(true).open(&chunk_path).await {
@@ -1048,13 +1111,11 @@ impl DownloadManager {
                     chunk.active.store(false, Ordering::SeqCst);
                     let _ = completed_tx.send(chunk_id);
                 });
-                
+
                 active_tasks.insert(chunk.id.clone(), worker);
             } else {
-                // If we couldn't spawn a new chunk, and active_tasks is 0, we are done
                 if active_tasks.is_empty() { break; }
-                
-                // Wait for someone to finish
+
                 tokio::select! {
                     res = loop_abort_rx.recv() => {
                         if res.is_ok() {
@@ -1078,7 +1139,7 @@ impl DownloadManager {
         if !is_aborted {
             let downloaded_bytes = task.downloaded.load(Ordering::Relaxed);
             let mut total_size_val = task.total_size.load(Ordering::Relaxed);
-            
+
             if total_size_val == 0 && downloaded_bytes > 0 {
                 task.total_size.store(downloaded_bytes, Ordering::Relaxed);
                 total_size_val = downloaded_bytes;
@@ -1090,18 +1151,20 @@ impl DownloadManager {
             if is_success {
                 *task.status.lock().unwrap() = DownloadStatus::Assembling;
 
-                // Emit Assembling progress
+                let cur_filename = task.get_filename();
+                let cur_save_path = task.get_save_path();
+
                 let progress = DownloadProgress {
                     id: task.id.clone(),
                     url: task.original_url.clone(),
-                    filename: task.filename.clone(),
-                    save_path: task.save_path.clone(),
+                    filename: cur_filename,
+                    save_path: cur_save_path.clone(),
                     total_size: total_size_val,
                     downloaded: downloaded_bytes,
                     speed: 0.0,
                     eta: "Assembling...".to_string(),
                     status: DownloadStatus::Assembling,
-                    file_exists: std::path::Path::new(&task.save_path).exists(),
+                    file_exists: std::path::Path::new(&cur_save_path).exists(),
                     speed_limited: false,
                 };
                 if let Some(ref handle) = self.app_handle.lock().await.clone() {
@@ -1109,15 +1172,14 @@ impl DownloadManager {
                     let _ = handle.emit("download-progress", progress);
                 }
 
-                // Assembling Phase
                 let temp_dir_clone = temp_dir.clone();
-                let save_path_clone = task.save_path.clone();
+                let save_path_clone = cur_save_path.clone();
                 let chunks_clone = task.chunks.lock().unwrap().clone();
-                
+
                 let assembly_result = tokio::task::spawn_blocking(move || -> Result<(), String> {
                     let mut out_file = std::fs::OpenOptions::new().write(true).create(true).truncate(true).open(&save_path_clone)
                         .map_err(|e| format!("Failed to open final file: {}", e))?;
-                    
+
                     let mut sorted_chunks = chunks_clone;
                     sorted_chunks.sort_by_key(|c| c.start);
 
@@ -1128,7 +1190,7 @@ impl DownloadManager {
                         if let Ok(mut part_file) = std::fs::File::open(&part_path) {
                             use std::io::Read;
                             use std::io::Write;
-                            
+
                             let downloaded = chunk.downloaded.load(Ordering::SeqCst);
                             let chunk_end = chunk.end.load(Ordering::SeqCst);
                             let expected_len = if chunk_end >= chunk.start && chunk_end > 0 {
@@ -1164,13 +1226,13 @@ impl DownloadManager {
                 }
             } else if total_size_val == 0 && downloaded_bytes == 0 {
                 if let DownloadStatus::Failed(_) = *task.status.lock().unwrap() {
-                    // keep original error
+                    // Keep original failure reason
                 } else {
-                    *task.status.lock().unwrap() = DownloadStatus::Failed("No bytes received".to_string());
+                    *task.status.lock().unwrap() = DownloadStatus::Failed("No bytes received from server".to_string());
                 }
             } else {
                 if let DownloadStatus::Failed(_) = *task.status.lock().unwrap() {
-                    // keep original error
+                    // Keep original failure reason
                 } else {
                     *task.status.lock().unwrap() = DownloadStatus::Failed(format!("Download incomplete ({}/{} bytes)", downloaded_bytes, total_size_val));
                 }
@@ -1178,17 +1240,20 @@ impl DownloadManager {
         }
 
         let final_status = task.status.lock().unwrap().clone();
+        let cur_filename = task.get_filename();
+        let cur_save_path = task.get_save_path();
+
         let progress = DownloadProgress {
             id: task.id.clone(),
             url: task.original_url.clone(),
-            filename: task.filename.clone(),
-            save_path: task.save_path.clone(),
+            filename: cur_filename,
+            save_path: cur_save_path.clone(),
             total_size: task.total_size.load(Ordering::Relaxed),
             downloaded: task.network_downloaded.load(Ordering::Relaxed),
             speed: 0.0,
             eta: "0s".to_string(),
             status: final_status,
-            file_exists: std::path::Path::new(&task.save_path).exists(),
+            file_exists: std::path::Path::new(&cur_save_path).exists(),
             speed_limited: false,
         };
         if let Some(ref handle) = self.app_handle.lock().await.clone() {
@@ -1211,17 +1276,20 @@ impl DownloadManager {
             }
             if let Some(ref tx) = task.abort_tx { let _ = tx.send(()); }
 
+            let cur_filename = task.get_filename();
+            let cur_save_path = task.get_save_path();
+
             let progress = DownloadProgress {
                 id: task.id.clone(),
                 url: task.original_url.clone(),
-                filename: task.filename.clone(),
-                save_path: task.save_path.clone(),
+                filename: cur_filename,
+                save_path: cur_save_path.clone(),
                 total_size: task.total_size.load(Ordering::Relaxed),
                 downloaded: task.network_downloaded.load(Ordering::Relaxed),
                 speed: 0.0,
                 eta: "---".to_string(),
                 status: DownloadStatus::Paused,
-                file_exists: std::path::Path::new(&task.save_path).exists(),
+                file_exists: std::path::Path::new(&cur_save_path).exists(),
                 speed_limited: false,
             };
             if let Some(ref handle) = app_handle_opt {
@@ -1247,11 +1315,6 @@ impl DownloadManager {
                 if *status_lock == DownloadStatus::Completed || *status_lock == DownloadStatus::Downloading { return Ok(()); }
                 *status_lock = DownloadStatus::Queued;
             }
-
-            let accept_ranges = chunks_clone.len() > 1 || {
-                let sz = task.total_size.load(Ordering::Relaxed);
-                sz > 0
-            };
 
             let (abort_tx, _) = broadcast::channel(1);
             let updated_task = Arc::new(DownloadTask {
@@ -1279,7 +1342,7 @@ impl DownloadManager {
             let manager_clone = self.clone();
 
             tokio::spawn(async move {
-                if let Err(e) = manager_clone.run_task(updated_task, accept_ranges).await {
+                if let Err(e) = manager_clone.run_task(updated_task, true).await {
                     eprintln!("Resume failed: {}", e);
                 }
             });
@@ -1302,17 +1365,20 @@ impl DownloadManager {
             *task.speed.lock().unwrap() = 0.0;
             *task.eta.lock().unwrap() = "Paused".to_string();
             
+            let cur_filename = task.get_filename();
+            let cur_save_path = task.get_save_path();
+
             let progress = DownloadProgress {
                 id: task.id.clone(),
                 url: task.original_url.clone(),
-                filename: task.filename.clone(),
-                save_path: task.save_path.clone(),
+                filename: cur_filename,
+                save_path: cur_save_path.clone(),
                 total_size: task.total_size.load(Ordering::Relaxed),
                 downloaded: task.network_downloaded.load(Ordering::Relaxed),
                 speed: 0.0,
                 eta: "Paused".to_string(),
                 status: DownloadStatus::Paused,
-                file_exists: std::path::Path::new(&task.save_path).exists(),
+                file_exists: std::path::Path::new(&cur_save_path).exists(),
                 speed_limited: false,
             };
             if let Some(ref handle) = app_handle_opt {
@@ -1352,23 +1418,26 @@ impl DownloadManager {
                 p.push("temp"); p.push(&task.id); p
             } else { std::path::PathBuf::from(format!("./temp/{}", task.id)) };
 
-            let path = task.save_path.clone();
+            let path = task.get_save_path();
             tokio::spawn(async move {
                 if delete_file { let _ = tokio::fs::remove_file(path).await; }
                 let _ = tokio::fs::remove_dir_all(temp_dir).await;
             });
             
+            let cur_filename = task.get_filename();
+            let cur_save_path = task.get_save_path();
+
             let progress = DownloadProgress {
                 id: task.id.clone(),
                 url: task.original_url.clone(),
-                filename: task.filename.clone(),
-                save_path: task.save_path.clone(),
+                filename: cur_filename,
+                save_path: cur_save_path.clone(),
                 total_size: task.total_size.load(Ordering::Relaxed),
                 downloaded: task.network_downloaded.load(Ordering::Relaxed),
                 speed: 0.0,
                 eta: "---".to_string(),
                 status: DownloadStatus::Trash,
-                file_exists: std::path::Path::new(&task.save_path).exists(),
+                file_exists: std::path::Path::new(&cur_save_path).exists(),
                 speed_limited: false,
             };
             if let Some(ref handle) = app_handle_opt {
@@ -1402,17 +1471,20 @@ impl DownloadManager {
                 status.clone()
             };
             
+            let cur_filename = task.get_filename();
+            let cur_save_path = task.get_save_path();
+
             let progress = DownloadProgress {
                 id: task.id.clone(),
                 url: task.original_url.clone(),
-                filename: task.filename.clone(),
-                save_path: task.save_path.clone(),
+                filename: cur_filename,
+                save_path: cur_save_path.clone(),
                 total_size: task.total_size.load(Ordering::Relaxed),
                 downloaded: task.network_downloaded.load(Ordering::Relaxed),
                 speed: 0.0,
                 eta: "---".to_string(),
                 status: final_status,
-                file_exists: std::path::Path::new(&task.save_path).exists(),
+                file_exists: std::path::Path::new(&cur_save_path).exists(),
                 speed_limited: false,
             };
             if let Some(ref handle) = app_handle_opt {
@@ -1433,22 +1505,20 @@ impl DownloadManager {
         if let Some(task) = tasks.get_mut(id) {
             if let Some(ref tx) = task.abort_tx { let _ = tx.send(()); }
 
-            let path = task.save_path.clone();
+            let path = task.get_save_path();
             let _ = tokio::fs::remove_file(path).await;
-
-            let accept_ranges = task.chunks.lock().unwrap().len() > 1 || task.total_size.load(Ordering::Relaxed) > 0;
 
             let (abort_tx, _) = broadcast::channel(1);
             let updated_task = Arc::new(DownloadTask {
                 id: task.id.clone(),
                 original_url: task.original_url.clone(),
-                final_url: Mutex::new(task.final_url.lock().await.clone()),
+                final_url: Mutex::new(task.original_url.clone()),
                 filename: task.filename.clone(),
                 save_path: task.save_path.clone(),
                 cookie: task.cookie.clone(),
                 referrer: task.referrer.clone(),
                 user_agent: task.user_agent.clone(),
-                total_size: AtomicU64::new(task.total_size.load(Ordering::Relaxed)),
+                total_size: AtomicU64::new(0),
                 downloaded: Arc::new(AtomicU64::new(0)),
                 network_downloaded: Arc::new(AtomicU64::new(0)),
                 speed_limiter: Mutex::new(Instant::now()),
@@ -1464,7 +1534,7 @@ impl DownloadManager {
             let manager_clone = self.clone();
 
             tokio::spawn(async move {
-                if let Err(e) = manager_clone.run_task(updated_task, accept_ranges).await {
+                if let Err(e) = manager_clone.run_task(updated_task, false).await {
                     eprintln!("Redownload failed: {}", e);
                 }
             });
@@ -1488,17 +1558,20 @@ impl DownloadManager {
             let current_limit = self.speed_limit_bps.load(Ordering::Relaxed);
             let is_speed_limited = current_limit > 0 && speed > 0.0;
 
+            let cur_filename = task.get_filename();
+            let cur_save_path = task.get_save_path();
+
             Some(DownloadProgress {
                 id: task.id.clone(),
                 url: task.original_url.clone(),
-                filename: task.filename.clone(),
-                save_path: task.save_path.clone(),
+                filename: cur_filename,
+                save_path: cur_save_path.clone(),
                 total_size: task.total_size.load(Ordering::Relaxed),
                 downloaded: current_bytes,
                 speed,
                 eta,
                 status,
-                file_exists: std::path::Path::new(&task.save_path).exists(),
+                file_exists: std::path::Path::new(&cur_save_path).exists(),
                 speed_limited: is_speed_limited,
             })
         } else {
@@ -1516,17 +1589,20 @@ impl DownloadManager {
             let speed = *task.speed.lock().unwrap();
             let eta = task.eta.lock().unwrap().clone();
             let is_speed_limited = current_limit > 0 && speed > 0.0;
+            let cur_filename = task.get_filename();
+            let cur_save_path = task.get_save_path();
+
             list.push(DownloadProgress {
                 id: task.id.clone(),
                 url: task.original_url.clone(),
-                filename: task.filename.clone(),
-                save_path: task.save_path.clone(),
+                filename: cur_filename,
+                save_path: cur_save_path.clone(),
                 total_size: task.total_size.load(Ordering::Relaxed),
                 downloaded: current_bytes,
                 speed,
                 eta,
                 status,
-                file_exists: std::path::Path::new(&task.save_path).exists(),
+                file_exists: std::path::Path::new(&cur_save_path).exists(),
                 speed_limited: is_speed_limited,
             });
         }

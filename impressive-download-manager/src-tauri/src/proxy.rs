@@ -326,7 +326,7 @@ pub fn is_generic_filename(name: &str) -> bool {
         || lower == "file"
 }
 
-fn extension_from_content_type(ct: &str) -> Option<&'static str> {
+pub fn extension_from_content_type(ct: &str) -> Option<&'static str> {
     let lower = ct.to_lowercase();
     if lower.contains("application/pdf") { Some(".pdf") }
     else if lower.contains("application/zip") || lower.contains("application/x-zip-compressed") { Some(".zip") }

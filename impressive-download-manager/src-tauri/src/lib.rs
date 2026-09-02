@@ -990,6 +990,15 @@ pub fn run() {
                                         let target_download_url = payload.url.clone();
                                         let total_size = payload.size.unwrap_or(0);
 
+                                        if !target_download_url.starts_with("http://") && !target_download_url.starts_with("https://") {
+                                            let response = "HTTP/1.1 400 Bad Request\r\n\
+                                                            Access-Control-Allow-Origin: *\r\n\
+                                                            Content-Type: text/plain\r\n\r\n\
+                                                            Unsupported protocol";
+                                            let _ = stream.write_all(response.as_bytes()).await;
+                                            return;
+                                        }
+
                                         if proxy::is_generic_filename(&filename) {
                                             if let Ok(parsed_url) = reqwest::Url::parse(&target_download_url) {
                                                 let mut found_in_query = false;

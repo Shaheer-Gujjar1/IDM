@@ -48,11 +48,56 @@ chrome.runtime.onInstalled.addListener(() => {
   chrome.storage.local.set({ extensionEnabled: true });
 });
 
-// Helper to extract cookie headers for a target URL
-async function getCookiesForUrl(url) {
+// Helper to extract cookie headers for a target URL and active tab
+async function getCookiesForUrl(url, tabUrl) {
   try {
-    const cookies = await chrome.cookies.getAll({ url });
-    return cookies.map((c) => `${c.name}=${c.value}`).join("; ");
+    const cookieMap = new Map();
+
+    // 1. Get cookies for target download URL
+    if (url && (url.startsWith("http://") || url.startsWith("https://"))) {
+      try {
+        const cookies1 = await chrome.cookies.getAll({ url });
+        if (cookies1) {
+          for (const c of cookies1) {
+            cookieMap.set(c.name, c.value);
+          }
+        }
+      } catch (e) {}
+
+      // Also get cookies for root domain if subdomain
+      try {
+        const u = new URL(url);
+        const parts = u.hostname.split(".");
+        if (parts.length > 2) {
+          const domain = parts.slice(-2).join(".");
+          const domainCookies = await chrome.cookies.getAll({ domain });
+          if (domainCookies) {
+            for (const c of domainCookies) {
+              if (!cookieMap.has(c.name)) cookieMap.set(c.name, c.value);
+            }
+          }
+        }
+      } catch (e) {}
+    }
+
+    // 2. Also get cookies from active tab URL if different
+    if (tabUrl && (tabUrl.startsWith("http://") || tabUrl.startsWith("https://"))) {
+      try {
+        const cookies2 = await chrome.cookies.getAll({ url: tabUrl });
+        if (cookies2) {
+          for (const c of cookies2) {
+            if (!cookieMap.has(c.name)) {
+              cookieMap.set(c.name, c.value);
+            }
+          }
+        }
+      } catch (e) {}
+    }
+
+    const merged = Array.from(cookieMap.entries())
+      .map(([name, value]) => `${name}=${value}`)
+      .join("; ");
+    return merged;
   } catch (err) {
     console.warn("Failed to get cookies:", err);
     return "";
@@ -85,65 +130,6 @@ if (chrome.webRequest && chrome.webRequest.onBeforeRequest) {
   }
 }
 
-// Helper to probe chunked / unknown size streams (e.g. Google Docs/Drive exports)
-async function checkUnknownSizeIsSmall(url, cookies) {
-  const ONE_MB = 1024 * 1024;
-  const controller = new AbortController();
-  const timeoutId = setTimeout(() => controller.abort(), 2500);
-
-  try {
-    const headers = {};
-    if (cookies) {
-      headers["Cookie"] = cookies;
-    }
-    const res = await fetch(url, {
-      method: "GET",
-      headers,
-      signal: controller.signal,
-      credentials: "include"
-    });
-
-    clearTimeout(timeoutId);
-
-    if (!res.ok && res.status !== 206) {
-      return null;
-    }
-
-    const cl = res.headers.get("content-length");
-    if (cl) {
-      const len = parseInt(cl, 10);
-      if (!isNaN(len) && len > 0) {
-        return len < ONE_MB;
-      }
-    }
-
-    // Read chunked stream up to 1MB to check if it finishes before reaching 1MB
-    if (res.body) {
-      const reader = res.body.getReader();
-      let bytesRead = 0;
-
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) {
-          return bytesRead < ONE_MB;
-        }
-        bytesRead += (value ? value.length : 0);
-        if (bytesRead >= ONE_MB) {
-          try {
-            reader.cancel();
-          } catch (e) {}
-          return false;
-        }
-      }
-    }
-
-    return null;
-  } catch (err) {
-    clearTimeout(timeoutId);
-    return null;
-  }
-}
-
 // 2. HTTPS Download Detection Pipeline (Instant Interception via onDeterminingFilename)
 async function interceptDownloadItem(item) {
   if (!item || !extensionEnabled || desktopAppInterceptionDisabled || handledDownloadIds.has(item.id)) {
@@ -155,6 +141,13 @@ async function interceptDownloadItem(item) {
 
   const url = item.url || "";
   const finalUrl = item.finalUrl || url;
+
+  // Reject non-HTTP(S) protocols (blob:, data:, file:, chrome:) so the browser handles in-memory objects natively
+  if (!url.startsWith("http://") && !url.startsWith("https://") && !finalUrl.startsWith("http://") && !finalUrl.startsWith("https://")) {
+    console.log("[Extension] In-memory or non-HTTP(S) protocol (e.g. blob:, data:). Letting browser save natively:", url);
+    return false;
+  }
+
   const mime = item.mime || "";
   const filenameStr = item.filename ? item.filename.replace(/^.*[\\\/]/, "") : "";
   const fileSize = (item.fileSize && item.fileSize > 0) ? item.fileSize : (item.totalBytes && item.totalBytes > 0 ? item.totalBytes : 0);
@@ -179,23 +172,6 @@ async function interceptDownloadItem(item) {
     }
   } catch (e) {}
 
-  // FEATURE: Do not download files < 1MB (1,048,576 bytes) - let native browser download engine handle them
-  const ONE_MB = 1024 * 1024;
-  if (fileSize > 0 && fileSize < ONE_MB) {
-    console.log(`[IDM Extension] File size (${fileSize} bytes) < 1MB. Letting native browser download engine handle: ${filenameStr || targetRealUrl}`);
-    return false;
-  }
-
-  // Edge Case: If fileSize is unknown (0 or -1, e.g., chunked streams like Google Docs / Drive exports)
-  if (fileSize <= 0) {
-    const cookies = await getCookiesForUrl(targetRealUrl);
-    const isSmall = await checkUnknownSizeIsSmall(targetRealUrl, cookies);
-    if (isSmall === true) {
-      console.log(`[IDM Extension] Verified chunked stream is < 1MB (e.g. Google Docs/Sheets export). Letting native browser download engine handle: ${filenameStr || targetRealUrl}`);
-      return false;
-    }
-  }
-
   const cleanFilename = filenameStr || extractFilename(targetRealUrl);
 
   const isBinaryExt =
@@ -203,7 +179,7 @@ async function interceptDownloadItem(item) {
     /\.(run|exe|zip|deb|dmg|msi|tar|gz|iso|apk|appimage|7z|rar|bz2|xz|pdf|docx?|xlsx?|pptx?|mp4|mkv|webm|mp3|wav|flac|bin|pkg|csv|epub|mobi)$/i.test(url) ||
     /\.(run|exe|zip|deb|dmg|msi|tar|gz|iso|apk|appimage|7z|rar|bz2|xz|pdf|docx?|xlsx?|pptx?|mp4|mkv|webm|mp3|wav|flac|bin|pkg|csv|epub|mobi)$/i.test(targetRealUrl);
   const isNonTextMime = mime && !mime.startsWith("text/");
-  const hasSubstantialSize = fileSize >= ONE_MB;
+  const hasSubstantialSize = fileSize >= 1024 * 1024;
 
   const isRealFile = (hasSubstantialSize || isNonTextMime || isBinaryExt);
 
@@ -219,16 +195,19 @@ async function interceptDownloadItem(item) {
       });
     } catch (e) {}
 
-    const cookies = await getCookiesForUrl(targetRealUrl);
+    let tabUrl = "";
     let referrer = item.referrer || "";
-    if (!referrer) {
-      try {
-        const tabs = await chrome.tabs.query({ active: true, currentWindow: true });
-        if (tabs && tabs[0]) {
-          referrer = tabs[0].url || "";
+    try {
+      const tabs = await chrome.tabs.query({ active: true, currentWindow: true });
+      if (tabs && tabs[0]) {
+        tabUrl = tabs[0].url || "";
+        if (!referrer) {
+          referrer = tabUrl;
         }
-      } catch (e) {}
-    }
+      }
+    } catch (e) {}
+
+    const cookies = await getCookiesForUrl(targetRealUrl, tabUrl);
 
     const payload = {
       url: targetRealUrl,

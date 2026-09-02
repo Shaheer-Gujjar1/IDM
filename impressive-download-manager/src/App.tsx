@@ -157,12 +157,12 @@ function App() {
   const [selectedTaskIds, setSelectedTaskIds] = useState<string[]>([]);
 
   // Updater State & Metrics
-  const CURRENT_APP_VERSION = "0.7.6";
+  const CURRENT_APP_VERSION = "0.7.7";
   const [checkingUpdate, setCheckingUpdate] = useState(false);
   const [updateStatus, setUpdateStatus] = useState<string | null>(null);
   const [pendingRelaunch, setPendingRelaunch] = useState(false);
   const [isDownloadingUpdate, setIsDownloadingUpdate] = useState(false);
-  const [updatedFromVersion, setUpdatedFromVersion] = useState<string | null>("0.7.3");
+  const [updatedFromVersion, setUpdatedFromVersion] = useState<string | null>("0.7.6");
   const [showUpdateSuccessModal, setShowUpdateSuccessModal] = useState(true);
 
   const [updateProgressInfo, setUpdateProgressInfo] = useState<{
@@ -1171,6 +1171,7 @@ function App() {
 
   if (popupMode === "progress") {
     const isCompleted = popupProgress?.status === "Completed";
+    const isChunkedStream = popupProgress && popupProgress.total_size === 0 && popupProgress.downloaded > 0;
     const progressPercent = isCompleted
       ? 100
       : (popupProgress && popupProgress.total_size > 0
@@ -1187,12 +1188,16 @@ function App() {
 
         <div className="liquid-progress-container" style={{ width: "100px", height: "100px", marginBottom: "16px" }}>
           <div
-            className={`liquid-fill ${isPaused ? "paused" : ""} ${isCompleted ? "completed" : ""} ${catClass}`}
-            style={{ transform: `translateY(${100 - progressPercent}%)` }}
+            className={`liquid-fill ${isPaused ? "paused" : ""} ${isCompleted ? "completed" : ""} ${isChunkedStream ? "streaming-fill" : ""} ${catClass}`}
+            style={{ transform: isChunkedStream ? "translateY(15%)" : `translateY(${100 - progressPercent}%)` }}
           />
           <div style={{ position: "absolute", inset: 0, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", zIndex: 10 }}>
-            <span style={{ fontSize: "1.8rem", fontWeight: 800, color: "#fff", textShadow: "0 1px 3px rgba(0,0,0,0.9), 0 0 2px rgba(0,0,0,0.9)", lineHeight: 1 }}>{progressPercent}%</span>
-            <span style={{ fontSize: "0.7rem", color: "rgba(255,255,255,0.9)", fontWeight: 600, marginTop: "2px", textShadow: "0 1px 3px rgba(0,0,0,0.9), 0 0 2px rgba(0,0,0,0.9)" }}>{popupProgress ? getStatusText(popupProgress.status) : "Connecting"}</span>
+            <span style={{ fontSize: isChunkedStream ? "1.1rem" : "1.8rem", fontWeight: 800, color: "#fff", textShadow: "0 1px 3px rgba(0,0,0,0.9), 0 0 2px rgba(0,0,0,0.9)", lineHeight: 1 }}>
+              {isChunkedStream ? "LIVE" : `${progressPercent}%`}
+            </span>
+            <span style={{ fontSize: "0.7rem", color: "rgba(255,255,255,0.9)", fontWeight: 600, marginTop: "2px", textShadow: "0 1px 3px rgba(0,0,0,0.9), 0 0 2px rgba(0,0,0,0.9)" }}>
+              {popupProgress ? (isChunkedStream ? "Streaming" : getStatusText(popupProgress.status)) : "Connecting"}
+            </span>
           </div>
         </div>
 
@@ -1208,7 +1213,7 @@ function App() {
                 <span style={{ fontSize: "0.85rem", fontWeight: 700 }}>
                   {formatBytes(popupProgress.downloaded)}
                   <span style={{ fontSize: "0.65rem", color: "var(--text-secondary)", fontWeight: 500, marginLeft: "4px" }}>
-                    / {popupProgress.total_size > 0 ? formatBytes(popupProgress.total_size) : "???"}
+                    / {popupProgress.total_size > 0 ? formatBytes(popupProgress.total_size) : "Stream"}
                   </span>
                 </span>
               </div>
@@ -2062,6 +2067,7 @@ function App() {
                     const isCompleted = statusText === "Completed";
                     const isFailed = statusText.startsWith("Failed");
                     const isTrash = statusText === "Trash";
+                    const isChunkedStream = d.total_size === 0 && d.downloaded > 0 && isDownloading;
 
                     const progressPercent = isCompleted
                       ? 100
@@ -2081,8 +2087,8 @@ function App() {
                         <div className="card-left-v2">
                           <div className="liquid-progress-container">
                             <div
-                              className={`liquid-fill ${isPaused ? "paused" : ""} ${isCompleted ? "completed" : ""} ${catClass}`}
-                              style={{ transform: `translateY(${100 - progressPercent}%)` }}
+                              className={`liquid-fill ${isPaused ? "paused" : ""} ${isCompleted ? "completed" : ""} ${isChunkedStream ? "streaming-fill" : ""} ${catClass}`}
+                              style={{ transform: isChunkedStream ? "translateY(25%)" : `translateY(${100 - progressPercent}%)` }}
                             />
                             <div className="circular-icon-inner">
                               {getFileIcon(d.filename)}
