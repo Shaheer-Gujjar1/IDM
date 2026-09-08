@@ -22,8 +22,7 @@
 Ready-to-use release binaries for **Windows** and **Linux** are available in the **[Releases Section](https://github.com/Shaheer-Gujjar1/IDM/releases)** on GitHub!
 
 ### Download Options
-- **Windows**: Download `Impressive.Download.Manager_x64-setup.exe` (NSIS Installer) or `.msi` package.
-- **Linux**: Download `.deb` , `.rpm` or `.AppImage` package.
+- **Linux**: Download `.deb` or `.rpm` package.
 
 Simply run the installer for your operating system and enjoy fast, effortless downloads!
 
