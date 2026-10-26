@@ -14,8 +14,15 @@
     "storage",
     "downloads",
     "cookies",
-    "webRequest"
+    "webRequest",
+    "nativeMessaging"
   ],
+  "browser_specific_settings": {
+    "gecko": {
+      "id": "idm-extension@impressive.com",
+      "strict_min_version": "109.0"
+    }
+  },
   "host_permissions": [
     "<all_urls>"
   ],

@@ -3,6 +3,7 @@ mod proxy;
 pub mod hls;
 pub mod mux;
 pub mod preflight;
+pub mod native_host;
 
 use std::sync::Arc;
 use tauri::{State, Manager};
@@ -73,6 +74,16 @@ async fn probe_download_url(
 #[tauri::command]
 async fn get_disk_space(target_path: String) -> Result<preflight::DiskSpaceInfo, String> {
     preflight::get_disk_space(&target_path)
+}
+
+#[tauri::command]
+async fn register_native_messaging(custom_id: Option<String>) -> Result<native_host::RegistrationSummary, String> {
+    native_host::register_all_browser_manifests(custom_id)
+}
+
+#[tauri::command]
+async fn get_browser_integration_status() -> Result<native_host::IntegrationStatus, String> {
+    Ok(native_host::get_integration_status())
 }
 
 #[tauri::command]
@@ -764,38 +775,10 @@ pub fn run() {
                 let _ = manager_for_init.load_scheduler_config().await;
                 manager_for_init.start_scheduler_loop();
 
-                // Write Native Messaging Host manifests for Linux browsers (Chrome, Brave, Chromium, Edge, Opera, Vivaldi, Firefox)
-                #[cfg(target_os = "linux")]
-                {
-                    if let Ok(home) = std::env::var("HOME") {
-                        if let Ok(current_exe) = std::env::current_exe().and_then(|p| p.canonicalize()) {
-                            let exe_str = current_exe.to_string_lossy().to_string();
-                            let browser_dirs = [
-                                std::path::Path::new(&home).join(".config").join("BraveSoftware").join("Brave-Browser").join("NativeMessagingHosts"),
-                                std::path::Path::new(&home).join(".config").join("google-chrome").join("NativeMessagingHosts"),
-                                std::path::Path::new(&home).join(".config").join("chromium").join("NativeMessagingHosts"),
-                                std::path::Path::new(&home).join(".config").join("microsoft-edge").join("NativeMessagingHosts"),
-                                std::path::Path::new(&home).join(".config").join("opera").join("NativeMessagingHosts"),
-                                std::path::Path::new(&home).join(".config").join("vivaldi").join("NativeMessagingHosts"),
-                                std::path::Path::new(&home).join(".mozilla").join("native-messaging-hosts"),
-                            ];
+                // Automatically register and sync Native Messaging Host manifests across all installed browsers
+                let _ = native_host::register_all_browser_manifests(None);
 
-                            let native_manifest = format!(
-                                "{{\n  \"name\": \"com.impressive.idm\",\n  \"description\": \"Impressive Download Manager Host\",\n  \"path\": \"{}\",\n  \"type\": \"stdio\",\n  \"allowed_origins\": [\"chrome-extension://*\", \"moz-extension://*\"],\n  \"allowed_extensions\": [\"*@*\"]\n}}\n",
-                                exe_str
-                            );
-
-                            for b_dir in &browser_dirs {
-                                if std::fs::create_dir_all(b_dir).is_ok() {
-                                    let manifest_file = b_dir.join("com.impressive.idm.json");
-                                    let _ = std::fs::write(manifest_file, &native_manifest);
-                                }
-                            }
-                        }
-                    }
-                }
-
-                // Windows Autostart & Native Messaging setup
+                // Windows Autostart Run registry key
                 #[cfg(target_os = "windows")]
                 {
                     if let Ok(current_exe) = std::env::current_exe() {
@@ -804,34 +787,10 @@ pub fn run() {
                         let _ = std::process::Command::new("reg")
                             .args(&["add", "HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Run", "/v", "ImpressiveDownloadManager", "/t", "REG_SZ", "/d", &cmd_str, "/f"])
                             .spawn();
-
-                        if let Ok(app_data) = std::env::var("APPDATA") {
-                            let manifest_dir = std::path::Path::new(&app_data).join("ImpressiveDownloadManager");
-                            if std::fs::create_dir_all(&manifest_dir).is_ok() {
-                                let manifest_path = manifest_dir.join("com.impressive.idm.json");
-                                let json_path_str = manifest_path.to_string_lossy().to_string();
-                                let escaped_exe = exe_str.replace('\\', "\\\\");
-                                let native_manifest = format!(
-                                    "{{\n  \"name\": \"com.impressive.idm\",\n  \"description\": \"Impressive Download Manager Host\",\n  \"path\": \"{}\",\n  \"type\": \"stdio\",\n  \"allowed_origins\": [\"chrome-extension://*\", \"moz-extension://*\"],\n  \"allowed_extensions\": [\"*@*\"]\n}}\n",
-                                    escaped_exe
-                                );
-                                if std::fs::write(&manifest_path, native_manifest).is_ok() {
-                                    for reg_path in &[
-                                        "HKCU\\Software\\Google\\Chrome\\NativeMessagingHosts\\com.impressive.idm",
-                                        "HKCU\\Software\\Microsoft\\Edge\\NativeMessagingHosts\\com.impressive.idm",
-                                        "HKCU\\Software\\Mozilla\\NativeMessagingHosts\\com.impressive.idm",
-                                    ] {
-                                        let _ = std::process::Command::new("reg")
-                                            .args(&["add", reg_path, "/ve", "/t", "REG_SZ", "/d", &json_path_str, "/f"])
-                                            .spawn();
-                                    }
-                                }
-                            }
-                        }
                     }
                 }
 
-                // macOS Autostart LaunchAgent & Native Messaging setup
+                // macOS Autostart LaunchAgent
                 #[cfg(target_os = "macos")]
                 {
                     if let Ok(home) = std::env::var("HOME") {
@@ -857,30 +816,10 @@ pub fn run() {
                                 exe_str
                             );
                             let _ = std::fs::write(plist_path, plist_content);
-
-                            let browser_dirs = [
-                                std::path::Path::new(&home).join("Library").join("Application Support").join("Google").join("Chrome").join("NativeMessagingHosts"),
-                                std::path::Path::new(&home).join("Library").join("Application Support").join("BraveSoftware").join("Brave-Browser").join("NativeMessagingHosts"),
-                                std::path::Path::new(&home).join("Library").join("Application Support").join("Microsoft Edge").join("NativeMessagingHosts"),
-                                std::path::Path::new(&home).join("Library").join("Application Support").join("com.operasoftware.Opera").join("NativeMessagingHosts"),
-                                std::path::Path::new(&home).join("Library").join("Application Support").join("Vivaldi").join("NativeMessagingHosts"),
-                                std::path::Path::new(&home).join("Library").join("Application Support").join("Mozilla").join("NativeMessagingHosts"),
-                            ];
-
-                            let native_manifest = format!(
-                                "{{\n  \"name\": \"com.impressive.idm\",\n  \"description\": \"Impressive Download Manager Host\",\n  \"path\": \"{}\",\n  \"type\": \"stdio\",\n  \"allowed_origins\": [\"chrome-extension://*\", \"moz-extension://*\"],\n  \"allowed_extensions\": [\"*@*\"]\n}}\n",
-                                exe_str
-                            );
-
-                            for b_dir in &browser_dirs {
-                                if std::fs::create_dir_all(b_dir).is_ok() {
-                                    let manifest_file = b_dir.join("com.impressive.idm.json");
-                                    let _ = std::fs::write(manifest_file, &native_manifest);
-                                }
-                            }
                         }
                     }
                 }
+
             });
 
             // Parse --background arg and hide window if launched in background
@@ -1270,7 +1209,9 @@ pub fn run() {
             start_proxy_server,
             stop_proxy_server,
             probe_download_url,
-            get_disk_space
+            get_disk_space,
+            register_native_messaging,
+            get_browser_integration_status
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

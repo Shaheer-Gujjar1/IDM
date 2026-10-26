@@ -275,6 +275,52 @@ function App() {
     localStorage.setItem("installed_app_version", CURRENT_APP_VERSION);
   }, []);
 
+  // Native Messaging Host State
+  const [integrationStatus, setIntegrationStatus] = useState<{
+    native_host_name: string;
+    binary_path: string;
+    browsers: { browser: string; manifest_path: string; installed: boolean; error?: string | null }[];
+  } | null>(null);
+  const [customExtensionId, setCustomExtensionId] = useState("");
+  const [syncingBrowsers, setSyncingBrowsers] = useState(false);
+  const [syncMessage, setSyncMessage] = useState<string | null>(null);
+
+  const loadIntegrationStatus = async () => {
+    try {
+      const status = await invoke<any>("get_browser_integration_status");
+      setIntegrationStatus(status);
+    } catch (err) {
+      console.error("Failed to load browser integration status:", err);
+    }
+  };
+
+  useEffect(() => {
+    if (activeCategory === "settings") {
+      loadIntegrationStatus();
+    }
+  }, [activeCategory]);
+
+  const handleSyncBrowsers = async () => {
+    setSyncingBrowsers(true);
+    setSyncMessage(null);
+    try {
+      const res = await invoke<{
+        success: boolean;
+        registered_browsers: { browser: string; manifest_path: string; installed: boolean }[];
+        detected_extension_ids: string[];
+      }>("register_native_messaging", {
+        customId: customExtensionId.trim() || null,
+      });
+      const count = res.registered_browsers.filter((b) => b.installed).length;
+      setSyncMessage(`Native host registered across ${count} browsers!`);
+      await loadIntegrationStatus();
+    } catch (err: any) {
+      setSyncMessage(`Sync failed: ${err?.message || err}`);
+    } finally {
+      setSyncingBrowsers(false);
+    }
+  };
+
   // Watcher effect: Relaunches app when ongoing downloads complete
   useEffect(() => {
     if (!pendingRelaunch) return;
@@ -2195,6 +2241,73 @@ function App() {
                         Local forward proxy server for specialized traffic routing.
                       </div>
                     </div>
+                  </div>
+                </div>
+
+                <div className="form-group" style={{ marginTop: "16px", borderTop: "1px solid var(--border-color)", paddingTop: "14px" }}>
+                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "8px" }}>
+                    <div>
+                      <span className="form-label" style={{ fontWeight: 600, color: "var(--text-primary)" }}>Native Messaging Host Bridge</span>
+                      <span className="settings-desc" style={{ display: "block", fontSize: "12px", marginTop: "2px" }}>
+                        Native 32-bit IPC protocol allowing Chrome, Edge, Brave, Vivaldi, Opera, and Firefox to wake up IDM in the background.
+                      </span>
+                    </div>
+                    <button
+                      className="btn btn-secondary btn-sm"
+                      style={{ display: "flex", alignItems: "center", gap: "6px" }}
+                      disabled={syncingBrowsers}
+                      onClick={handleSyncBrowsers}
+                    >
+                      <RefreshCw size={13} className={syncingBrowsers ? "spin" : ""} />
+                      <span>{syncingBrowsers ? "Syncing..." : "Sync / Register Browsers"}</span>
+                    </button>
+                  </div>
+
+                  {syncMessage && (
+                    <div style={{ padding: "8px 12px", background: "rgba(16, 185, 129, 0.12)", border: "1px solid rgba(16, 185, 129, 0.3)", borderRadius: "6px", color: "var(--color-success, #10b981)", fontSize: "12px", marginBottom: "10px" }}>
+                      {syncMessage}
+                    </div>
+                  )}
+
+                  <div style={{ display: "flex", flexWrap: "wrap", gap: "6px", marginTop: "8px" }}>
+                    {integrationStatus?.browsers.map((b) => (
+                      <span
+                        key={b.browser}
+                        style={{
+                          fontSize: "11px",
+                          padding: "3px 8px",
+                          borderRadius: "4px",
+                          background: b.installed ? "rgba(16, 185, 129, 0.15)" : "rgba(255, 255, 255, 0.05)",
+                          color: b.installed ? "#10b981" : "var(--text-muted)",
+                          border: `1px solid ${b.installed ? "rgba(16, 185, 129, 0.3)" : "var(--border-color)"}`,
+                          display: "inline-flex",
+                          alignItems: "center",
+                          gap: "4px"
+                        }}
+                      >
+                        {b.installed ? <CheckCircle2 size={11} /> : null}
+                        {b.browser}: {b.installed ? "Registered" : "Not Found"}
+                      </span>
+                    ))}
+                  </div>
+
+                  <div style={{ marginTop: "10px", display: "flex", gap: "8px", alignItems: "center" }}>
+                    <input
+                      type="text"
+                      className="form-input"
+                      style={{ fontSize: "12px", padding: "6px 10px", flex: 1 }}
+                      placeholder="Custom Chromium Extension ID (Optional 32-letter ID, e.g. from developer mode)"
+                      value={customExtensionId}
+                      onChange={(e) => setCustomExtensionId(e.target.value)}
+                    />
+                    <button
+                      className="btn btn-primary btn-sm"
+                      style={{ whiteSpace: "nowrap" }}
+                      onClick={handleSyncBrowsers}
+                      disabled={syncingBrowsers}
+                    >
+                      Save &amp; Link ID
+                    </button>
                   </div>
                 </div>
               </div>

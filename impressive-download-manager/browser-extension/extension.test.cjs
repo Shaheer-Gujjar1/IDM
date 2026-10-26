@@ -269,3 +269,50 @@ test('Phase 5 Functionality: YouTube Adaptive 1080p Video + Audio Pairing', () =
   assert(audioChoice.filename.endsWith('.mp3'), 'MP3 choice must have .mp3 filename');
 });
 
+// =========================================================================
+// Phase 8 Native Messaging & Safe Download Cancellation Tests
+// =========================================================================
+
+test('Phase 8 Manifest: Native Messaging Permission & Firefox Gecko Settings', () => {
+  const manifest = JSON.parse(fs.readFileSync(path.join(__dirname, 'manifest.json'), 'utf8'));
+
+  assert(
+    manifest.permissions.includes('nativeMessaging'),
+    'manifest.json must request nativeMessaging permission'
+  );
+
+  assert(
+    manifest.browser_specific_settings?.gecko?.id === 'idm-extension@impressive.com',
+    'manifest.json must define fixed Gecko extension ID for Firefox compatibility'
+  );
+});
+
+test('Phase 8 Functionality: Safe Download Cancellation Logic', async () => {
+  const bgJs = fs.readFileSync(path.join(__dirname, 'background.js'), 'utf8');
+
+  // Verify that background.js defines com.impressive.idm native host
+  assert(
+    bgJs.includes('const NATIVE_HOST = "com.impressive.idm"') || bgJs.includes("const NATIVE_HOST = 'com.impressive.idm'"),
+    'background.js must configure com.impressive.idm as the native host'
+  );
+
+  // Verify that sendViaNativeHost uses chrome.runtime.sendNativeMessage
+  assert(
+    bgJs.includes('sendNativeMessage(NATIVE_HOST, payload'),
+    'background.js must dispatch payloads via sendNativeMessage'
+  );
+
+  // Verify Safe Cancellation: chrome.downloads.cancel must ONLY be called when desktop accepted
+  assert(
+    bgJs.includes('if (accepted) {') && bgJs.includes('chrome.downloads.cancel('),
+    'chrome.downloads.cancel must only be invoked when desktop confirms acceptance'
+  );
+
+  // Verify Safe Fallback: if desktop rejects or is offline, browser download is preserved
+  assert(
+    bgJs.includes('preserving native browser download'),
+    'background.js must log and preserve native download if desktop is unavailable'
+  );
+});
+
+

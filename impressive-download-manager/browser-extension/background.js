@@ -268,17 +268,6 @@ async function interceptDownloadItem(item) {
   const isRealFile = (hasSubstantialSize || isNonTextMime || isBinaryExt);
 
   if (isRealFile) {
-    handledDownloadIds.add(item.id);
-
-    // Cancel & erase browser download IMMEDIATELY before Chrome UI pops up
-    try {
-      chrome.downloads.cancel(item.id, () => {
-        try {
-          chrome.downloads.erase({ id: item.id }, () => {});
-        } catch (e) {}
-      });
-    } catch (e) {}
-
     let tabUrl = "";
     let referrer = item.referrer || "";
     try {
@@ -303,9 +292,24 @@ async function interceptDownloadItem(item) {
       userAgent: navigator.userAgent
     };
 
-    console.log("HTTPS HERO: INSTANT REAL FILE PAYLOAD SENT TO TAURI BACKEND:", payload);
-    await sendToDesktopApp(payload);
-    return true;
+    console.log("HTTPS HERO: ATTEMPTING DESKTOP CAPTURE:", payload);
+    const accepted = await sendToDesktopApp(payload);
+
+    if (accepted) {
+      handledDownloadIds.add(item.id);
+      // Cancel & erase browser download ONLY AFTER IDM confirms receipt!
+      try {
+        chrome.downloads.cancel(item.id, () => {
+          try {
+            chrome.downloads.erase({ id: item.id }, () => {});
+          } catch (e) {}
+        });
+      } catch (e) {}
+      return true;
+    }
+
+    console.warn("Desktop rejected or offline; preserving native browser download.");
+    return false;
   }
   return false;
 }
@@ -323,8 +327,39 @@ if (chrome.downloads && chrome.downloads.onDeterminingFilename) {
 }
 
 const recentInterceptions = new Map();
+const NATIVE_HOST = "com.impressive.idm";
 
-// Helper to send payloads to Tauri backend (port 9600)
+// Helper to send payloads via Chrome/Firefox Native Messaging Host
+function sendViaNativeHost(payload) {
+  return new Promise((resolve, reject) => {
+    try {
+      if (typeof chrome !== "undefined" && chrome.runtime && typeof chrome.runtime.sendNativeMessage === "function") {
+        chrome.runtime.sendNativeMessage(NATIVE_HOST, payload, (response) => {
+          if (chrome.runtime.lastError) {
+            reject(new Error(chrome.runtime.lastError.message));
+          } else if (response && response.ok) {
+            resolve(response);
+          } else {
+            reject(new Error(response?.error || "Native messaging host returned error"));
+          }
+        });
+      } else if (typeof browser !== "undefined" && browser.runtime && typeof browser.runtime.sendNativeMessage === "function") {
+        browser.runtime.sendNativeMessage(NATIVE_HOST, payload)
+          .then((res) => {
+            if (res && res.ok) resolve(res);
+            else reject(new Error(res?.error || "Native messaging host returned error"));
+          })
+          .catch(reject);
+      } else {
+        reject(new Error("Native messaging API unavailable"));
+      }
+    } catch (e) {
+      reject(e);
+    }
+  });
+}
+
+// Helper to send payloads to Tauri backend (prioritizing Native Messaging, fallback to port 9600)
 async function sendToDesktopApp(payload) {
   const url = payload.url;
   const now = Date.now();
@@ -340,6 +375,19 @@ async function sendToDesktopApp(payload) {
     }
   }
 
+  // 1. Prioritize Native Messaging Host (works even if desktop app was closed)
+  try {
+    const nativeResult = await sendViaNativeHost(payload);
+    if (nativeResult && nativeResult.ok) {
+      recentInterceptions.set(url, now);
+      console.log("Native messaging host successfully accepted download:", nativeResult);
+      return true;
+    }
+  } catch (nativeErr) {
+    console.info("Native messaging host inactive or unreachable (" + nativeErr.message + "). Falling back to HTTP daemon...");
+  }
+
+  // 2. HTTP Port 9600 Fallback
   for (let attempt = 1; attempt <= 2; attempt++) {
     try {
       const controller = new AbortController();
@@ -367,7 +415,7 @@ async function sendToDesktopApp(payload) {
       }
     } catch (err) {
       if (attempt === 1) {
-        console.warn("Tauri backend offline on port 9600. Trying wakeup...");
+        console.warn("Tauri backend offline on port 9600. Trying protocol wakeup...");
         try {
           chrome.tabs.create({ url: "idm://wakeup", active: false }, (tab) => {
             if (tab && tab.id) {
@@ -383,6 +431,7 @@ async function sendToDesktopApp(payload) {
   }
   return false;
 }
+
 
 function extractFilename(url) {
   try {
