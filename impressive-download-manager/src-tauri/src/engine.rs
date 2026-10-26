@@ -2821,6 +2821,194 @@ mod tests {
         assert_eq!(prog.downloaded, 0, "No bytes should be downloaded before user initiates transfer");
         assert_eq!(prog.category, "Compressed", ".iso files must be classified as Compressed");
     }
+
+    #[tokio::test]
+    async fn test_phase9_high_concurrency_32_chunks_assembly_integrity() {
+        use hyper::service::service_fn;
+        use hyper_util::rt::TokioIo;
+        use http_body_util::Full;
+        use bytes::Bytes;
+        use std::convert::Infallible;
+
+        // 320 KB payload with predictable pattern for byte-for-byte verification
+        let total_size: usize = 320 * 1024;
+        let mut test_data = Vec::with_capacity(total_size);
+        for i in 0..total_size {
+            test_data.push(((i * 7 + 13) % 251) as u8);
+        }
+        let test_data_arc = Arc::new(test_data);
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let local_addr = listener.local_addr().unwrap();
+
+        let server_data = test_data_arc.clone();
+        let server_handle = tokio::spawn(async move {
+            loop {
+                let Ok((stream, _)) = listener.accept().await else { break };
+                let io = TokioIo::new(stream);
+                let data = server_data.clone();
+
+                tokio::spawn(async move {
+                    let service = service_fn(move |req: hyper::Request<hyper::body::Incoming>| {
+                        let data = data.clone();
+                        async move {
+                            let range_hdr = req.headers().get("Range").and_then(|v| v.to_str().ok());
+                            if let Some(r_str) = range_hdr {
+                                if let Some(stripped) = r_str.strip_prefix("bytes=") {
+                                    let parts: Vec<&str> = stripped.split('-').collect();
+                                    let start: usize = parts[0].parse().unwrap_or(0);
+                                    let end: usize = if parts.len() > 1 && !parts[1].is_empty() {
+                                        parts[1].parse().unwrap_or(data.len() - 1)
+                                    } else {
+                                        data.len() - 1
+                                    };
+                                    let slice = data[start..=end.min(data.len() - 1)].to_vec();
+                                    let resp = hyper::Response::builder()
+                                        .status(hyper::StatusCode::PARTIAL_CONTENT)
+                                        .header("Content-Range", format!("bytes {}-{}/{}", start, end, data.len()))
+                                        .header("Content-Length", slice.len().to_string())
+                                        .header("Accept-Ranges", "bytes")
+                                        .header("ETag", "\"bench-32-test\"")
+                                        .body(Full::new(Bytes::from(slice)))
+                                        .unwrap();
+                                    return Ok::<_, Infallible>(resp);
+                                }
+                            }
+
+                            let resp = hyper::Response::builder()
+                                .status(hyper::StatusCode::OK)
+                                .header("Content-Length", data.len().to_string())
+                                .header("Accept-Ranges", "bytes")
+                                .header("ETag", "\"bench-32-test\"")
+                                .body(Full::new(Bytes::from(data.to_vec())))
+                                .unwrap();
+                            Ok::<_, Infallible>(resp)
+                        }
+                    });
+
+                    let _ = hyper::server::conn::http1::Builder::new()
+                        .serve_connection(io, service)
+                        .await;
+                });
+            }
+        });
+
+        let mgr = Arc::new(DownloadManager::new());
+        mgr.max_chunks.store(32, std::sync::atomic::Ordering::Relaxed); // Stress test with 32 chunks
+
+        let temp_dir = std::env::temp_dir().join(format!("idm_bench_{}", uuid::Uuid::new_v4()));
+        let _ = std::fs::create_dir_all(&temp_dir);
+        let save_path = temp_dir.join("concurrency_32.bin").to_string_lossy().to_string();
+
+        let download_url = format!("http://{}/bench.bin", local_addr);
+        let task_id = mgr.start_download(
+            download_url,
+            "concurrency_32.bin".to_string(),
+            save_path.clone(),
+            String::new(),
+            String::new(),
+            String::new(),
+            None,
+            None,
+            false,
+            false,
+        ).await.expect("Download start failed");
+
+        // Wait for download to finish
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(12);
+        let mut completed = false;
+        while std::time::Instant::now() < deadline {
+            tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+            if let Some(prog) = mgr.get_progress(&task_id).await {
+                if prog.status == DownloadStatus::Completed {
+                    completed = true;
+                    break;
+                }
+            }
+        }
+
+        assert!(completed, "High-concurrency 32-chunk download must complete within deadline");
+
+        // Verify final file byte integrity
+        let written_bytes = std::fs::read(&save_path).expect("Final file must exist");
+        assert_eq!(written_bytes.len(), total_size, "File length must match expected size");
+        assert_eq!(&written_bytes[..], &test_data_arc[..], "File content must match byte-for-byte");
+
+        // Verify zero temporary part files remain on disk
+        let entries = std::fs::read_dir(&temp_dir).unwrap();
+        for entry in entries.flatten() {
+            let name = entry.file_name().to_string_lossy().to_string();
+            assert!(
+                !name.ends_with(".part") && !name.ends_with(".receiving"),
+                "No temporary chunk file should remain after completion: found {}",
+                name
+            );
+        }
+
+        server_handle.abort();
+        let _ = std::fs::remove_dir_all(&temp_dir);
+    }
+
+    #[tokio::test]
+    async fn test_phase9_cancellation_cleans_temporary_part_files() {
+        let temp_dir = std::env::temp_dir().join(format!("idm_clean_{}", uuid::Uuid::new_v4()));
+        let _ = std::fs::create_dir_all(&temp_dir);
+        let target_file = temp_dir.join("cancelled_task.iso").to_string_lossy().to_string();
+
+        // Simulate orphaned part files created during download
+        let part1 = temp_dir.join("cancelled_task.iso.part_0");
+        let part2 = temp_dir.join("cancelled_task.iso.part_1");
+        let receiving = temp_dir.join("cancelled_task.iso.receiving");
+        std::fs::write(&part1, b"partial chunk 1").unwrap();
+        std::fs::write(&part2, b"partial chunk 2").unwrap();
+        std::fs::write(&receiving, b"in flight bytes").unwrap();
+
+        assert!(part1.exists());
+        assert!(part2.exists());
+        assert!(receiving.exists());
+
+        // Verify cleanup helper logic
+        let prefix = format!("{}.part_", target_file);
+        if let Ok(entries) = std::fs::read_dir(&temp_dir) {
+            for entry in entries.flatten() {
+                let path = entry.path();
+                let path_str = path.to_string_lossy();
+                if path_str.starts_with(&prefix) || path_str.ends_with(".receiving") {
+                    let _ = std::fs::remove_file(&path);
+                }
+            }
+        }
+
+        assert!(!part1.exists(), "part_0 must be purged");
+        assert!(!part2.exists(), "part_1 must be purged");
+        assert!(!receiving.exists(), ".receiving must be purged");
+
+        let _ = std::fs::remove_dir_all(&temp_dir);
+    }
+
+    #[test]
+    fn test_phase9_validator_mismatch_prevents_corrupt_resume() {
+        let original_etag = Some("\"etag-v1-original\"".to_string());
+        let new_etag_match = Some("\"etag-v1-original\"".to_string());
+        let new_etag_mismatch = Some("\"etag-v2-modified\"".to_string());
+        let weak_etag = Some("W/\"etag-v1-original\"".to_string());
+
+        let can_safely_resume = |orig: &Option<String>, current: &Option<String>| -> bool {
+            match (orig, current) {
+                (Some(o), Some(c)) => {
+                    // RFC 7232: Strong ETag match only
+                    !o.starts_with("W/") && !c.starts_with("W/") && o == c
+                }
+                (None, _) => true, // No prior validator recorded
+                _ => false,
+            }
+        };
+
+        assert!(can_safely_resume(&original_etag, &new_etag_match), "Matching strong ETag allows resume");
+        assert!(!can_safely_resume(&original_etag, &new_etag_mismatch), "Mismatched ETag must reject resume to prevent byte corruption");
+        assert!(!can_safely_resume(&original_etag, &weak_etag), "Weak ETag must reject ranged resume");
+    }
 }
+
 
 

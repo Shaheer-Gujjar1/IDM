@@ -240,12 +240,12 @@ function App() {
   const [selectedTaskIds, setSelectedTaskIds] = useState<string[]>([]);
 
   // Updater State & Metrics
-  const CURRENT_APP_VERSION = "0.7.7";
+  const CURRENT_APP_VERSION = "0.8.0";
   const [checkingUpdate, setCheckingUpdate] = useState(false);
   const [updateStatus, setUpdateStatus] = useState<string | null>(null);
   const [pendingRelaunch, setPendingRelaunch] = useState(false);
   const [isDownloadingUpdate, setIsDownloadingUpdate] = useState(false);
-  const [updatedFromVersion, setUpdatedFromVersion] = useState<string | null>("0.7.6");
+  const [updatedFromVersion, setUpdatedFromVersion] = useState<string | null>("0.7.7");
   const [showUpdateSuccessModal, setShowUpdateSuccessModal] = useState(true);
 
   const [updateProgressInfo, setUpdateProgressInfo] = useState<{
@@ -1347,7 +1347,7 @@ function App() {
     const isDangerousSpace = !popupDiskSafe && popupDiskSpace;
     return (
       <div className="modal-content-v2" style={{ height: "100vh", overflowY: "auto", animation: "none", boxShadow: "none", border: "none", padding: "18px", display: "flex", flexDirection: "column" }}>
-        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "14px", paddingBottom: "10px", borderBottom: "1px solid rgba(255, 255, 255, 0.08)" }}>
+        <div className="modal-header-divider">
           <div style={{ display: "flex", alignItems: "center", gap: "10px" }}>
             <span style={{ fontSize: "1.05rem", fontWeight: 700, letterSpacing: "-0.01em", color: "var(--text-primary)" }}>
               Download File Info
@@ -1382,7 +1382,7 @@ function App() {
             <span className="form-label-v2" style={{ fontSize: "0.75rem", marginBottom: "4px" }}>Category</span>
             <select
               className="spotlight-input"
-              style={{ padding: "8px 12px", fontSize: "0.85rem", background: "rgba(255, 255, 255, 0.04)", color: "var(--text-primary)" }}
+              style={{ padding: "8px 12px", fontSize: "0.85rem" }}
               value={popupCategory}
               onChange={(e) => {
                 const newCat = e.target.value;
@@ -1470,7 +1470,7 @@ function App() {
             Remember this folder for <strong style={{ color: "var(--text-primary)" }}>{popupCategory}</strong> category
           </label>
 
-          <div style={{ display: "flex", gap: "12px", alignItems: "center", padding: "10px 14px", borderRadius: "10px", background: "rgba(255, 255, 255, 0.03)", border: "1px solid rgba(255, 255, 255, 0.06)", marginTop: "4px" }}>
+          <div className="preflight-info-box">
             <div style={{ flex: 1, display: "flex", flexDirection: "column", gap: "2px" }}>
               <span style={{ fontSize: "0.7rem", textTransform: "uppercase", color: "var(--text-muted)", letterSpacing: "0.5px" }}>Estimated File Size</span>
               <span style={{ fontWeight: 700, fontSize: "0.95rem", color: "var(--accent-cyan)" }}>
@@ -1478,7 +1478,7 @@ function App() {
               </span>
             </div>
 
-            <div style={{ width: "1px", height: "26px", background: "rgba(255, 255, 255, 0.1)" }} />
+            <div className="preflight-divider" />
 
             <div style={{ flex: 1, display: "flex", flexDirection: "column", gap: "2px" }}>
               <span style={{ fontSize: "0.7rem", textTransform: "uppercase", color: "var(--text-muted)", letterSpacing: "0.5px" }}>Available Disk Space</span>
@@ -1922,11 +1922,10 @@ function App() {
                           {catItem.icon}
                           <span style={{ fontSize: "0.82rem", fontWeight: 600, color: "var(--text-primary)" }}>{catItem.name}</span>
                         </div>
-                        <div style={{ display: "flex", gap: "8px", alignItems: "center" }}>
+                        <div className="category-folder-row">
                           <input
                             type="text"
                             className="form-input"
-                            style={{ flex: 1, padding: "8px 12px", fontSize: "0.85rem" }}
                             value={currentFolder}
                             onChange={(e) => {
                               saveCategoryFolder(catItem.key, e.target.value);
@@ -2273,17 +2272,7 @@ function App() {
                     {integrationStatus?.browsers.map((b) => (
                       <span
                         key={b.browser}
-                        style={{
-                          fontSize: "11px",
-                          padding: "3px 8px",
-                          borderRadius: "4px",
-                          background: b.installed ? "rgba(16, 185, 129, 0.15)" : "rgba(255, 255, 255, 0.05)",
-                          color: b.installed ? "#10b981" : "var(--text-muted)",
-                          border: `1px solid ${b.installed ? "rgba(16, 185, 129, 0.3)" : "var(--border-color)"}`,
-                          display: "inline-flex",
-                          alignItems: "center",
-                          gap: "4px"
-                        }}
+                        className={`native-bridge-badge ${b.installed ? "registered" : "unregistered"}`}
                       >
                         {b.installed ? <CheckCircle2 size={11} /> : null}
                         {b.browser}: {b.installed ? "Registered" : "Not Found"}
@@ -2848,7 +2837,7 @@ function App() {
               </label>
 
               {/* Pre-flight Info Bar */}
-              <div style={{ display: "flex", gap: "12px", alignItems: "center", padding: "10px 14px", borderRadius: "10px", background: "rgba(255, 255, 255, 0.03)", border: "1px solid rgba(255, 255, 255, 0.06)" }}>
+              <div className="preflight-info-box">
                 <div style={{ flex: 1, display: "flex", flexDirection: "column", gap: "2px" }}>
                   <span style={{ fontSize: "0.7rem", textTransform: "uppercase", color: "var(--text-muted)", letterSpacing: "0.5px" }}>Estimated File Size</span>
                   <span style={{ fontWeight: 700, fontSize: "0.95rem", color: "var(--accent-cyan)" }}>
@@ -2856,7 +2845,7 @@ function App() {
                   </span>
                 </div>
 
-                <div style={{ width: "1px", height: "26px", background: "rgba(255, 255, 255, 0.1)" }} />
+                <div className="preflight-divider" />
 
                 <div style={{ flex: 1, display: "flex", flexDirection: "column", gap: "2px" }}>
                   <span style={{ fontSize: "0.7rem", textTransform: "uppercase", color: "var(--text-muted)", letterSpacing: "0.5px" }}>Available Disk Space</span>

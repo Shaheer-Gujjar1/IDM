@@ -1,5 +1,20 @@
 # CHANGELOG
  
+## [0.8.0] – 2026-10-26
+ 
+### Added
+- **Native Messaging Host Protocol Across All Browsers**: Implemented 32-bit length-prefixed binary IPC host (`com.impressive.idm`) supporting Chrome, Edge, Brave, Chromium, Vivaldi, Opera, and Firefox. Allows browser extensions to wake up IDM in the background without opening dummy tabs.
+- **Pre-Flight URL Probe & "Download File Info" Modal**: Authentic IDM-style pre-flight modal with category selector, dynamic filename resolution, real-time disk space check with low-space guard, "Download Later" queueing, and duplicate transfer prevention.
+- **Intelligent Category Storage Router**: Automated file categorization (`Video`, `Audio`, `Compressed`, `Documents`, `Programs`, `Other`) with customizable folder paths and "Remember this folder" persistence.
+- **HLS Dynamic Playlist Engine**: Multi-variant HLS parsing, AES-128 decryption stream handling, and fast fMP4/TS segment assembly.
+- **YouTube SABR & Dual-Stream Fast Muxing**: Fast adaptive stream pairing (1080p+ video with 140 AAC audio) and background FFmpeg stream-copy muxing.
+- **32-Chunk Dynamic Speed Limiter & Throttle Buffer**: Dynamic segment splitting up to 32 parallel connections with token-bucket rate limiting and zero-lock race guards.
+- **System Theme & Design Matching**: Comprehensive Dark, Light, and System theme harmony across all dialogs, badges, and settings cards.
+
+### Fixed
+- **Safe Browser Interception**: Non-destructive download cancellation ensuring browser downloads are only cancelled after IDM confirms receipt.
+- **Validator & Weak ETag Guard**: RFC 7232 strict validation filtering out weak ETags (`W/"..."`) and preventing corrupted range appends.
+
 ## [0.7.7] – 2026-09-02
  
 ### Added

@@ -313,7 +313,7 @@ pub fn run_native_host() {
                 "ok": true,
                 "status": "pong",
                 "name": NATIVE_HOST_NAME,
-                "version": "0.7.7"
+                "version": "0.8.0"
             }),
             "download" => {
                 match sanitize_native_payload(&msg) {
