@@ -1,6 +1,8 @@
-# Legacy Codebase
+# Legacy Codebase & References
 xdm-8.0.29/
 xdm-master/
+awesome-downloader-main/
+**/temp/
 
 # Node.js
 **/node_modules/

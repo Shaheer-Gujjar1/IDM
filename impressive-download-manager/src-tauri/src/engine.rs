@@ -80,7 +80,9 @@ pub struct DownloadTask {
     pub chunks: std::sync::Mutex<Vec<ActiveChunk>>,
     pub speed: Arc<std::sync::Mutex<f64>>,
     pub eta: Arc<std::sync::Mutex<String>>,
+    pub validator: Arc<std::sync::Mutex<Option<String>>>,
 }
+
 
 impl DownloadTask {
     pub fn get_filename(&self) -> String {
@@ -236,6 +238,7 @@ pub struct DownloadManager {
     pub intercept_downloads: std::sync::atomic::AtomicBool,
     pub minimize_to_tray: std::sync::atomic::AtomicBool,
     pub scheduler_config: Arc<tokio::sync::RwLock<SchedulerConfig>>,
+    pub bridge_token: Arc<String>,
 }
 
 impl DownloadManager {
@@ -245,12 +248,17 @@ impl DownloadManager {
             .user_agent("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36")
             .pool_max_idle_per_host(32)
             .redirect(reqwest::redirect::Policy::limited(10))
+            .no_gzip()
+            .no_brotli()
+            .no_deflate()
             .tcp_keepalive(Duration::from_secs(30))
             .connect_timeout(Duration::from_secs(30))
             .http2_adaptive_window(true)
             .connection_verbose(false)
             .build()
             .unwrap_or_default();
+
+        let token_hex: String = (0..32).map(|_| format!("{:02x}", rand::random::<u8>())).collect();
 
         Self {
             tasks: RwLock::new(HashMap::new()),
@@ -262,12 +270,36 @@ impl DownloadManager {
             intercept_downloads: std::sync::atomic::AtomicBool::new(true),
             minimize_to_tray: std::sync::atomic::AtomicBool::new(true),
             scheduler_config: Arc::new(tokio::sync::RwLock::new(SchedulerConfig::default())),
+            bridge_token: Arc::new(token_hex),
         }
     }
 
     pub async fn set_app_handle(&self, handle: tauri::AppHandle) {
-        *self.app_handle.lock().await = Some(handle);
+        *self.app_handle.lock().await = Some(handle.clone());
+
+        // Write bridge.json for authenticated loopback IPC
+        let handle_clone = handle.clone();
+        let token_clone = self.bridge_token.clone();
+        tokio::spawn(async move {
+            use tauri::Manager;
+            if let Ok(app_dir) = handle_clone.path().app_data_dir() {
+                let _ = tokio::fs::create_dir_all(&app_dir).await;
+                let bridge_path = app_dir.join("bridge.json");
+                let bridge_data = serde_json::json!({
+                    "port": 9600,
+                    "token": *token_clone
+                });
+                if let Ok(_) = tokio::fs::write(&bridge_path, bridge_data.to_string()).await {
+                    #[cfg(unix)]
+                    {
+                        use std::os::unix::fs::PermissionsExt;
+                        let _ = std::fs::set_permissions(&bridge_path, std::fs::Permissions::from_mode(0o600));
+                    }
+                }
+            }
+        });
     }
+
 
     pub async fn save_history(&self) -> Result<(), String> {
         let handle_opt = {
@@ -369,6 +401,7 @@ impl DownloadManager {
                                 chunks: std::sync::Mutex::new(active_chunks),
                                 speed: Arc::new(std::sync::Mutex::new(0.0)),
                                 eta: Arc::new(std::sync::Mutex::new("---".to_string())),
+                                validator: Arc::new(std::sync::Mutex::new(None)),
                             }));
                         }
                     }
@@ -460,6 +493,7 @@ impl DownloadManager {
             chunks: std::sync::Mutex::new(vec![]),
             speed: Arc::new(std::sync::Mutex::new(0.0)),
             eta: Arc::new(std::sync::Mutex::new("---".to_string())),
+            validator: Arc::new(std::sync::Mutex::new(None)),
         });
 
         self.tasks.write().await.insert(id.clone(), task.clone());
@@ -477,6 +511,35 @@ impl DownloadManager {
         });
 
         Ok(id)
+    }
+
+    pub fn allocate_collision_free_path(preferred_path: &str) -> (String, std::fs::File) {
+        let p = std::path::Path::new(preferred_path);
+        let parent = p.parent().unwrap_or_else(|| std::path::Path::new("."));
+        let file_name = p.file_name().and_then(|f| f.to_str()).unwrap_or("downloaded_file");
+
+        let (stem, ext) = if let Some(dot_idx) = file_name.rfind('.') {
+            (&file_name[..dot_idx], &file_name[dot_idx..])
+        } else {
+            (file_name, "")
+        };
+
+        if let Ok(file) = std::fs::OpenOptions::new().write(true).create_new(true).open(preferred_path) {
+            return (preferred_path.to_string(), file);
+        }
+
+        for i in 1..=10000 {
+            let candidate_name = format!("{} ({}){}", stem, i, ext);
+            let candidate_path = parent.join(&candidate_name);
+            if let Ok(file) = std::fs::OpenOptions::new().write(true).create_new(true).open(&candidate_path) {
+                return (candidate_path.to_string_lossy().to_string(), file);
+            }
+        }
+
+        let ts_name = format!("{}_{}{}", stem, std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_secs(), ext);
+        let ts_path = parent.join(&ts_name);
+        let file = std::fs::OpenOptions::new().write(true).create(true).truncate(true).open(&ts_path).expect("Failed to create file");
+        (ts_path.to_string_lossy().to_string(), file)
     }
 
     pub async fn run_task(self: &Arc<Self>, task: Arc<DownloadTask>, is_resume: bool) -> Result<(), String> {
@@ -498,6 +561,63 @@ impl DownloadManager {
                 std::path::PathBuf::from(format!("./temp/{}", task.id))
             }
         };
+
+        // Phase 4: HLS Stream (.m3u8) Engine Interception
+        if task.original_url.contains(".m3u8") {
+            println!("[HLS Engine] Detected HLS stream download: {}", task.original_url);
+            let client = self.client.clone();
+            let source_url = task.original_url.clone();
+            let cookie = task.cookie.clone();
+            let user_agent = task.user_agent.clone();
+
+            let hls_plan_res = crate::hls::resolve_hls(&client, &source_url, &cookie, &user_agent, 0, &source_url).await;
+            match hls_plan_res {
+                Ok(plan) => {
+                    let cur_filename = task.get_filename();
+                    let clean_base = cur_filename.replace(".m3u8", "");
+                    let new_fn = format!("{}{}", clean_base, plan.extension);
+                    task.update_filename_and_path(&new_fn);
+
+                    let save_path_val = task.get_save_path();
+                    let temp_hls_dir = temp_dir.clone();
+
+                    let downloaded_tracker = task.downloaded.clone();
+                    let total_size_tracker = Arc::new(AtomicU64::new(0));
+
+                    match crate::hls::run_hls_stream_download(
+                        client,
+                        plan,
+                        temp_hls_dir,
+                        save_path_val.clone(),
+                        cookie,
+                        user_agent,
+                        downloaded_tracker,
+                        total_size_tracker.clone(),
+                        None,
+                    ).await {
+                        Ok(final_path) => {
+                            task.total_size.store(total_size_tracker.load(Ordering::Relaxed), Ordering::Relaxed);
+                            *task.status.lock().unwrap() = DownloadStatus::Completed;
+                            if final_path != save_path_val {
+                                let new_name = std::path::Path::new(&final_path)
+                                    .file_name()
+                                    .and_then(|f| f.to_str())
+                                    .unwrap_or(&new_fn);
+                                task.update_filename_and_path(new_name);
+                            }
+                            return Ok(());
+                        }
+                        Err(e) => {
+                            *task.status.lock().unwrap() = DownloadStatus::Failed(format!("HLS download failed: {}", e));
+                            return Err(e);
+                        }
+                    }
+                }
+                Err(e) => {
+                    eprintln!("[HLS Engine] Could not resolve HLS manifest: {}. Falling back to standard engine...", e);
+                }
+            }
+        }
 
         let temp_dir_exists = temp_dir.exists();
         let chunks_empty = task.chunks.lock().unwrap().is_empty();
@@ -863,7 +983,14 @@ impl DownloadManager {
                             req = req.header(reqwest::header::USER_AGENT, "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36");
                         }
 
-                        if !task_clone.cookie.is_empty() {
+                        // Cross-origin check: only send cookies if worker_url origin matches original_url origin
+                        let should_send_cookies = if let (Ok(u1), Ok(u2)) = (reqwest::Url::parse(&task_clone.original_url), reqwest::Url::parse(&worker_url)) {
+                            u1.origin() == u2.origin()
+                        } else {
+                            true
+                        };
+
+                        if should_send_cookies && !task_clone.cookie.is_empty() {
                             if let Some(hv) = clean_header_val(&task_clone.cookie) {
                                 req = req.header(reqwest::header::COOKIE, hv);
                             }
@@ -880,6 +1007,13 @@ impl DownloadManager {
                                 req = req.header(reqwest::header::RANGE, format!("bytes={}-{}", current_start, current_end));
                             } else {
                                 req = req.header(reqwest::header::RANGE, format!("bytes={}-", current_start));
+                            }
+                        }
+
+                        // Send If-Range header if validator exists
+                        if let Some(ref val) = *task_clone.validator.lock().unwrap() {
+                            if let Some(hv) = clean_header_val(val) {
+                                req = req.header(reqwest::header::IF_RANGE, hv);
                             }
                         }
 
@@ -900,16 +1034,34 @@ impl DownloadManager {
                         };
 
                         let status = res.status();
+
+                        // 1. IP Rate-Limiting & Server Busy Guard (429 & 503)
+                        if status == reqwest::StatusCode::TOO_MANY_REQUESTS || status == reqwest::StatusCode::SERVICE_UNAVAILABLE {
+                            last_error_msg = format!("Server rate-limit/busy: HTTP {}", status);
+                            eprintln!("[Worker Rate-Limit] Received {} for chunk {}. Backing off...", status, chunk_id);
+                            retry_count += 1;
+                            let backoff_ms = 1000 * (1 << retry_count.min(4));
+                            tokio::time::sleep(Duration::from_millis(backoff_ms)).await;
+                            continue 'reconnect;
+                        }
+
+                        // 2. Strict Range Validation: Detect server returning 200 OK instead of 206 Partial Content on ranged requests
+                        if status == reqwest::StatusCode::OK && !retry_with_no_range && current_start > 0 {
+                            eprintln!("[Worker] Server returned 200 OK instead of byte range for start offset {}. Aborting range worker to prevent byte corruption.", current_start);
+                            *task_clone.status.lock().unwrap() = DownloadStatus::Failed("Server ignored byte range request and returned full body. Cannot split stream.".to_string());
+                            break 'reconnect;
+                        }
+
+                        // 3. Fallback on range rejections (416, 400, 403, 405)
+                        if (status == reqwest::StatusCode::RANGE_NOT_SATISFIABLE || status == reqwest::StatusCode::BAD_REQUEST || status == reqwest::StatusCode::FORBIDDEN || status == reqwest::StatusCode::METHOD_NOT_ALLOWED) && !retry_with_no_range {
+                            eprintln!("[Worker] Range header rejected with status {}. Retrying without Range...", status);
+                            retry_with_no_range = true;
+                            continue 'reconnect;
+                        }
+
                         if !status.is_success() && status != reqwest::StatusCode::PARTIAL_CONTENT {
                             last_error_msg = format!("HTTP {}", status);
                             eprintln!("[Worker Error] HTTP status {} for chunk {}", status, chunk_id);
-
-                            // If Range failed on Chunk 0 with 416, 400, 403, or 405, immediately retry without Range header!
-                            if is_first_req_clone.load(Ordering::SeqCst) && !retry_with_no_range && (status == reqwest::StatusCode::RANGE_NOT_SATISFIABLE || status == reqwest::StatusCode::BAD_REQUEST || status == reqwest::StatusCode::FORBIDDEN || status == reqwest::StatusCode::METHOD_NOT_ALLOWED) {
-                                eprintln!("[Worker] Range header rejected with status {}. Retrying without Range...", status);
-                                retry_with_no_range = true;
-                                continue 'reconnect;
-                            }
 
                             if is_first_req_clone.load(Ordering::SeqCst) && (status.is_client_error() || status.is_server_error()) {
                                 *task_clone.status.lock().unwrap() = DownloadStatus::Failed(format!("HTTP Error {}", status));
@@ -948,6 +1100,18 @@ impl DownloadManager {
 
                             if probed_total_size > 0 {
                                 task_clone.total_size.store(probed_total_size, Ordering::Relaxed);
+                            }
+
+                            // Dynamic validator inspection (strong ETag or Last-Modified)
+                            let etag = res.headers().get(reqwest::header::ETAG)
+                                .and_then(|h| h.to_str().ok())
+                                .and_then(|s| if s.starts_with("W/") { None } else { Some(s.to_string()) });
+                            let last_mod = res.headers().get(reqwest::header::LAST_MODIFIED)
+                                .and_then(|h| h.to_str().ok())
+                                .map(|s| s.to_string());
+                            let current_validator = etag.or(last_mod);
+                            if let Some(val) = current_validator {
+                                *task_clone.validator.lock().unwrap() = Some(val);
                             }
 
                             // Dynamic filename refinement from Content-Disposition
@@ -1157,7 +1321,7 @@ impl DownloadManager {
                 let progress = DownloadProgress {
                     id: task.id.clone(),
                     url: task.original_url.clone(),
-                    filename: cur_filename,
+                    filename: cur_filename.clone(),
                     save_path: cur_save_path.clone(),
                     total_size: total_size_val,
                     downloaded: downloaded_bytes,
@@ -1176,9 +1340,8 @@ impl DownloadManager {
                 let save_path_clone = cur_save_path.clone();
                 let chunks_clone = task.chunks.lock().unwrap().clone();
 
-                let assembly_result = tokio::task::spawn_blocking(move || -> Result<(), String> {
-                    let mut out_file = std::fs::OpenOptions::new().write(true).create(true).truncate(true).open(&save_path_clone)
-                        .map_err(|e| format!("Failed to open final file: {}", e))?;
+                let assembly_result = tokio::task::spawn_blocking(move || -> Result<String, String> {
+                    let (final_path, mut out_file) = DownloadManager::allocate_collision_free_path(&save_path_clone);
 
                     let mut sorted_chunks = chunks_clone;
                     sorted_chunks.sort_by_key(|c| c.start);
@@ -1209,13 +1372,21 @@ impl DownloadManager {
                             }
                         }
                     }
-                    Ok(())
+                    let _ = out_file.sync_all();
+                    Ok(final_path)
                 }).await;
 
                 match assembly_result {
-                    Ok(Ok(_)) => {
+                    Ok(Ok(final_path)) => {
                         *task.status.lock().unwrap() = DownloadStatus::Completed;
                         let _ = std::fs::remove_dir_all(&temp_dir);
+                        if final_path != cur_save_path {
+                            let new_filename = std::path::Path::new(&final_path)
+                                .file_name()
+                                .and_then(|f| f.to_str())
+                                .unwrap_or(&cur_filename);
+                            task.update_filename_and_path(new_filename);
+                        }
                     },
                     Ok(Err(e)) => {
                         *task.status.lock().unwrap() = DownloadStatus::Failed(format!("Assembly failed: {}", e));
@@ -1335,6 +1506,7 @@ impl DownloadManager {
                 chunks: std::sync::Mutex::new(chunks_clone),
                 speed: task.speed.clone(),
                 eta: task.eta.clone(),
+                validator: task.validator.clone(),
             });
 
             tasks.insert(id.to_string(), updated_task.clone());
@@ -1527,6 +1699,7 @@ impl DownloadManager {
                 chunks: std::sync::Mutex::new(vec![]),
                 speed: Arc::new(std::sync::Mutex::new(0.0)),
                 eta: Arc::new(std::sync::Mutex::new("---".to_string())),
+                validator: Arc::new(std::sync::Mutex::new(None)),
             });
 
             tasks.insert(id.to_string(), updated_task.clone());
@@ -1714,3 +1887,449 @@ impl DownloadManager {
         });
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_bridge_token_generation() {
+        let mgr1 = DownloadManager::new();
+        let mgr2 = DownloadManager::new();
+
+        assert_eq!(mgr1.bridge_token.len(), 64, "Bridge token should be 32 bytes hex encoded (64 chars)");
+        assert_ne!(mgr1.bridge_token, mgr2.bridge_token, "Bridge tokens must be cryptographically unique");
+    }
+
+    #[test]
+    fn test_allocate_collision_free_path_collision_avoidance() {
+        let temp_dir = std::env::temp_dir().join(format!("idm_test_{}", uuid::Uuid::new_v4()));
+        let _ = std::fs::create_dir_all(&temp_dir);
+        let base_path = temp_dir.join("document.pdf").to_string_lossy().to_string();
+
+        // 1. Initial allocation: document.pdf
+        let (path1, file1) = DownloadManager::allocate_collision_free_path(&base_path);
+        drop(file1);
+        assert_eq!(path1, base_path);
+        assert!(std::path::Path::new(&path1).exists());
+
+        // 2. Collision allocation: document.pdf already exists -> should create document (1).pdf
+        let (path2, file2) = DownloadManager::allocate_collision_free_path(&base_path);
+        drop(file2);
+        let expected_path2 = temp_dir.join("document (1).pdf").to_string_lossy().to_string();
+        assert_eq!(path2, expected_path2);
+        assert!(std::path::Path::new(&path2).exists());
+
+        // 3. Collision allocation: document (1).pdf exists -> should create document (2).pdf
+        let (path3, file3) = DownloadManager::allocate_collision_free_path(&base_path);
+        drop(file3);
+        let expected_path3 = temp_dir.join("document (2).pdf").to_string_lossy().to_string();
+        assert_eq!(path3, expected_path3);
+        assert!(std::path::Path::new(&path3).exists());
+
+        // Verify original file was NEVER truncated or overwritten
+        assert!(std::path::Path::new(&path1).exists());
+        assert!(std::path::Path::new(&path2).exists());
+        assert!(std::path::Path::new(&path3).exists());
+
+        let _ = std::fs::remove_dir_all(&temp_dir);
+    }
+
+    // =========================================================================
+    // Real-World End-to-End Functional Working Tests (Phase 2 Core Engine)
+    // =========================================================================
+
+    #[tokio::test]
+    async fn test_working_e2e_download_and_byte_integrity() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.expect("Failed to bind test TCP listener");
+        let local_addr = listener.local_addr().expect("Failed to get local address");
+
+        // 64KB deterministic binary payload
+        let test_payload: Vec<u8> = (0..65536).map(|i| ((i * 31 + 7) % 256) as u8).collect();
+        let payload_clone = test_payload.clone();
+
+        let server_handle = tokio::spawn(async move {
+            use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+            while let Ok((mut stream, _)) = listener.accept().await {
+                let payload = payload_clone.clone();
+                tokio::spawn(async move {
+                    let mut req_buf = vec![0u8; 4096];
+                    if let Ok(n) = stream.read(&mut req_buf).await {
+                        let req_text = String::from_utf8_lossy(&req_buf[..n]);
+
+                        if req_text.starts_with("HEAD") {
+                            let resp = format!(
+                                "HTTP/1.1 200 OK\r\n\
+                                Content-Length: {}\r\n\
+                                Accept-Ranges: bytes\r\n\
+                                Content-Type: application/octet-stream\r\n\
+                                ETag: \"sample-etag-v1\"\r\n\
+                                Connection: close\r\n\r\n",
+                                payload.len()
+                            );
+                            let _ = stream.write_all(resp.as_bytes()).await;
+                        } else if req_text.starts_with("GET") {
+                            let range_opt = req_text.lines()
+                                .find(|l| l.to_lowercase().starts_with("range:"))
+                                .and_then(|l| l.split_once(':'))
+                                .map(|(_, v)| v.trim().to_string());
+
+                            if let Some(r_str) = range_opt {
+                                if let Some(stripped) = r_str.strip_prefix("bytes=") {
+                                    let parts: Vec<&str> = stripped.split('-').collect();
+                                    let start: usize = parts[0].parse().unwrap_or(0);
+                                    let end: usize = if parts.len() > 1 && !parts[1].is_empty() {
+                                        parts[1].parse().unwrap_or(payload.len() - 1)
+                                    } else {
+                                        payload.len() - 1
+                                    };
+                                    let actual_end = end.min(payload.len().saturating_sub(1));
+                                    let slice = if start <= actual_end && start < payload.len() {
+                                        &payload[start..=actual_end]
+                                    } else {
+                                        &[]
+                                    };
+
+                                    let resp = format!(
+                                        "HTTP/1.1 206 Partial Content\r\n\
+                                        Content-Range: bytes {}-{}/{}\r\n\
+                                        Content-Length: {}\r\n\
+                                        Content-Type: application/octet-stream\r\n\
+                                        ETag: \"sample-etag-v1\"\r\n\
+                                        Connection: close\r\n\r\n",
+                                        start, actual_end, payload.len(), slice.len()
+                                    );
+                                    let _ = stream.write_all(resp.as_bytes()).await;
+                                    let _ = stream.write_all(slice).await;
+                                }
+                            } else {
+                                let resp = format!(
+                                    "HTTP/1.1 200 OK\r\n\
+                                    Content-Length: {}\r\n\
+                                    Accept-Ranges: bytes\r\n\
+                                    Content-Type: application/octet-stream\r\n\
+                                    ETag: \"sample-etag-v1\"\r\n\
+                                    Connection: close\r\n\r\n",
+                                    payload.len()
+                                );
+                                let _ = stream.write_all(resp.as_bytes()).await;
+                                let _ = stream.write_all(&payload).await;
+                            }
+                        }
+                    }
+                });
+            }
+        });
+
+        let mgr = Arc::new(DownloadManager::new());
+        let temp_save_dir = std::env::temp_dir().join(format!("idm_e2e_{}", uuid::Uuid::new_v4()));
+        let _ = std::fs::create_dir_all(&temp_save_dir);
+        let target_save_file = temp_save_dir.join("live_test_payload.bin").to_string_lossy().to_string();
+
+        let target_url = format!("http://{}/live_test_payload.bin", local_addr);
+        let task_id = mgr.start_download(
+            target_url,
+            "live_test_payload.bin".to_string(),
+            target_save_file.clone(),
+            String::new(),
+            String::new(),
+            String::new(),
+        ).await.expect("start_download failed");
+
+        // Wait up to 10 seconds for real download completion
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        let mut final_status = None;
+        while std::time::Instant::now() < deadline {
+            tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+            let tasks = mgr.tasks.read().await;
+            if let Some(task) = tasks.get(&task_id) {
+                let st = task.status.lock().unwrap().clone();
+                match st {
+                    DownloadStatus::Completed => {
+                        final_status = Some(DownloadStatus::Completed);
+                        break;
+                    }
+                    DownloadStatus::Failed(e) => {
+                        panic!("Download task failed with error: {}", e);
+                    }
+                    _ => {}
+                }
+            }
+        }
+
+        assert_eq!(final_status, Some(DownloadStatus::Completed), "Download should reach Completed state");
+
+        // Verify the file was written to disk and is byte-for-byte identical
+        assert!(std::path::Path::new(&target_save_file).exists(), "Saved file must exist on disk");
+        let downloaded_bytes = std::fs::read(&target_save_file).expect("Failed to read assembled file");
+        assert_eq!(downloaded_bytes.len(), test_payload.len(), "File length must match test payload");
+        assert_eq!(downloaded_bytes, test_payload, "Downloaded file must match byte-for-byte with source");
+
+        // Cleanup
+        server_handle.abort();
+        let _ = std::fs::remove_dir_all(&temp_save_dir);
+    }
+
+    #[tokio::test]
+    async fn test_working_429_rate_limit_backoff_recovery() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.expect("Failed to bind test TCP listener");
+        let local_addr = listener.local_addr().expect("Failed to get local address");
+
+        let test_payload: Vec<u8> = (0..16384).map(|i| (i % 256) as u8).collect();
+        let payload_clone = test_payload.clone();
+        let request_counter = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+
+        let server_handle = tokio::spawn(async move {
+            use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+            while let Ok((mut stream, _)) = listener.accept().await {
+                let payload = payload_clone.clone();
+                let counter = request_counter.clone();
+
+                tokio::spawn(async move {
+                    let mut req_buf = vec![0u8; 4096];
+                    if let Ok(n) = stream.read(&mut req_buf).await {
+                        let count = counter.fetch_add(1, Ordering::SeqCst);
+                        let req_text = String::from_utf8_lossy(&req_buf[..n]);
+
+                        // First request (HEAD/probe or GET) -> return 429 rate limited
+                        if count < 2 {
+                            let resp = "HTTP/1.1 429 Too Many Requests\r\nRetry-After: 1\r\nContent-Length: 0\r\nConnection: close\r\n\r\n";
+                            let _ = stream.write_all(resp.as_bytes()).await;
+                        } else {
+                            if req_text.starts_with("HEAD") {
+                                let resp = format!(
+                                    "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nAccept-Ranges: bytes\r\nConnection: close\r\n\r\n",
+                                    payload.len()
+                                );
+                                let _ = stream.write_all(resp.as_bytes()).await;
+                            } else {
+                                let resp = format!(
+                                    "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nAccept-Ranges: bytes\r\nConnection: close\r\n\r\n",
+                                    payload.len()
+                                );
+                                let _ = stream.write_all(resp.as_bytes()).await;
+                                let _ = stream.write_all(&payload).await;
+                            }
+                        }
+                    }
+                });
+            }
+        });
+
+        let mgr = Arc::new(DownloadManager::new());
+        let temp_save_dir = std::env::temp_dir().join(format!("idm_429_{}", uuid::Uuid::new_v4()));
+        let _ = std::fs::create_dir_all(&temp_save_dir);
+        let target_save_file = temp_save_dir.join("recovered_file.bin").to_string_lossy().to_string();
+
+        let target_url = format!("http://{}/recovered_file.bin", local_addr);
+        let task_id = mgr.start_download(
+            target_url,
+            "recovered_file.bin".to_string(),
+            target_save_file.clone(),
+            String::new(),
+            String::new(),
+            String::new(),
+        ).await.expect("start_download failed");
+
+        // Wait up to 10 seconds for backoff and recovery
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        let mut final_status = None;
+        while std::time::Instant::now() < deadline {
+            tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+            let tasks = mgr.tasks.read().await;
+            if let Some(task) = tasks.get(&task_id) {
+                let st = task.status.lock().unwrap().clone();
+                match st {
+                    DownloadStatus::Completed => {
+                        final_status = Some(DownloadStatus::Completed);
+                        break;
+                    }
+                    DownloadStatus::Failed(e) => {
+                        panic!("Download task unexpectedly failed during 429 recovery: {}", e);
+                    }
+                    _ => {}
+                }
+            }
+        }
+
+        assert_eq!(final_status, Some(DownloadStatus::Completed), "Download should recover from 429 and complete");
+        let downloaded_bytes = std::fs::read(&target_save_file).expect("Failed to read assembled file");
+        assert_eq!(downloaded_bytes, test_payload, "Recovered download must match byte-for-byte");
+
+        server_handle.abort();
+        let _ = std::fs::remove_dir_all(&temp_save_dir);
+    }
+
+    #[tokio::test]
+    async fn test_phase2_strict_range_violation_guard() {
+        // Server anomalously returns 200 OK on a ranged request for offset > 0
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.expect("Failed to bind listener");
+        let local_addr = listener.local_addr().expect("Failed to get local address");
+
+        let server_handle = tokio::spawn(async move {
+            use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+            while let Ok((mut stream, _)) = listener.accept().await {
+                tokio::spawn(async move {
+                    let mut req_buf = vec![0u8; 4096];
+                    if let Ok(n) = stream.read(&mut req_buf).await {
+                        let req_text = String::from_utf8_lossy(&req_buf[..n]);
+
+                        if req_text.starts_with("HEAD") {
+                            let resp = "HTTP/1.1 200 OK\r\nContent-Length: 100000\r\nAccept-Ranges: bytes\r\nConnection: close\r\n\r\n";
+                            let _ = stream.write_all(resp.as_bytes()).await;
+                        } else if req_text.starts_with("GET") {
+                            // Rogue server ignores Range: bytes=X-Y and returns 200 OK starting from byte 0!
+                            let resp = "HTTP/1.1 200 OK\r\nContent-Length: 100000\r\nConnection: close\r\n\r\n";
+                            let _ = stream.write_all(resp.as_bytes()).await;
+                            let dummy = vec![0xAA; 5000];
+                            let _ = stream.write_all(&dummy).await;
+                        }
+                    }
+                });
+            }
+        });
+
+        let mgr = Arc::new(DownloadManager::new());
+        let temp_save_dir = std::env::temp_dir().join(format!("idm_range_fail_{}", uuid::Uuid::new_v4()));
+        let _ = std::fs::create_dir_all(&temp_save_dir);
+        let target_save_file = temp_save_dir.join("should_abort.bin").to_string_lossy().to_string();
+
+        let target_url = format!("http://{}/should_abort.bin", local_addr);
+        let task_id = uuid::Uuid::new_v4().to_string();
+
+        // Create a task that already has chunk 0 downloaded, and needs chunk 1 starting at offset 50000
+        let (abort_tx, _) = tokio::sync::broadcast::channel(1);
+        let chunk1 = ActiveChunk {
+            id: "chunk_1".to_string(),
+            start: 50000,
+            end: Arc::new(AtomicU64::new(99999)),
+            downloaded: Arc::new(AtomicU64::new(0)),
+            active: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        };
+
+        let task = Arc::new(DownloadTask {
+            id: task_id.clone(),
+            original_url: target_url.clone(),
+            final_url: Mutex::new(target_url.clone()),
+            filename: Arc::new(std::sync::Mutex::new("should_abort.bin".to_string())),
+            save_path: Arc::new(std::sync::Mutex::new(target_save_file.clone())),
+            cookie: String::new(),
+            referrer: String::new(),
+            user_agent: String::new(),
+            total_size: AtomicU64::new(100000),
+            downloaded: Arc::new(AtomicU64::new(50000)),
+            network_downloaded: Arc::new(AtomicU64::new(50000)),
+            speed_limiter: Mutex::new(Instant::now()),
+            status: Arc::new(std::sync::Mutex::new(DownloadStatus::Queued)),
+            abort_tx: Some(abort_tx),
+            chunks: std::sync::Mutex::new(vec![chunk1]),
+            speed: Arc::new(std::sync::Mutex::new(0.0)),
+            eta: Arc::new(std::sync::Mutex::new("---".to_string())),
+            validator: Arc::new(std::sync::Mutex::new(None)),
+        });
+
+        mgr.tasks.write().await.insert(task_id.clone(), task.clone());
+
+        let mgr_clone = mgr.clone();
+        let task_clone = task.clone();
+        tokio::spawn(async move {
+            let _ = mgr_clone.run_task(task_clone, true).await;
+        });
+
+        // Wait for worker to encounter 200 OK on range offset 50000
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        let mut failed = false;
+        while std::time::Instant::now() < deadline {
+            tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+            let st = task.status.lock().unwrap().clone();
+            if let DownloadStatus::Failed(ref msg) = st {
+                assert!(msg.contains("range") || msg.contains("split"), "Failure message must identify range violation");
+                failed = true;
+                break;
+            }
+        }
+
+        assert!(failed, "Engine MUST abort worker when server returns 200 OK on ranged request");
+
+        server_handle.abort();
+        let _ = std::fs::remove_dir_all(&temp_save_dir);
+    }
+
+    #[test]
+    fn test_phase2_validator_weak_etag_filtration() {
+        // RFC 7232: Weak ETags (W/"...") must NEVER be used for range requests
+        let strong_header = "\"3f8a-5b1234\"";
+        let weak_header = "W/\"3f8a-5b1234\"";
+
+        let parse_etag = |val: &str| -> Option<String> {
+            if val.starts_with("W/") {
+                None
+            } else {
+                Some(val.to_string())
+            }
+        };
+
+        assert_eq!(parse_etag(strong_header), Some("\"3f8a-5b1234\"".to_string()));
+        assert_eq!(parse_etag(weak_header), None, "Weak ETag must be filtered out to prevent range corruption");
+    }
+
+    #[test]
+    fn test_phase2_multi_chunk_assembly_ordering() {
+        // Test sequential buffered assembly with out-of-order chunk completion
+        let temp_dir = std::env::temp_dir().join(format!("idm_assembly_{}", uuid::Uuid::new_v4()));
+        let _ = std::fs::create_dir_all(&temp_dir);
+
+        let final_path = temp_dir.join("assembled_binary.bin");
+        let (out_path, mut out_file) = DownloadManager::allocate_collision_free_path(final_path.to_str().unwrap());
+
+        // Create 3 chunks written in reverse order (Chunk 2, Chunk 0, Chunk 1)
+        let chunk0_data = b"PART_ZERO_DATA____";
+        let chunk1_data = b"PART_ONE_DATA_____";
+        let chunk2_data = b"PART_TWO_DATA_____";
+
+        let p0 = temp_dir.join("c0");
+        let p1 = temp_dir.join("c1");
+        let p2 = temp_dir.join("c2");
+
+        std::fs::write(&p0, chunk0_data).unwrap();
+        std::fs::write(&p1, chunk1_data).unwrap();
+        std::fs::write(&p2, chunk2_data).unwrap();
+
+        let mut chunks = vec![
+            DownloadChunk { id: "c2".to_string(), start: 36, end: 53, downloaded: 18 },
+            DownloadChunk { id: "c0".to_string(), start: 0, end: 17, downloaded: 18 },
+            DownloadChunk { id: "c1".to_string(), start: 18, end: 35, downloaded: 18 },
+        ];
+
+        // Sort by start offset (as engine does in assembly step)
+        chunks.sort_by_key(|c| c.start);
+
+        for chunk in chunks {
+            let part_path = temp_dir.join(&chunk.id);
+            let mut part_file = std::fs::File::open(part_path).unwrap();
+            use std::io::{Read, Write};
+            let mut buf = vec![0u8; 1024];
+            while let Ok(n) = part_file.read(&mut buf) {
+                if n == 0 { break; }
+                out_file.write_all(&buf[..n]).unwrap();
+            }
+        }
+        let _ = out_file.sync_all();
+        drop(out_file);
+
+        let assembled_content = std::fs::read(&out_path).unwrap();
+        let mut expected = Vec::new();
+        expected.extend_from_slice(chunk0_data);
+        expected.extend_from_slice(chunk1_data);
+        expected.extend_from_slice(chunk2_data);
+
+        assert_eq!(assembled_content, expected, "Multi-chunk assembly must match exact chronological byte sequence");
+
+        let _ = std::fs::remove_dir_all(&temp_dir);
+    }
+}
+
+

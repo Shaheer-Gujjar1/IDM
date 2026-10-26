@@ -36,4 +36,6 @@ hyper-util = { version = "0.1", features = ["full"] }
 http-body-util = "0.1"
 bytes = "1"
 chrono = { version = "0.4", features = ["serde"] }
+regex = "1.10"
+rand = "0.8"
 

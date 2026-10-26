@@ -28,6 +28,8 @@
         "<all_urls>"
       ],
       "js": [
+        "media-choices.js",
+        "hls.js",
         "content.js"
       ],
       "run_at": "document_start"

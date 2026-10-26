@@ -261,28 +261,101 @@ fn download_captured_response() -> Response<BoxBody<Bytes, hyper::Error>> {
 }
 
 pub fn sanitize_filename(name: &str) -> String {
-    let mut clean = name.trim().trim_matches('"').trim_matches('\'').to_string();
-    for invalid in ['/', '\\', ':', '*', '?', '"', '<', '>', '|', '\r', '\n', '\0'] {
-        clean = clean.replace(invalid, "_");
+    let clean = name.trim().trim_matches('"').trim_matches('\'');
+
+    // Filter Bidi override & directional formatting characters (used in filename spoofing attacks)
+    // and zero-width spaces/joiners
+    let filtered: String = clean.chars().filter(|&c| {
+        !matches!(
+            c,
+            '\u{202A}'..='\u{202E}' // LRE, RLE, PDF, LRO, RLO
+            | '\u{2066}'..='\u{2069}' // LRI, RLI, FSI, PDI
+            | '\u{200E}' | '\u{200F}' | '\u{061C}' // LRM, RLM, ALM
+            | '\u{200B}'..='\u{200D}' | '\u{FEFF}' // Zero-width spaces, ZWJ, ZWNJ, BOM
+        )
+    }).collect();
+
+    // Replace OS invalid characters, control characters, and path separators
+    let clean: String = filtered.chars().map(|c| {
+        let code = c as u32;
+        if matches!(c, '/' | '\\' | ':' | '*' | '?' | '"' | '<' | '>' | '|' | '\r' | '\n' | '\0')
+            || code < 32
+            || (code >= 0x7F && code <= 0x9F)
+        {
+            '_'
+        } else {
+            c
+        }
+    }).collect();
+
+    // Strip trailing dots and spaces (prevents undeletable ghost files in Windows)
+    let clean = clean.trim_end_matches(['.', ' ']).trim();
+
+    if clean.is_empty() {
+        return "download_file".to_string();
     }
-    clean.trim().to_string()
+
+    // Guard against Unix hidden dotfiles (.bashrc, .profile, .env, etc.)
+    let clean = if clean.starts_with('.') {
+        format!("download_{}", clean)
+    } else {
+        clean.to_string()
+    };
+
+    // Check Windows reserved device names: CON, PRN, AUX, NUL, COM1-9, LPT1-9, CONIN$, CONOUT$, CLOCK$
+    let stem = if let Some(dot_idx) = clean.find('.') {
+        &clean[..dot_idx]
+    } else {
+        &clean
+    };
+
+    let reserved = [
+        "con", "prn", "aux", "nul",
+        "conin$", "conout$", "clock$",
+        "com1", "com2", "com3", "com4", "com5", "com6", "com7", "com8", "com9",
+        "lpt1", "lpt2", "lpt3", "lpt4", "lpt5", "lpt6", "lpt7", "lpt8", "lpt9",
+    ];
+
+    let mut result = if reserved.contains(&stem.to_lowercase().as_str()) {
+        format!("download_{}", clean)
+    } else {
+        clean
+    };
+
+    // Cap filename length to 180 characters to respect filesystem MAX_PATH limits
+    if result.len() > 180 {
+        let ext_len = if result.to_lowercase().ends_with(".tar.gz") {
+            7
+        } else if result.to_lowercase().ends_with(".tar.bz2") || result.to_lowercase().ends_with(".tar.xz") {
+            8
+        } else if let Some(ext_idx) = result.rfind('.') {
+            result.len() - ext_idx
+        } else {
+            0
+        };
+
+        if ext_len > 0 && ext_len < 180 {
+            let ext = result[result.len() - ext_len..].to_string();
+            let max_stem_len = 180usize.saturating_sub(ext_len);
+            result = format!("{}{}", &result[..max_stem_len], ext);
+        } else {
+            result.truncate(180);
+        }
+    }
+
+    result
 }
 
 pub fn parse_content_disposition(value: &str) -> Option<String> {
     if value.is_empty() { return None; }
     
-    // Pass 1: filename*= (RFC 5987)
-    for part in value.split(';') {
-        let part = part.trim();
-        if part.to_lowercase().starts_with("filename*=") {
-            if let Some(val) = part.split('=').nth(1) {
-                let clean = val.trim_matches('"').trim();
-                let encoded_str = if let Some(idx) = clean.rfind("''") {
-                    &clean[idx + 2..]
-                } else {
-                    clean
-                };
-                if let Ok(decoded) = urlencoding::decode(encoded_str) {
+    // Pass 1: RFC 5987 / 6266 filename*=[charset]'[language]'[encoded]
+    // Handles UTF-8'', UTF-8'en'..., ISO-8859-1''...
+    if let Ok(re_rfc5987) = regex::Regex::new(r"(?i)filename\*\s*=\s*[^']*'[^']*'([^;]+)") {
+        if let Some(caps) = re_rfc5987.captures(value) {
+            if let Some(m) = caps.get(1) {
+                let encoded = m.as_str().trim().trim_matches('"');
+                if let Ok(decoded) = urlencoding::decode(encoded) {
                     let sanitized = sanitize_filename(&decoded);
                     if !sanitized.is_empty() && !is_generic_filename(&sanitized) {
                         return Some(sanitized);
@@ -292,17 +365,27 @@ pub fn parse_content_disposition(value: &str) -> Option<String> {
         }
     }
 
-    // Pass 2: filename=
-    for part in value.split(';') {
-        let part = part.trim();
-        if part.to_lowercase().starts_with("filename=") {
-            if let Some(val) = part.split('=').nth(1) {
-                let clean = val.trim_matches('"').trim();
-                if let Ok(decoded) = urlencoding::decode(clean) {
+    // Pass 2: standard filename="..." or filename=...
+    // Allows escaped quotes inside quoted filenames
+    if let Ok(re_plain) = regex::Regex::new(r#"(?i)filename\s*=\s*(?:"((?:\\.|[^"\\])*)"|([^;]+))"#) {
+        if let Some(caps) = re_plain.captures(value) {
+            let raw = if let Some(m) = caps.get(1) {
+                m.as_str().replace(r#"\""#, "\"").replace(r#"\\"#, r#"\"#)
+            } else if let Some(m) = caps.get(2) {
+                m.as_str().trim().trim_matches('"').to_string()
+            } else {
+                String::new()
+            };
+            if !raw.is_empty() {
+                if let Ok(decoded) = urlencoding::decode(&raw) {
                     let sanitized = sanitize_filename(&decoded);
                     if !sanitized.is_empty() && !is_generic_filename(&sanitized) {
                         return Some(sanitized);
                     }
+                }
+                let sanitized = sanitize_filename(&raw);
+                if !sanitized.is_empty() && !is_generic_filename(&sanitized) {
+                    return Some(sanitized);
                 }
             }
         }
@@ -310,6 +393,7 @@ pub fn parse_content_disposition(value: &str) -> Option<String> {
 
     None
 }
+
 
 pub fn is_generic_filename(name: &str) -> bool {
     let lower = name.trim().to_lowercase();
@@ -346,7 +430,7 @@ pub fn extension_from_content_type(ct: &str) -> Option<&'static str> {
     else { None }
 }
 
-fn get_best_filename(uri_str: &str, headers: &hyper::HeaderMap) -> String {
+pub fn get_best_filename(uri_str: &str, headers: &hyper::HeaderMap) -> String {
     let cd = headers.get("content-disposition").and_then(|v| v.to_str().ok()).unwrap_or("");
     let ct = headers.get("content-type").and_then(|v| v.to_str().ok()).unwrap_or("");
 
@@ -517,5 +601,217 @@ mod tests {
         assert!(is_generic_filename("download.php"));
         assert!(!is_generic_filename("node-v20.tar.gz"));
         assert!(!is_generic_filename("installer.exe"));
+    }
+
+    // =========================================================================
+    // Adversarial Penetration-Testing Suite (Phase 1 Security Hardening)
+    // =========================================================================
+
+    #[test]
+    fn test_pen_path_traversal_attempts() {
+        // Attackers attempting to escape download directory using path separators
+        let payloads = [
+            ("../../../../etc/passwd", "download_.._.._.._.._etc_passwd"),
+            (r#"..\..\..\Windows\System32\calc.exe"#, "download_.._.._.._Windows_System32_calc.exe"),
+            ("....//....//secret.key", "download_....__....__secret.key"),
+            (r#"C:\boot.ini"#, "C__boot.ini"),
+            ("/etc/shadow", "_etc_shadow"),
+        ];
+
+        for (input, expected) in payloads {
+            let sanitized = sanitize_filename(input);
+            assert_eq!(sanitized, expected, "Failed path traversal neutralization for {}", input);
+            assert!(!sanitized.contains('/'), "Sanitized output must not contain forward slash");
+            assert!(!sanitized.contains('\\'), "Sanitized output must not contain backward slash");
+        }
+    }
+
+    #[test]
+    fn test_pen_windows_reserved_device_names() {
+        // Windows special device names that freeze or corrupt filesystem when written
+        let devices = [
+            ("CON", "download_CON"),
+            ("con.txt", "download_con.txt"),
+            ("PRN.pdf", "download_PRN.pdf"),
+            ("aux.tar.gz", "download_aux.tar.gz"),
+            ("NUL", "download_NUL"),
+            ("COM1", "download_COM1"),
+            ("lpt9.log", "download_lpt9.log"),
+            ("CONIN$", "download_CONIN$"),
+            ("conout$.txt", "download_conout$.txt"),
+            ("clock$", "download_clock$"),
+            ("CON.txt. . .", "download_CON.txt"),
+        ];
+
+        for (input, expected) in devices {
+            let sanitized = sanitize_filename(input);
+            assert_eq!(sanitized, expected, "Failed reserved device neutralization for {}", input);
+            assert!(
+                sanitized.starts_with("download_"),
+                "Reserved device '{}' must be prefixed with 'download_'",
+                input
+            );
+        }
+    }
+
+    #[test]
+    fn test_pen_bidi_and_unicode_spoofing() {
+        // Right-to-Left Override (RTLO) U+202E: transforms "invoice[RTLO]fdp.exe" to look like "invoiceexe.pdf"
+        let rtlo_attack = "invoice\u{202E}fdp.exe";
+        let sanitized = sanitize_filename(rtlo_attack);
+        assert!(!sanitized.contains('\u{202E}'), "RTLO character must be stripped");
+        assert_eq!(sanitized, "invoicefdp.exe");
+
+        // Zero-width characters & BOM
+        let zero_width_attack = "file\u{200B}\u{FEFF}\u{200D}.zip";
+        let sanitized_zw = sanitize_filename(zero_width_attack);
+        assert_eq!(sanitized_zw, "file.zip");
+
+        // Control characters
+        let ctrl_attack = "my\x00file\x07name\x1B.bin";
+        let sanitized_ctrl = sanitize_filename(ctrl_attack);
+        assert!(!sanitized_ctrl.contains('\x00'));
+        assert!(!sanitized_ctrl.contains('\x07'));
+        assert!(!sanitized_ctrl.contains('\x1B'));
+    }
+
+    #[test]
+    fn test_pen_unix_hidden_dotfiles() {
+        // Prevent writing hidden dotfiles (.bashrc, .profile, .env) or traversing with '.' / '..'
+        assert_eq!(sanitize_filename(".bashrc"), "download_.bashrc");
+        assert_eq!(sanitize_filename(".profile"), "download_.profile");
+        assert_eq!(sanitize_filename(".env"), "download_.env");
+        assert_eq!(sanitize_filename("."), "download_file");
+        assert_eq!(sanitize_filename(".."), "download_file");
+        assert_eq!(sanitize_filename("..."), "download_file");
+    }
+
+    #[test]
+    fn test_pen_extremely_long_filenames() {
+        // Exceeding 180 chars must be truncated while preserving extension
+        let long_stem = "a".repeat(250);
+        let long_filename = format!("{}.tar.gz", long_stem);
+        let sanitized = sanitize_filename(&long_filename);
+        assert!(sanitized.len() <= 180, "Sanitized filename length must be <= 180, got {}", sanitized.len());
+        assert!(sanitized.ends_with(".tar.gz"), "File extension must be preserved during truncation");
+    }
+
+    #[test]
+    fn test_pen_rfc5987_fuzzing_and_language_tags() {
+        // RFC 5987 with language tag (e.g., UTF-8'en-US'...)
+        let header_lang = "attachment; filename*=UTF-8'en-US'%c2%a3%20rates.pdf";
+        assert_eq!(parse_content_disposition(header_lang), Some("£ rates.pdf".to_string()));
+
+        // Semicolons and quotes inside quoted filename
+        let header_complex = r#"attachment; filename="my; complex=filename; version=1.0.tar.gz""#;
+        assert_eq!(
+            parse_content_disposition(header_complex),
+            Some("my; complex=filename; version=1.0.tar.gz".to_string())
+        );
+
+        // Path traversal payload embedded inside RFC 5987
+        let header_traversal = "attachment; filename*=UTF-8''%2e%2e%2f%2e%2e%2fetc%2fpasswd";
+        let result = parse_content_disposition(header_traversal);
+        assert_eq!(result, Some("download_.._.._etc_passwd".to_string()));
+    }
+
+    #[test]
+    fn test_pen_cross_origin_isolation_logic() {
+        // Verify URL origin comparison semantics for cookie stripping
+        let u1 = reqwest::Url::parse("https://example.com/downloads/file.zip").unwrap();
+        let u2_same = reqwest::Url::parse("https://example.com/cdn/file.zip").unwrap();
+        let u3_subdomain = reqwest::Url::parse("https://cdn.example.com/file.zip").unwrap();
+        let u4_s3 = reqwest::Url::parse("https://s3.amazonaws.com/bucket/file.zip").unwrap();
+        let u5_http = reqwest::Url::parse("http://example.com/file.zip").unwrap();
+        let u6_port = reqwest::Url::parse("https://example.com:8443/file.zip").unwrap();
+
+        // Same origin -> Cookies allowed
+        assert_eq!(u1.origin(), u2_same.origin());
+
+        // Cross-origin hosts -> Cookies MUST be stripped
+        assert_ne!(u1.origin(), u3_subdomain.origin(), "Subdomains must be treated as different origins");
+        assert_ne!(u1.origin(), u4_s3.origin(), "S3 bucket must be treated as different origin");
+        assert_ne!(u1.origin(), u5_http.origin(), "HTTP vs HTTPS must be treated as different origin");
+        assert_ne!(u1.origin(), u6_port.origin(), "Different ports must be treated as different origin");
+    }
+
+    // =========================================================================
+    // Real-World Functional Working Tests (Phase 1 Functionality)
+    // =========================================================================
+
+    #[test]
+    fn test_working_international_filenames() {
+        // Real-world filenames from global websites
+        assert_eq!(sanitize_filename("دستاویز_نوٹ.pdf"), "دستاویز_نوٹ.pdf");
+        assert_eq!(sanitize_filename("测试压缩包.7z"), "测试压缩包.7z");
+        assert_eq!(sanitize_filename("Über_uns_Bericht.pdf"), "Über_uns_Bericht.pdf");
+        assert_eq!(sanitize_filename("résumé_candidat_2024.docx"), "résumé_candidat_2024.docx");
+        assert_eq!(sanitize_filename("تقرير_مالي_نهائي.xlsx"), "تقرير_مالي_نهائي.xlsx");
+        assert_eq!(sanitize_filename("привет_мир_setup.exe"), "привет_мир_setup.exe");
+    }
+
+    #[test]
+    fn test_working_real_world_url_filename_resolution() {
+        let empty_headers = hyper::HeaderMap::new();
+
+        // 1. GitHub releases direct binary download
+        let github_url = "https://github.com/astral-sh/uv/releases/download/0.1.0/uv-x86_64-unknown-linux-gnu.tar.gz";
+        assert_eq!(get_best_filename(github_url, &empty_headers), "uv-x86_64-unknown-linux-gnu.tar.gz");
+
+        // 2. Query param containing real filename
+        let query_url = "https://download.mediafire.com/download.php?file=photoshop_filters_pack.zip&token=abc";
+        assert_eq!(get_best_filename(query_url, &empty_headers), "photoshop_filters_pack.zip");
+
+        // 3. Fallback when filename has no extension, but Content-Type is application/pdf
+        let mut pdf_headers = hyper::HeaderMap::new();
+        pdf_headers.insert(
+            hyper::header::CONTENT_TYPE,
+            hyper::header::HeaderValue::from_static("application/pdf"),
+        );
+        let api_url = "https://example.com/api/v1/export/monthly_report";
+        assert_eq!(get_best_filename(api_url, &pdf_headers), "monthly_report.pdf");
+
+        // 4. Content-Disposition takes precedence over URL filename
+        let mut cd_headers = hyper::HeaderMap::new();
+        cd_headers.insert(
+            hyper::header::CONTENT_DISPOSITION,
+            hyper::header::HeaderValue::from_static(r#"attachment; filename="Audited_Balance_Sheet.xlsx""#),
+        );
+        let generic_url = "https://example.com/download.php?id=99999";
+        assert_eq!(get_best_filename(generic_url, &cd_headers), "Audited_Balance_Sheet.xlsx");
+    }
+
+    #[test]
+    fn test_working_is_download_response_accuracy() {
+        let mut headers = hyper::HeaderMap::new();
+
+        // Standard HTML web page -> MUST NOT be intercepted
+        headers.insert(
+            hyper::header::CONTENT_TYPE,
+            hyper::header::HeaderValue::from_static("text/html; charset=utf-8"),
+        );
+        assert!(!is_download_response("https://example.com/index.html", &headers));
+
+        // JavaScript file -> MUST NOT be intercepted
+        headers.insert(
+            hyper::header::CONTENT_TYPE,
+            hyper::header::HeaderValue::from_static("application/javascript"),
+        );
+        assert!(!is_download_response("https://example.com/bundle.js", &headers));
+
+        // Binary ZIP file -> MUST be intercepted
+        headers.insert(
+            hyper::header::CONTENT_TYPE,
+            hyper::header::HeaderValue::from_static("application/zip"),
+        );
+        assert!(is_download_response("https://example.com/archive.zip", &headers));
+
+        // Content-Disposition: attachment -> MUST be intercepted
+        let mut cd_headers = hyper::HeaderMap::new();
+        cd_headers.insert(
+            hyper::header::CONTENT_DISPOSITION,
+            hyper::header::HeaderValue::from_static("attachment; filename=data.bin"),
+        );
+        assert!(is_download_response("https://example.com/get_data", &cd_headers));
     }
 }

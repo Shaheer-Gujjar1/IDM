@@ -1,10 +1,40 @@
-// Service worker for Impressive Download Manager Extension - Phase 5 (HTTPS Hero Engine)
+// Service worker for Impressive Download Manager Extension
+if (typeof importScripts === "function") {
+  try {
+    importScripts("hls.js", "media-choices.js");
+  } catch (e) {}
+}
+
 const PORT = 9600;
+
+function isFragment(url) {
+  return /\.(m4s|ts|aac|vtt|webvtt)(?:[?#]|$)/i.test(url) || /\/init[^/]*\.mp4(?:[?#]|$)/i.test(url);
+}
 
 let extensionEnabled = true;
 let desktopAppInterceptionDisabled = false;
 const handledDownloadIds = new Set();
 const webRequestCapturedUrls = new Map(); // filename -> direct HTTPS URL
+const capturedMediaByTab = new Map(); // tabId -> media items
+
+function rememberMediaForTab(tabId, items) {
+  if (!tabId || !Array.isArray(items)) return;
+  const existing = capturedMediaByTab.get(tabId) || [];
+  const existingUrls = new Set(existing.map(i => i.url));
+  for (const item of items) {
+    if (item && item.url && !existingUrls.has(item.url)) {
+      if (isFragment(item.url)) continue;
+      existingUrls.add(item.url);
+      existing.unshift(item);
+    }
+  }
+  if (existing.length > 50) existing.length = 50;
+  capturedMediaByTab.set(tabId, existing);
+}
+
+chrome.tabs.onRemoved?.addListener((tabId) => {
+  capturedMediaByTab.delete(tabId);
+});
 
 // Check desktop app interception setting every 4 seconds
 async function checkDesktopAppStatus() {
@@ -130,6 +160,43 @@ if (chrome.webRequest && chrome.webRequest.onBeforeRequest) {
   }
 }
 
+// 1.2 Detect streaming playlists and media URLs in network responses
+if (chrome.webRequest && chrome.webRequest.onResponseStarted) {
+  try {
+    chrome.webRequest.onResponseStarted.addListener(
+      async (details) => {
+        if (!details.url || details.tabId < 0) return;
+        const u = details.url;
+        if (/\.m3u8(?:[?#]|$)/i.test(u)) {
+          try {
+            const resp = await fetch(u, { credentials: "omit" });
+            if (resp.ok) {
+              const text = await resp.text();
+              if (globalThis.parseHlsMaster) {
+                const variants = globalThis.parseHlsMaster(text, resp.url || u);
+                let title = "";
+                try {
+                  const t = await chrome.tabs.get(details.tabId);
+                  title = t?.title || "";
+                } catch {}
+                rememberMediaForTab(details.tabId, variants.map(v => ({ ...v, title })));
+              }
+            }
+          } catch {}
+        } else if (/\.(mp4|webm|mkv|mov|mp3|m4a)(?:[?#]|$)/i.test(u) && !isFragment(u)) {
+          let title = "";
+          try {
+            const t = await chrome.tabs.get(details.tabId);
+            title = t?.title || "";
+          } catch {}
+          rememberMediaForTab(details.tabId, [{ url: u, title, format: "MP4" }]);
+        }
+      },
+      { urls: ["http://*/*", "https://*/*"] }
+    );
+  } catch (e) {}
+}
+
 // 2. HTTPS Download Detection Pipeline (Instant Interception via onDeterminingFilename)
 async function interceptDownloadItem(item) {
   if (!item || !extensionEnabled || desktopAppInterceptionDisabled || handledDownloadIds.has(item.id)) {
@@ -145,6 +212,12 @@ async function interceptDownloadItem(item) {
   // Reject non-HTTP(S) protocols (blob:, data:, file:, chrome:) so the browser handles in-memory objects natively
   if (!url.startsWith("http://") && !url.startsWith("https://") && !finalUrl.startsWith("http://") && !finalUrl.startsWith("https://")) {
     console.log("[Extension] In-memory or non-HTTP(S) protocol (e.g. blob:, data:). Letting browser save natively:", url);
+    return false;
+  }
+
+  // Reject streaming media chunks / fragments (.m4s, .ts, .aac, .vtt)
+  if (isFragment(url) || isFragment(targetRealUrl) || isFragment(finalUrl)) {
+    console.log("[Extension] Ignored streaming media chunk fragment:", targetRealUrl);
     return false;
   }
 
@@ -334,24 +407,42 @@ function extractFilename(url) {
 }
 
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
-  if (message.type === "SEND_TO_DESKTOP") {
+  const tabId = sender?.tab?.id;
+
+  if (message.action === "remember") {
+    if (tabId && Array.isArray(message.items)) {
+      rememberMediaForTab(tabId, message.items);
+    }
+    sendResponse({ ok: true });
+    return true;
+  }
+
+  if (message.action === "listForFrame") {
+    const list = (tabId ? capturedMediaByTab.get(tabId) : []) || [];
+    sendResponse({ ok: true, items: list });
+    return true;
+  }
+
+  if (message.action === "download" || message.type === "SEND_TO_DESKTOP") {
     if (!extensionEnabled) {
-      sendResponse({ success: false });
+      sendResponse({ ok: false, success: false, error: "Extension is disabled." });
       return true;
     }
+    const item = message.item || message;
     (async () => {
-      const cookies = await getCookiesForUrl(message.url);
+      const targetUrl = item.url;
+      const cookies = await getCookiesForUrl(targetUrl, sender?.tab?.url);
       const payload = {
-        url: message.url,
-        filename: message.filename || extractFilename(message.url),
-        size: 0,
-        mime: "",
-        referrer: "",
+        url: targetUrl,
+        filename: item.filename || extractFilename(targetUrl),
+        size: item.size || 0,
+        mime: item.mime || "",
+        referrer: sender?.tab?.url || "",
         cookie: cookies,
         userAgent: navigator.userAgent
       };
-      const success = await sendToDesktopApp(payload);
-      sendResponse({ success });
+      const ok = await sendToDesktopApp(payload);
+      sendResponse({ ok, success: ok });
     })();
     return true;
   }

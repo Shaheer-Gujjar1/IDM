@@ -1,5 +1,6 @@
 mod engine;
 mod proxy;
+pub mod hls;
 
 use std::sync::Arc;
 use tauri::{State, Manager};
@@ -907,14 +908,53 @@ pub fn run() {
                             }
 
                             let req_str = String::from_utf8_lossy(&buffer);
+
+                            // Robust CSRF & Drive-by attack guard:
+                            // Reject requests originating from arbitrary web pages (http:// or https://)
+                            // Allow: browser extensions (chrome-extension://, moz-extension://), local app (localhost, 127.0.0.1), or direct curl/CLI (no Origin/Referer)
+                            let origin_val = req_str.lines()
+                                .find(|l| l.to_lowercase().starts_with("origin:"))
+                                .and_then(|l| l.split_once(':'))
+                                .map(|(_, v)| v.trim().to_lowercase());
+
+                            if let Some(ref orig) = origin_val {
+                                let is_local = orig.starts_with("http://localhost") || orig.starts_with("http://127.0.0.1");
+                                let is_extension = orig.starts_with("chrome-extension://") || orig.starts_with("moz-extension://") || orig.starts_with("safari-web-extension://");
+                                if (orig.starts_with("http://") || orig.starts_with("https://")) && !is_local && !is_extension {
+                                    eprintln!("[Capture Server] Blocked untrusted web origin: {}", orig);
+                                    let response = "HTTP/1.1 403 Forbidden\r\n\
+                                                    Content-Type: text/plain\r\n\r\n\
+                                                    Untrusted web origin forbidden";
+                                    let _ = stream.write_all(response.as_bytes()).await;
+                                    return;
+                                }
+                            }
+
+                            let referer_val = req_str.lines()
+                                .find(|l| l.to_lowercase().starts_with("referer:"))
+                                .and_then(|l| l.split_once(':'))
+                                .map(|(_, v)| v.trim().to_lowercase());
+
+                            if let Some(ref referer) = referer_val {
+                                let is_local = referer.starts_with("http://localhost") || referer.starts_with("http://127.0.0.1");
+                                let is_extension = referer.starts_with("chrome-extension://") || referer.starts_with("moz-extension://") || referer.starts_with("safari-web-extension://");
+                                if (referer.starts_with("http://") || referer.starts_with("https://")) && !is_local && !is_extension {
+                                    eprintln!("[Capture Server] Blocked untrusted web referer: {}", referer);
+                                    let response = "HTTP/1.1 403 Forbidden\r\n\
+                                                    Content-Type: text/plain\r\n\r\n\
+                                                    Untrusted web referer forbidden";
+                                    let _ = stream.write_all(response.as_bytes()).await;
+                                    return;
+                                }
+                            }
                             
                             // Handle CORS Preflight request
                             if req_str.starts_with("OPTIONS") {
                                 let theme = manager.theme_mode.lock().await.clone();
                                 let response = format!("HTTP/1.1 204 No Content\r\n\
                                                 Access-Control-Allow-Origin: *\r\n\
-                                                Access-Control-Allow-Methods: POST, OPTIONS\r\n\
-                                                Access-Control-Allow-Headers: Content-Type\r\n\
+                                                Access-Control-Allow-Methods: POST, GET, OPTIONS\r\n\
+                                                Access-Control-Allow-Headers: Content-Type, Authorization\r\n\
                                                 Access-Control-Expose-Headers: X-App-Theme\r\n\
                                                 X-App-Theme: {}\r\n\
                                                 Access-Control-Max-Age: 86400\r\n\r\n", theme);
@@ -1086,6 +1126,7 @@ pub fn run() {
                                                         chunks: std::sync::Mutex::new(task.chunks.lock().unwrap().clone()),
                                                         speed: std::sync::Arc::new(std::sync::Mutex::new(0.0)),
                                                         eta: std::sync::Arc::new(std::sync::Mutex::new("---".to_string())),
+                                                        validator: task.validator.clone(),
                                                     });
                                                     tasks.insert(id.clone(), updated_task);
                                                 }
