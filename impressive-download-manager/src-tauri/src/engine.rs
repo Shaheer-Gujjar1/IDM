@@ -60,6 +60,8 @@ pub struct DownloadProgress {
     pub status: DownloadStatus,
     pub file_exists: bool,
     pub speed_limited: bool,
+    #[serde(default)]
+    pub category: String,
 }
 
 pub struct DownloadTask {
@@ -68,6 +70,7 @@ pub struct DownloadTask {
     pub final_url: Mutex<String>,
     pub filename: Arc<std::sync::Mutex<String>>,
     pub save_path: Arc<std::sync::Mutex<String>>,
+    pub category: Arc<std::sync::Mutex<String>>,
     pub cookie: String,
     pub referrer: String,
     pub user_agent: String,
@@ -92,6 +95,10 @@ impl DownloadTask {
 
     pub fn get_save_path(&self) -> String {
         self.save_path.lock().unwrap().clone()
+    }
+
+    pub fn get_category(&self) -> String {
+        self.category.lock().unwrap().clone()
     }
 
     pub fn update_filename_and_path(&self, new_name: &str) {
@@ -162,6 +169,8 @@ pub struct PersistentTask {
     pub final_url: String,
     pub filename: String,
     pub save_path: String,
+    #[serde(default)]
+    pub category: String,
     pub cookie: String,
     pub referrer: String,
     #[serde(default)]
@@ -358,6 +367,7 @@ impl DownloadManager {
                     final_url,
                     filename: task.get_filename(),
                     save_path: task.get_save_path(),
+                    category: task.get_category(),
                     cookie: task.cookie.clone(),
                     referrer: task.referrer.clone(),
                     user_agent: task.user_agent.clone(),
@@ -406,12 +416,19 @@ impl DownloadManager {
                                 });
                             }
                             
+                            let cat = if p_task.category.is_empty() {
+                                crate::preflight::detect_category(&p_task.filename, None).to_string()
+                            } else {
+                                p_task.category
+                            };
+
                             tasks.insert(p_task.id.clone(), Arc::new(DownloadTask {
                                 id: p_task.id,
                                 original_url: p_task.original_url,
                                 final_url: Mutex::new(p_task.final_url),
                                 filename: Arc::new(std::sync::Mutex::new(p_task.filename)),
                                 save_path: Arc::new(std::sync::Mutex::new(p_task.save_path)),
+                                category: Arc::new(std::sync::Mutex::new(cat)),
                                 cookie: p_task.cookie,
                                 referrer: p_task.referrer,
                                 user_agent: p_task.user_agent,
@@ -444,12 +461,38 @@ impl DownloadManager {
         referrer: String,
         user_agent: String,
         audio_url: Option<String>,
+        category: Option<String>,
+        queue_only: bool,
+        reuse_active: bool,
     ) -> Result<String, String> {
         let (clean_url, final_audio_url) = if let Some(idx) = url.find("|AUDIO_URL|") {
             (url[..idx].to_string(), Some(url[idx + 11..].to_string()))
         } else {
             (url.clone(), audio_url)
         };
+
+        // 1. Duplicate download prevention: return existing active download ID if already in progress
+        if reuse_active {
+            let tasks_guard = self.tasks.read().await;
+            for (existing_id, t) in tasks_guard.iter() {
+                let matches_url = t.original_url == clean_url || t.original_url == url;
+                let matches_audio = match (&t.audio_url, &final_audio_url) {
+                    (Some(a1), Some(a2)) => a1 == a2,
+                    (None, None) => true,
+                    _ => false,
+                };
+                if matches_url && matches_audio {
+                    let status = t.status.lock().unwrap().clone();
+                    match status {
+                        DownloadStatus::Downloading | DownloadStatus::Queued | DownloadStatus::Paused | DownloadStatus::Assembling => {
+                            println!("[Engine] Reusing active download task: {}", existing_id);
+                            return Ok(format!("EXISTS:{}", existing_id));
+                        }
+                        _ => {}
+                    }
+                }
+            }
+        }
 
         let id = uuid::Uuid::new_v4().to_string();
 
@@ -505,6 +548,17 @@ impl DownloadManager {
             }
         }
 
+        let final_category = match category {
+            Some(cat) if !cat.trim().is_empty() => cat,
+            _ => crate::preflight::detect_category(&filename, None).to_string(),
+        };
+
+        let initial_status = if queue_only {
+            DownloadStatus::Paused
+        } else {
+            DownloadStatus::Queued
+        };
+
         let (abort_tx, _) = broadcast::channel(1);
         let task = Arc::new(DownloadTask {
             id: id.clone(),
@@ -512,6 +566,7 @@ impl DownloadManager {
             final_url: Mutex::new(clean_url.clone()),
             filename: Arc::new(std::sync::Mutex::new(filename)),
             save_path: Arc::new(std::sync::Mutex::new(save_path)),
+            category: Arc::new(std::sync::Mutex::new(final_category)),
             cookie,
             referrer,
             user_agent,
@@ -520,7 +575,7 @@ impl DownloadManager {
             downloaded: Arc::new(AtomicU64::new(0)),
             network_downloaded: Arc::new(AtomicU64::new(0)),
             speed_limiter: Mutex::new(Instant::now()),
-            status: Arc::new(std::sync::Mutex::new(DownloadStatus::Queued)),
+            status: Arc::new(std::sync::Mutex::new(initial_status)),
             abort_tx: Some(abort_tx),
             chunks: std::sync::Mutex::new(vec![]),
             speed: Arc::new(std::sync::Mutex::new(0.0)),
@@ -535,12 +590,14 @@ impl DownloadManager {
             let _ = manager_clone_save.save_history().await;
         });
 
-        let manager_clone = self.clone();
-        tokio::spawn(async move {
-            if let Err(e) = manager_clone.run_task(task, false).await {
-                eprintln!("Download error: {}", e);
-            }
-        });
+        if !queue_only {
+            let manager_clone = self.clone();
+            tokio::spawn(async move {
+                if let Err(e) = manager_clone.run_task(task, false).await {
+                    eprintln!("Download error: {}", e);
+                }
+            });
+        }
 
         Ok(id)
     }
@@ -882,6 +939,7 @@ impl DownloadManager {
                             status: status.clone(),
                             file_exists: std::path::Path::new(&current_save_path).exists(),
                             speed_limited: is_speed_limited,
+                            category: task_for_reporting.get_category(),
                         };
 
                         if let Some(ref handle) = app_handle_opt {
@@ -1495,6 +1553,7 @@ impl DownloadManager {
                     status: DownloadStatus::Assembling,
                     file_exists: std::path::Path::new(&cur_save_path).exists(),
                     speed_limited: false,
+                    category: task.get_category(),
                 };
                 if let Some(ref handle) = self.app_handle.lock().await.clone() {
                     use tauri::Emitter;
@@ -1591,6 +1650,7 @@ impl DownloadManager {
             status: final_status,
             file_exists: std::path::Path::new(&cur_save_path).exists(),
             speed_limited: false,
+            category: task.get_category(),
         };
         if let Some(ref handle) = self.app_handle.lock().await.clone() {
             use tauri::Emitter;
@@ -1627,6 +1687,7 @@ impl DownloadManager {
                 status: DownloadStatus::Paused,
                 file_exists: std::path::Path::new(&cur_save_path).exists(),
                 speed_limited: false,
+                category: task.get_category(),
             };
             if let Some(ref handle) = app_handle_opt {
                 use tauri::Emitter;
@@ -1659,6 +1720,7 @@ impl DownloadManager {
                 final_url: Mutex::new(task.final_url.lock().await.clone()),
                 filename: task.filename.clone(),
                 save_path: task.save_path.clone(),
+                category: task.category.clone(),
                 cookie: task.cookie.clone(),
                 referrer: task.referrer.clone(),
                 user_agent: task.user_agent.clone(),
@@ -1718,6 +1780,7 @@ impl DownloadManager {
                 status: DownloadStatus::Paused,
                 file_exists: std::path::Path::new(&cur_save_path).exists(),
                 speed_limited: false,
+                category: task.get_category(),
             };
             if let Some(ref handle) = app_handle_opt {
                 use tauri::Emitter;
@@ -1777,6 +1840,7 @@ impl DownloadManager {
                 status: DownloadStatus::Trash,
                 file_exists: std::path::Path::new(&cur_save_path).exists(),
                 speed_limited: false,
+                category: task.get_category(),
             };
             if let Some(ref handle) = app_handle_opt {
                 use tauri::Emitter;
@@ -1824,6 +1888,7 @@ impl DownloadManager {
                 status: final_status,
                 file_exists: std::path::Path::new(&cur_save_path).exists(),
                 speed_limited: false,
+                category: task.get_category(),
             };
             if let Some(ref handle) = app_handle_opt {
                 use tauri::Emitter;
@@ -1853,6 +1918,7 @@ impl DownloadManager {
                 final_url: Mutex::new(task.original_url.clone()),
                 filename: task.filename.clone(),
                 save_path: task.save_path.clone(),
+                category: task.category.clone(),
                 cookie: task.cookie.clone(),
                 referrer: task.referrer.clone(),
                 user_agent: task.user_agent.clone(),
@@ -1913,6 +1979,7 @@ impl DownloadManager {
                 status,
                 file_exists: std::path::Path::new(&cur_save_path).exists(),
                 speed_limited: is_speed_limited,
+                category: task.get_category(),
             })
         } else {
             None
@@ -1944,6 +2011,7 @@ impl DownloadManager {
                 status,
                 file_exists: std::path::Path::new(&cur_save_path).exists(),
                 speed_limited: is_speed_limited,
+                category: task.get_category(),
             });
         }
         list
@@ -2203,6 +2271,9 @@ mod tests {
             String::new(),
             String::new(),
             None,
+            None,
+            false,
+            false,
         ).await.expect("start_download failed");
 
         // Wait up to 10 seconds for real download completion
@@ -2300,6 +2371,9 @@ mod tests {
             String::new(),
             String::new(),
             None,
+            None,
+            false,
+            false,
         ).await.expect("start_download failed");
 
         // Wait up to 10 seconds for backoff and recovery
@@ -2385,6 +2459,7 @@ mod tests {
             final_url: Mutex::new(target_url.clone()),
             filename: Arc::new(std::sync::Mutex::new("should_abort.bin".to_string())),
             save_path: Arc::new(std::sync::Mutex::new(target_save_file.clone())),
+            category: Arc::new(std::sync::Mutex::new("Other".to_string())),
             cookie: String::new(),
             referrer: String::new(),
             user_agent: String::new(),
@@ -2583,6 +2658,9 @@ mod tests {
             String::new(),
             String::new(),
             Some(audio_url),
+            None,
+            false,
+            false,
         ).await.expect("Dual stream start_download failed");
 
         // Wait up to 10 seconds for dual-stream download & muxing completion
@@ -2616,6 +2694,7 @@ mod tests {
             final_url: Mutex::new("http://example.com/file".to_string()),
             filename: Arc::new(std::sync::Mutex::new("file".to_string())),
             save_path: Arc::new(std::sync::Mutex::new("/tmp/file".to_string())),
+            category: Arc::new(std::sync::Mutex::new("Other".to_string())),
             cookie: String::new(),
             referrer: String::new(),
             user_agent: String::new(),
@@ -2682,6 +2761,65 @@ mod tests {
         let clamped_dl = in_flight_overshoot.min(max_allowed);
 
         assert_eq!(clamped_dl, 7_000_001, "Overshoot bytes must be clamped to avoid overlap with child chunk");
+    }
+
+    #[tokio::test]
+    async fn test_phase7_duplicate_download_prevention() {
+        let mgr = Arc::new(DownloadManager::new());
+        let url = "http://example.com/unique_file.zip".to_string();
+
+        let id1 = mgr.start_download(
+            url.clone(),
+            "unique_file.zip".to_string(),
+            "/tmp/unique_file.zip".to_string(),
+            String::new(),
+            String::new(),
+            String::new(),
+            None,
+            Some("Compressed".to_string()),
+            true, // queue_only to keep it queued/paused
+            true,
+        ).await.expect("First download start failed");
+
+        // Calling start_download again with reuse_active=true
+        let id2 = mgr.start_download(
+            url.clone(),
+            "unique_file.zip".to_string(),
+            "/tmp/unique_file.zip".to_string(),
+            String::new(),
+            String::new(),
+            String::new(),
+            None,
+            Some("Compressed".to_string()),
+            false,
+            true,
+        ).await.expect("Second download start failed");
+
+        assert_eq!(id2, format!("EXISTS:{}", id1), "Must return EXISTS:id for duplicate active download");
+    }
+
+    #[tokio::test]
+    async fn test_phase7_download_later_queue_only() {
+        let mgr = Arc::new(DownloadManager::new());
+        let url = "http://example.com/later.iso".to_string();
+
+        let id = mgr.start_download(
+            url,
+            "later.iso".to_string(),
+            "/tmp/later.iso".to_string(),
+            String::new(),
+            String::new(),
+            String::new(),
+            None,
+            None,
+            true, // queue_only
+            false,
+        ).await.expect("Queue only download start failed");
+
+        let prog = mgr.get_progress(&id).await.expect("Task must be registered");
+        assert_eq!(prog.status, DownloadStatus::Paused, "queue_only tasks must start in Paused state");
+        assert_eq!(prog.downloaded, 0, "No bytes should be downloaded before user initiates transfer");
+        assert_eq!(prog.category, "Compressed", ".iso files must be classified as Compressed");
     }
 }
 

@@ -2,6 +2,7 @@ mod engine;
 mod proxy;
 pub mod hls;
 pub mod mux;
+pub mod preflight;
 
 use std::sync::Arc;
 use tauri::{State, Manager};
@@ -30,6 +31,9 @@ async fn start_download(
     referrer: Option<String>,
     user_agent: Option<String>,
     audio_url: Option<String>,
+    category: Option<String>,
+    queue_only: Option<bool>,
+    reuse_active: Option<bool>,
     manager: State<'_, Arc<DownloadManager>>,
 ) -> Result<String, String> {
     println!("[Tauri IPC] start_download called: {}", url);
@@ -42,8 +46,33 @@ async fn start_download(
             referrer.unwrap_or_default(),
             user_agent.unwrap_or_default(),
             audio_url,
+            category,
+            queue_only.unwrap_or(false),
+            reuse_active.unwrap_or(true),
         )
         .await
+}
+
+#[tauri::command]
+async fn probe_download_url(
+    url: String,
+    cookie: Option<String>,
+    referrer: Option<String>,
+    user_agent: Option<String>,
+    save_folder: Option<String>,
+) -> Result<preflight::PreflightProbeResult, String> {
+    preflight::probe_download_url(
+        &url,
+        cookie.as_deref(),
+        referrer.as_deref(),
+        user_agent.as_deref(),
+        save_folder.as_deref(),
+    ).await
+}
+
+#[tauri::command]
+async fn get_disk_space(target_path: String) -> Result<preflight::DiskSpaceInfo, String> {
+    preflight::get_disk_space(&target_path)
 }
 
 #[tauri::command]
@@ -1119,6 +1148,7 @@ pub fn run() {
                                                         final_url: tokio::sync::Mutex::new(target_download_url.clone()),
                                                         filename: task.filename.clone(),
                                                         save_path: task.save_path.clone(),
+                                                        category: task.category.clone(),
                                                         cookie: payload.cookie.clone().unwrap_or_default(),
                                                         referrer: payload.referrer.clone().unwrap_or_default(),
                                                         user_agent: payload.user_agent.clone().unwrap_or_default(),
@@ -1238,7 +1268,9 @@ pub fn run() {
             get_scheduler_config,
             set_scheduler_config,
             start_proxy_server,
-            stop_proxy_server
+            stop_proxy_server,
+            probe_download_url,
+            get_disk_space
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

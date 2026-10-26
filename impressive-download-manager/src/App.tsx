@@ -29,7 +29,8 @@ import {
   Moon,
   Sun,
   Laptop,
-  Rocket
+  Rocket,
+  Terminal
 } from "lucide-react";
 import { listen } from "@tauri-apps/api/event";
 import { invoke } from "@tauri-apps/api/core";
@@ -52,7 +53,75 @@ interface DownloadProgress {
   save_path?: string;
   file_exists?: boolean;
   speed_limited?: boolean;
+  category?: string;
 }
+
+interface PreflightProbeResult {
+  url: string;
+  final_url: string;
+  filename: string;
+  total_size: number;
+  formatted_size: string;
+  supports_range: boolean;
+  category: string;
+  mime_type: string | null;
+  available_disk_space: number | null;
+  formatted_disk_space: string | null;
+  has_enough_space: boolean;
+}
+
+interface DiskSpaceInfo {
+  total_bytes: number;
+  available_bytes: number;
+  formatted_available: string;
+}
+
+const detectCategory = (filename: string): string => {
+  const ext = filename.split(".").pop()?.toLowerCase();
+  if (!ext) return "Other";
+  if (["mp4", "webm", "mkv", "mov", "avi", "m4v", "flv", "3gp", "ts", "m3u8", "wmv"].includes(ext)) return "Video";
+  if (["mp3", "wav", "aac", "flac", "m4a", "ogg", "wma", "opus"].includes(ext)) return "Audio";
+  if (["pdf", "docx", "doc", "txt", "xlsx", "xls", "pptx", "ppt", "epub", "csv", "rtf", "md"].includes(ext)) return "Documents";
+  if (["zip", "rar", "7z", "tar", "gz", "bz2", "xz", "iso", "dmg"].includes(ext)) return "Compressed";
+  if (["exe", "msi", "deb", "rpm", "dmg", "pkg", "appimage", "apk"].includes(ext)) return "Programs";
+  return "Other";
+};
+
+const getCategoryFolder = (cat: string, defaultDir: string): string => {
+  const custom = localStorage.getItem(`category_dir_${cat}`);
+  if (custom) return custom;
+  if (!defaultDir) return "";
+  if (cat === "Other") return defaultDir;
+  return `${defaultDir.replace(/\/+$/, "")}/${cat}`;
+};
+
+const saveCategoryFolder = (cat: string, folder: string) => {
+  if (cat && folder) {
+    localStorage.setItem(`category_dir_${cat}`, folder);
+  }
+};
+
+const checkDiskSpace = async (
+  path: string,
+  setSpace: (s: string) => void,
+  setSafe: (b: boolean) => void,
+  expectedSize: number = 0
+) => {
+  if (!path) return;
+  try {
+    const res = await invoke<DiskSpaceInfo>("get_disk_space", { targetPath: path });
+    if (res && res.formatted_available) {
+      setSpace(res.formatted_available);
+      if (expectedSize > 0) {
+        setSafe(res.available_bytes >= expectedSize);
+      } else {
+        setSafe(res.available_bytes > 50 * 1024 * 1024);
+      }
+    }
+  } catch (err) {
+    console.warn("get_disk_space failed:", err);
+  }
+};
 
 interface Category {
   id: string;
@@ -92,6 +161,19 @@ function App() {
   const [inputUrl, setInputUrl] = useState("");
   const [customFilename, setCustomFilename] = useState("");
   const [savePath, setSavePath] = useState(() => localStorage.getItem("default_save_dir") || "");
+
+  // Pre-flight & Category Routing State
+  const [popupCategory, setPopupCategory] = useState("Other");
+  const [rememberCategoryFolder, setRememberCategoryFolder] = useState(true);
+  const [popupDiskSpace, setPopupDiskSpace] = useState("");
+  const [popupDiskSafe, setPopupDiskSafe] = useState(true);
+  const [addModalCategory, setAddModalCategory] = useState("Other");
+  const [addModalDiskSpace, setAddModalDiskSpace] = useState("");
+  const [addModalDiskSafe, setAddModalDiskSafe] = useState(true);
+  const [addModalFileSize, setAddModalFileSize] = useState("");
+  const [isProbingUrl, setIsProbingUrl] = useState(false);
+  const [, setCategoryFoldersVersion] = useState(0);
+  const probeTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   // Drawer State
   const [selectedTask, setSelectedTask] = useState<DownloadProgress | null>(null);
@@ -520,11 +602,49 @@ function App() {
     }
   };
 
-  // Auto-fill filename when URL input changes
+  // Auto-fill filename and probe URL when URL input changes
   const handleUrlChange = (val: string) => {
     setInputUrl(val);
+    const initialName = extractFilename(val);
+    setCustomFilename(initialName);
+    const initialCat = detectCategory(initialName);
+    setAddModalCategory(initialCat);
+    const folder = getCategoryFolder(initialCat, defaultSaveDir);
+    setSavePath(folder);
+    checkDiskSpace(folder, setAddModalDiskSpace, setAddModalDiskSafe);
+
+    if (probeTimerRef.current) clearTimeout(probeTimerRef.current);
     if (val.startsWith("http://") || val.startsWith("https://")) {
-      setCustomFilename(extractFilename(val));
+      setIsProbingUrl(true);
+      probeTimerRef.current = setTimeout(async () => {
+        try {
+          const res = await invoke<PreflightProbeResult>("probe_download_url", {
+            url: val,
+            saveFolder: folder,
+          });
+          if (res) {
+            if (res.filename && res.filename !== "downloaded_file") {
+              setCustomFilename(res.filename);
+            }
+            if (res.category) {
+              setAddModalCategory(res.category);
+              const catFolder = getCategoryFolder(res.category, defaultSaveDir);
+              setSavePath(catFolder);
+              if (res.formatted_disk_space) {
+                setAddModalDiskSpace(res.formatted_disk_space);
+                setAddModalDiskSafe(res.has_enough_space);
+              }
+            }
+            if (res.formatted_size && res.formatted_size !== "Unknown") {
+              setAddModalFileSize(res.formatted_size);
+            }
+          }
+        } catch (e) {
+          console.warn("probe_download_url error:", e);
+        } finally {
+          setIsProbingUrl(false);
+        }
+      }, 500);
     }
   };
 
@@ -621,16 +741,14 @@ function App() {
         safeFilename = filename;
       }
       setPopupFilename(safeFilename);
-      if (savePath) {
-        let safeSavePath = savePath;
-        try {
-          safeSavePath = decodeURIComponent(savePath);
-        } catch {
-          safeSavePath = savePath;
-        }
-        setSavePath(safeSavePath);
-        setPopupSavePath(safeSavePath);
-      }
+      const initialCat = detectCategory(safeFilename);
+      setPopupCategory(initialCat);
+
+      const targetFolder = savePath ? decodeURIComponent(savePath) : getCategoryFolder(initialCat, savedDir || defaultSaveDir);
+      setSavePath(targetFolder);
+      setPopupSavePath(targetFolder);
+      checkDiskSpace(targetFolder, setPopupDiskSpace, setPopupDiskSafe, parseInt(size) || 0);
+
       setPopupCookie(cookie);
       setPopupReferrer(referrer);
       setPopupUserAgent(userAgent);
@@ -803,7 +921,7 @@ function App() {
   }, []);
 
   // Submit start download from main window modal
-  const handleStartDownload = async () => {
+  const handleStartDownload = async (queueOnly: boolean = false) => {
     if (!inputUrl || isStartingDownload) return;
 
     if (inputUrl.includes("sourceforge.net/projects/")) {
@@ -811,11 +929,16 @@ function App() {
       return;
     }
 
-    console.log("[popup-add] Invoking start_download with URL:", inputUrl);
+    console.log("[main-add] Invoking start_download with URL:", inputUrl);
 
     setIsStartingDownload(true);
     const finalFilename = customFilename || extractFilename(inputUrl);
-    const finalSavePath = `${savePath.endsWith("/") ? savePath : savePath + "/"}${finalFilename}`;
+    const targetFolder = savePath || defaultSaveDir;
+    const finalSavePath = `${targetFolder.endsWith("/") ? targetFolder : targetFolder + "/"}${finalFilename}`;
+
+    if (rememberCategoryFolder && addModalCategory) {
+      saveCategoryFolder(addModalCategory, targetFolder);
+    }
 
     try {
       const id = await invoke<string>("start_download", {
@@ -824,8 +947,19 @@ function App() {
         savePath: finalSavePath,
         cookie: popupCookie || "",
         referrer: popupReferrer || "",
-        userAgent: popupUserAgent || ""
+        userAgent: popupUserAgent || "",
+        category: addModalCategory || undefined,
+        queueOnly,
+        reuseActive: true,
       });
+
+      if (id.startsWith("EXISTS:")) {
+        const existingId = id.slice(7);
+        setShowAddModal(false);
+        setIsStartingDownload(false);
+        await invoke("open_progress_window", { id: existingId });
+        return;
+      }
 
       const newTask: DownloadProgress = {
         id,
@@ -834,9 +968,10 @@ function App() {
         downloaded: 0,
         speed: 0,
         eta: "---",
-        status: "Queued",
+        status: queueOnly ? "Paused" : "Queued",
         url: inputUrl,
         save_path: finalSavePath,
+        category: addModalCategory || detectCategory(finalFilename),
       };
 
       setDownloads((prev) => [newTask, ...prev]);
@@ -845,8 +980,9 @@ function App() {
       setCustomFilename("");
       setIsStartingDownload(false);
 
-      // Open standalone progress window for this task
-      await invoke("open_progress_window", { id });
+      if (!queueOnly) {
+        await invoke("open_progress_window", { id });
+      }
     } catch (e) {
       console.error("Failed to start download:", e);
       setIsStartingDownload(false);
@@ -854,7 +990,7 @@ function App() {
   };
 
   // Submit start download from Popup 1 (Standalone Add window)
-  const handlePopupStartDownload = async () => {
+  const handlePopupStartDownload = async (queueOnly: boolean = false) => {
     if (!popupUrl || isStartingDownload) return;
 
     if (popupUrl.includes("sourceforge.net/projects/")) {
@@ -866,7 +1002,12 @@ function App() {
 
     setIsStartingDownload(true);
     const finalFilename = popupFilename || extractFilename(popupUrl);
-    const finalSavePath = `${savePath.endsWith("/") ? savePath : savePath + "/"}${finalFilename}`;
+    const targetFolder = popupSavePath || savePath || defaultSaveDir;
+    const finalSavePath = `${targetFolder.endsWith("/") ? targetFolder : targetFolder + "/"}${finalFilename}`;
+
+    if (rememberCategoryFolder && popupCategory) {
+      saveCategoryFolder(popupCategory, targetFolder);
+    }
 
     try {
       const id = await invoke<string>("start_download", {
@@ -876,11 +1017,23 @@ function App() {
         cookie: popupCookie || "",
         referrer: popupReferrer || "",
         userAgent: popupUserAgent || "",
-        audioUrl: popupAudioUrl || undefined
+        audioUrl: popupAudioUrl || undefined,
+        category: popupCategory || undefined,
+        queueOnly,
+        reuseActive: true,
       });
 
-      // Open standalone Progress window (Popup 2), which closes this Add window
-      await invoke("open_progress_window", { id });
+      if (queueOnly) {
+        await invoke("close_window");
+        return;
+      }
+
+      if (id.startsWith("EXISTS:")) {
+        const existingId = id.slice(7);
+        await invoke("open_progress_window", { id: existingId });
+      } else {
+        await invoke("open_progress_window", { id });
+      }
     } catch (e) {
       console.error("Failed to start popup download:", e);
       setIsStartingDownload(false);
@@ -1074,14 +1227,23 @@ function App() {
     return <File size={22} />;
   };
 
-  const getFileCategory = (filename: string): string => {
+  const getFileCategory = (filename: string, taskCategory?: string): string => {
+    if (taskCategory) {
+      const lower = taskCategory.toLowerCase();
+      if (lower.includes("video")) return "videos";
+      if (lower.includes("audio") || lower.includes("music")) return "audio";
+      if (lower.includes("doc") || lower.includes("text")) return "documents";
+      if (lower.includes("compress") || lower.includes("arch")) return "archives";
+      if (lower.includes("program") || lower.includes("exec")) return "programs";
+      return "other";
+    }
     const ext = filename.split(".").pop()?.toLowerCase();
     if (!ext) return "other";
-    if (["mp4", "mkv", "avi", "mov", "flv", "webm"].includes(ext)) return "videos";
-    if (["mp3", "wav", "aac", "flac", "m4a", "ogg"].includes(ext)) return "audio";
-    if (["pdf", "docx", "doc", "txt", "xlsx", "pptx", "epub"].includes(ext)) return "documents";
-    if (["zip", "rar", "7z", "tar", "gz", "bz2"].includes(ext)) return "archives";
-    if (["exe", "msi", "deb", "rpm", "dmg", "pkg", "appimage", "apk"].includes(ext)) return "executables";
+    if (["mp4", "mkv", "avi", "mov", "flv", "webm", "m4v", "3gp", "ts", "m3u8", "wmv"].includes(ext)) return "videos";
+    if (["mp3", "wav", "aac", "flac", "m4a", "ogg", "wma", "opus"].includes(ext)) return "audio";
+    if (["pdf", "docx", "doc", "txt", "xlsx", "xls", "pptx", "ppt", "epub", "csv", "rtf", "md"].includes(ext)) return "documents";
+    if (["zip", "rar", "7z", "tar", "gz", "bz2", "xz", "iso", "dmg"].includes(ext)) return "archives";
+    if (["exe", "msi", "deb", "rpm", "dmg", "pkg", "appimage", "apk"].includes(ext)) return "programs";
     return "other";
   };
 
@@ -1103,7 +1265,7 @@ function App() {
     if (activeCategory === "downloading") return statusText === "Downloading" || statusText === "Queued";
     if (activeCategory === "completed") return statusText === "Completed";
     if (activeCategory === "paused") return statusText === "Paused";
-    return getFileCategory(d.filename) === activeCategory;
+    return getFileCategory(d.filename, d.category) === activeCategory;
   });
 
   const sortedDownloads = [...filteredDownloads].sort((a, b) => {
@@ -1118,8 +1280,6 @@ function App() {
     return 0;
   });
 
-
-
   const mainCategories: Category[] = [
     { id: "all", name: "All Downloads", icon: <Layers size={18} /> },
     { id: "downloading", name: "Downloading", icon: <Activity size={18} /> },
@@ -1132,40 +1292,184 @@ function App() {
     { id: "videos", name: "Videos", icon: <Film size={16} /> },
     { id: "audio", name: "Audio", icon: <Music size={16} /> },
     { id: "documents", name: "Documents", icon: <FileText size={16} /> },
-    { id: "archives", name: "Archives", icon: <Archive size={16} /> },
+    { id: "archives", name: "Compressed", icon: <Archive size={16} /> },
+    { id: "programs", name: "Programs", icon: <Terminal size={16} /> },
   ];
 
   // STANDALONE POPUP RENDER logic
   if (popupMode === "add") {
+    const isDangerousSpace = !popupDiskSafe && popupDiskSpace;
     return (
-      <div className="modal-content-v2" style={{ height: "100vh", overflowY: "auto", animation: "none", boxShadow: "none", border: "none", padding: "16px" }}>
+      <div className="modal-content-v2" style={{ height: "100vh", overflowY: "auto", animation: "none", boxShadow: "none", border: "none", padding: "18px", display: "flex", flexDirection: "column" }}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "14px", paddingBottom: "10px", borderBottom: "1px solid rgba(255, 255, 255, 0.08)" }}>
+          <div style={{ display: "flex", alignItems: "center", gap: "10px" }}>
+            <span style={{ fontSize: "1.05rem", fontWeight: 700, letterSpacing: "-0.01em", color: "var(--text-primary)" }}>
+              Download File Info
+            </span>
+            <span style={{ fontSize: "0.72rem", padding: "2px 8px", borderRadius: "100px", background: "rgba(6, 182, 212, 0.15)", color: "var(--accent-cyan)", fontWeight: 600 }}>
+              IDM Pre-Flight
+            </span>
+          </div>
+          <button
+            className="hover-action-btn"
+            style={{ width: "28px", height: "28px", padding: 0, borderRadius: "50%" }}
+            onClick={handleClosePopup}
+            title="Cancel & Close"
+          >
+            <X size={16} />
+          </button>
+        </div>
 
-        <div className="modal-body-v2" style={{ display: "flex", flexDirection: "column", gap: "10px", padding: 0 }}>
+        <div className="modal-body-v2" style={{ display: "flex", flexDirection: "column", gap: "10px", padding: 0, flex: 1 }}>
           <div className="form-group-v2">
-            <span className="form-label-v2" style={{ fontSize: "0.75rem", marginBottom: "4px" }}>Source URL</span>
-            <input type="text" className="spotlight-input" style={{ padding: "8px 12px", fontSize: "0.85rem" }} value={popupUrl} onChange={(e) => setPopupUrl(e.target.value)} />
+            <span className="form-label-v2" style={{ fontSize: "0.75rem", marginBottom: "4px" }}>Source Address (URL)</span>
+            <input
+              type="text"
+              className="spotlight-input"
+              style={{ padding: "8px 12px", fontSize: "0.85rem" }}
+              value={popupUrl}
+              onChange={(e) => setPopupUrl(e.target.value)}
+            />
           </div>
+
           <div className="form-group-v2">
-            <span className="form-label-v2" style={{ fontSize: "0.75rem", marginBottom: "4px" }}>Save As Filename</span>
-            <input type="text" className="spotlight-input" style={{ padding: "8px 12px", fontSize: "0.85rem" }} value={popupFilename} onChange={(e) => setPopupFilename(e.target.value)} />
+            <span className="form-label-v2" style={{ fontSize: "0.75rem", marginBottom: "4px" }}>Category</span>
+            <select
+              className="spotlight-input"
+              style={{ padding: "8px 12px", fontSize: "0.85rem", background: "rgba(255, 255, 255, 0.04)", color: "var(--text-primary)" }}
+              value={popupCategory}
+              onChange={(e) => {
+                const newCat = e.target.value;
+                setPopupCategory(newCat);
+                const newFolder = getCategoryFolder(newCat, defaultSaveDir);
+                setPopupSavePath(newFolder);
+                setSavePath(newFolder);
+                checkDiskSpace(newFolder, setPopupDiskSpace, setPopupDiskSafe, parseInt(popupSize) || 0);
+              }}
+            >
+              <option value="Video">Video</option>
+              <option value="Audio">Audio</option>
+              <option value="Compressed">Compressed</option>
+              <option value="Documents">Documents</option>
+              <option value="Programs">Programs</option>
+              <option value="Other">Other / General</option>
+            </select>
           </div>
+
           <div className="form-group-v2">
-            <span className="form-label-v2" style={{ fontSize: "0.75rem", marginBottom: "4px" }}>Save Folder Path</span>
+            <span className="form-label-v2" style={{ fontSize: "0.75rem", marginBottom: "4px" }}>Save As (Filename)</span>
+            <input
+              type="text"
+              className="spotlight-input"
+              style={{ padding: "8px 12px", fontSize: "0.85rem" }}
+              value={popupFilename}
+              onChange={(e) => {
+                const newName = e.target.value;
+                setPopupFilename(newName);
+                const detected = detectCategory(newName);
+                if (detected !== popupCategory) {
+                  setPopupCategory(detected);
+                  const newFolder = getCategoryFolder(detected, defaultSaveDir);
+                  setPopupSavePath(newFolder);
+                  setSavePath(newFolder);
+                  checkDiskSpace(newFolder, setPopupDiskSpace, setPopupDiskSafe, parseInt(popupSize) || 0);
+                }
+              }}
+            />
+          </div>
+
+          <div className="form-group-v2">
+            <span className="form-label-v2" style={{ fontSize: "0.75rem", marginBottom: "4px" }}>Save To (Directory)</span>
             <div style={{ display: "flex", gap: "8px" }}>
-              <input type="text" className="spotlight-input" style={{ padding: "8px 12px", fontSize: "0.85rem", flex: 1 }} value={savePath} onChange={(e) => setSavePath(e.target.value)} />
-              <button className="hover-action-btn" style={{ width: "auto", padding: "0 12px", fontSize: "0.8rem", height: "34px" }} onClick={handlePickFolder}>Browse</button>
+              <input
+                type="text"
+                className="spotlight-input"
+                style={{ padding: "8px 12px", fontSize: "0.85rem", flex: 1 }}
+                value={popupSavePath || savePath || defaultSaveDir}
+                onChange={(e) => {
+                  const p = e.target.value;
+                  setPopupSavePath(p);
+                  setSavePath(p);
+                  checkDiskSpace(p, setPopupDiskSpace, setPopupDiskSafe, parseInt(popupSize) || 0);
+                }}
+              />
+              <button
+                className="hover-action-btn"
+                style={{ width: "auto", padding: "0 14px", fontSize: "0.82rem", height: "36px" }}
+                onClick={async () => {
+                  try {
+                    const chosen = await invoke<string>("select_folder");
+                    if (chosen) {
+                      setPopupSavePath(chosen);
+                      setSavePath(chosen);
+                      checkDiskSpace(chosen, setPopupDiskSpace, setPopupDiskSafe, parseInt(popupSize) || 0);
+                    }
+                  } catch (err) {
+                    console.warn(err);
+                  }
+                }}
+              >
+                Browse...
+              </button>
             </div>
           </div>
-          <div className="form-group-v2" style={{ marginTop: "2px" }}>
-            <span style={{ fontSize: "0.85rem", color: "var(--text-secondary)" }}>
-              Estimated File Size: <span style={{ fontWeight: 700, color: "var(--accent-cyan)" }}>{popupSize && popupSize !== "0" ? formatBytes(parseInt(popupSize)) : "Unknown Size"}</span>
-            </span>
+
+          <label style={{ display: "flex", alignItems: "center", gap: "8px", fontSize: "0.82rem", color: "var(--text-secondary)", cursor: "pointer", marginTop: "2px" }}>
+            <input
+              type="checkbox"
+              checked={rememberCategoryFolder}
+              onChange={(e) => setRememberCategoryFolder(e.target.checked)}
+              style={{ accentColor: "var(--accent-cyan)", width: "16px", height: "16px" }}
+            />
+            Remember this folder for <strong style={{ color: "var(--text-primary)" }}>{popupCategory}</strong> category
+          </label>
+
+          <div style={{ display: "flex", gap: "12px", alignItems: "center", padding: "10px 14px", borderRadius: "10px", background: "rgba(255, 255, 255, 0.03)", border: "1px solid rgba(255, 255, 255, 0.06)", marginTop: "4px" }}>
+            <div style={{ flex: 1, display: "flex", flexDirection: "column", gap: "2px" }}>
+              <span style={{ fontSize: "0.7rem", textTransform: "uppercase", color: "var(--text-muted)", letterSpacing: "0.5px" }}>Estimated File Size</span>
+              <span style={{ fontWeight: 700, fontSize: "0.95rem", color: "var(--accent-cyan)" }}>
+                {popupSize && popupSize !== "0" ? formatBytes(parseInt(popupSize)) : "Unknown (Server Streaming)"}
+              </span>
+            </div>
+
+            <div style={{ width: "1px", height: "26px", background: "rgba(255, 255, 255, 0.1)" }} />
+
+            <div style={{ flex: 1, display: "flex", flexDirection: "column", gap: "2px" }}>
+              <span style={{ fontSize: "0.7rem", textTransform: "uppercase", color: "var(--text-muted)", letterSpacing: "0.5px" }}>Available Disk Space</span>
+              <span style={{ fontWeight: 600, fontSize: "0.95rem", color: isDangerousSpace ? "#ef4444" : "var(--text-primary)" }}>
+                {popupDiskSpace || "Probing..."}
+                {isDangerousSpace && <span style={{ marginLeft: "6px", fontSize: "0.72rem", color: "#ef4444", fontWeight: 700 }}>⚠️ Low Space</span>}
+              </span>
+            </div>
           </div>
         </div>
 
-        <div className="modal-actions-v2" style={{ marginTop: "12px", paddingTop: "8px" }}>
-          <button className="hover-action-btn" style={{ width: "auto", padding: "0 16px", height: "38px", fontSize: "0.9rem" }} onClick={handleClosePopup} disabled={isStartingDownload}>Cancel</button>
-          <button className="accent-pill" style={{ padding: "8px 24px", borderRadius: "100px", fontWeight: 700, fontSize: "0.9rem", height: "38px", opacity: isStartingDownload ? 0.7 : 1 }} onClick={handlePopupStartDownload} disabled={!popupUrl || isStartingDownload}>
+        <div className="modal-actions-v2" style={{ marginTop: "14px", paddingTop: "10px", display: "flex", justifyContent: "flex-end", gap: "10px" }}>
+          <button
+            className="hover-action-btn"
+            style={{ width: "auto", padding: "0 16px", height: "38px", fontSize: "0.85rem" }}
+            onClick={handleClosePopup}
+            disabled={isStartingDownload}
+          >
+            Cancel
+          </button>
+          <button
+            className="hover-action-btn"
+            style={{ width: "auto", padding: "0 16px", height: "38px", fontSize: "0.85rem", display: "flex", alignItems: "center", gap: "6px" }}
+            onClick={() => handlePopupStartDownload(true)}
+            disabled={!popupUrl || isStartingDownload}
+            title="Add to queue in paused state"
+          >
+            <Clock size={16} />
+            Download Later
+          </button>
+          <button
+            className="accent-pill"
+            style={{ padding: "0 22px", borderRadius: "100px", fontWeight: 700, fontSize: "0.9rem", height: "38px", opacity: isStartingDownload ? 0.7 : 1, display: "flex", alignItems: "center", gap: "6px" }}
+            onClick={() => handlePopupStartDownload(false)}
+            disabled={!popupUrl || isStartingDownload}
+          >
+            <Download size={16} />
             {isStartingDownload ? "Starting..." : "Start Download"}
           </button>
         </div>
@@ -1545,6 +1849,66 @@ function App() {
                     />
                     <span className="switch-slider"></span>
                   </label>
+                </div>
+              </div>
+
+              <div className="settings-card">
+                <div className="settings-section-header">
+                  <FolderOpen size={18} />
+                  <span className="settings-section-title">Category Storage Folders</span>
+                </div>
+                <p style={{ fontSize: "0.85rem", color: "var(--text-secondary)", marginBottom: "14px" }}>
+                  Configure custom download paths for each category. Newly captured files are automatically routed into these folders.
+                </p>
+                <div style={{ display: "flex", flexDirection: "column", gap: "12px" }}>
+                  {[
+                    { key: "Video", name: "Videos", icon: <Film size={16} /> },
+                    { key: "Audio", name: "Audio", icon: <Music size={16} /> },
+                    { key: "Compressed", name: "Compressed", icon: <Archive size={16} /> },
+                    { key: "Documents", name: "Documents", icon: <FileText size={16} /> },
+                    { key: "Programs", name: "Programs", icon: <Terminal size={16} /> },
+                    { key: "Other", name: "Other / General", icon: <File size={16} /> },
+                  ].map((catItem) => {
+                    const currentFolder = getCategoryFolder(catItem.key, defaultSaveDir);
+                    return (
+                      <div key={catItem.key} className="form-group" style={{ marginBottom: "4px" }}>
+                        <div style={{ display: "flex", alignItems: "center", gap: "8px", marginBottom: "4px" }}>
+                          {catItem.icon}
+                          <span style={{ fontSize: "0.82rem", fontWeight: 600, color: "var(--text-primary)" }}>{catItem.name}</span>
+                        </div>
+                        <div style={{ display: "flex", gap: "8px", alignItems: "center" }}>
+                          <input
+                            type="text"
+                            className="form-input"
+                            style={{ flex: 1, padding: "8px 12px", fontSize: "0.85rem" }}
+                            value={currentFolder}
+                            onChange={(e) => {
+                              saveCategoryFolder(catItem.key, e.target.value);
+                              setCategoryFoldersVersion((v) => v + 1);
+                            }}
+                          />
+                          <button
+                            type="button"
+                            className="hover-action-btn"
+                            style={{ width: "auto", padding: "0 16px", height: "38px", flexShrink: 0, fontSize: "0.82rem" }}
+                            onClick={async () => {
+                              try {
+                                const chosen = await invoke<string>("select_folder");
+                                if (chosen) {
+                                  saveCategoryFolder(catItem.key, chosen);
+                                  setCategoryFoldersVersion((v) => v + 1);
+                                }
+                              } catch (err) {
+                                console.warn("Folder picker cancelled:", err);
+                              }
+                            }}
+                          >
+                            Browse
+                          </button>
+                        </div>
+                      </div>
+                    );
+                  })}
                 </div>
               </div>
 
@@ -2264,17 +2628,29 @@ function App() {
       {/* Main Window Modal: Add New Download (triggered manually) */}
       {showAddModal && (
         <div className="modal-backdrop-v2" onClick={() => setShowAddModal(false)}>
-          <div className="modal-content-v2" onClick={(e) => e.stopPropagation()}>
+          <div className="modal-content-v2" style={{ maxWidth: "560px" }} onClick={(e) => e.stopPropagation()}>
             <div className="modal-header-v2">
-              <span className="modal-title-v2">New Download</span>
+              <div style={{ display: "flex", alignItems: "center", gap: "10px" }}>
+                <span className="modal-title-v2">New Download</span>
+                <span style={{ fontSize: "0.72rem", padding: "2px 8px", borderRadius: "100px", background: "rgba(6, 182, 212, 0.15)", color: "var(--accent-cyan)", fontWeight: 600 }}>
+                  Pre-Flight Router
+                </span>
+              </div>
               <button className="modal-close-btn-v2" onClick={() => setShowAddModal(false)}>
                 <X size={20} />
               </button>
             </div>
 
-            <div className="modal-body-v2">
+            <div className="modal-body-v2" style={{ display: "flex", flexDirection: "column", gap: "12px" }}>
               <div className="form-group-v2">
-                <span className="form-label-v2">Download URL</span>
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "4px" }}>
+                  <span className="form-label-v2" style={{ fontSize: "0.75rem" }}>Download URL</span>
+                  {isProbingUrl && (
+                    <span style={{ fontSize: "0.72rem", color: "var(--accent-cyan)", display: "flex", alignItems: "center", gap: "4px" }}>
+                      <RefreshCw size={12} className="spin" /> Probing server headers...
+                    </span>
+                  )}
+                </div>
                 <input
                   type="text"
                   placeholder="Paste HTTP / HTTPS address..."
@@ -2285,23 +2661,60 @@ function App() {
               </div>
 
               <div className="form-group-v2">
-                <span className="form-label-v2">Save Filename</span>
+                <span className="form-label-v2" style={{ fontSize: "0.75rem", marginBottom: "4px" }}>Category</span>
+                <select
+                  className="spotlight-input"
+                  style={{ padding: "8px 12px", fontSize: "0.85rem", background: "rgba(255, 255, 255, 0.04)", color: "var(--text-primary)" }}
+                  value={addModalCategory}
+                  onChange={(e) => {
+                    const newCat = e.target.value;
+                    setAddModalCategory(newCat);
+                    const newFolder = getCategoryFolder(newCat, defaultSaveDir);
+                    setSavePath(newFolder);
+                    checkDiskSpace(newFolder, setAddModalDiskSpace, setAddModalDiskSafe);
+                  }}
+                >
+                  <option value="Video">Video</option>
+                  <option value="Audio">Audio</option>
+                  <option value="Compressed">Compressed</option>
+                  <option value="Documents">Documents</option>
+                  <option value="Programs">Programs</option>
+                  <option value="Other">Other / General</option>
+                </select>
+              </div>
+
+              <div className="form-group-v2">
+                <span className="form-label-v2" style={{ fontSize: "0.75rem", marginBottom: "4px" }}>Save Filename</span>
                 <input
                   type="text"
                   className="spotlight-input"
                   value={customFilename}
-                  onChange={(e) => setCustomFilename(e.target.value)}
+                  onChange={(e) => {
+                    const newName = e.target.value;
+                    setCustomFilename(newName);
+                    const detected = detectCategory(newName);
+                    if (detected !== addModalCategory) {
+                      setAddModalCategory(detected);
+                      const newFolder = getCategoryFolder(detected, defaultSaveDir);
+                      setSavePath(newFolder);
+                      checkDiskSpace(newFolder, setAddModalDiskSpace, setAddModalDiskSafe);
+                    }
+                  }}
                 />
               </div>
 
               <div className="form-group-v2">
-                <span className="form-label-v2">Save Path</span>
+                <span className="form-label-v2" style={{ fontSize: "0.75rem", marginBottom: "4px" }}>Save Path</span>
                 <div style={{ display: "flex", gap: "8px" }}>
                   <input
                     type="text"
                     className="spotlight-input"
                     value={savePath}
-                    onChange={(e) => setSavePath(e.target.value)}
+                    onChange={(e) => {
+                      const p = e.target.value;
+                      setSavePath(p);
+                      checkDiskSpace(p, setAddModalDiskSpace, setAddModalDiskSafe);
+                    }}
                     style={{ flex: 1 }}
                   />
                   <button className="hover-action-btn" style={{ padding: "0 16px", borderRadius: "12px" }} onClick={handlePickFolder}>
@@ -2309,17 +2722,59 @@ function App() {
                   </button>
                 </div>
               </div>
+
+              {/* Remember Category Folder Checkbox */}
+              <label style={{ display: "flex", alignItems: "center", gap: "8px", fontSize: "0.82rem", color: "var(--text-secondary)", cursor: "pointer" }}>
+                <input
+                  type="checkbox"
+                  checked={rememberCategoryFolder}
+                  onChange={(e) => setRememberCategoryFolder(e.target.checked)}
+                  style={{ accentColor: "var(--accent-cyan)", width: "16px", height: "16px" }}
+                />
+                Remember this folder for <strong style={{ color: "var(--text-primary)" }}>{addModalCategory}</strong> category
+              </label>
+
+              {/* Pre-flight Info Bar */}
+              <div style={{ display: "flex", gap: "12px", alignItems: "center", padding: "10px 14px", borderRadius: "10px", background: "rgba(255, 255, 255, 0.03)", border: "1px solid rgba(255, 255, 255, 0.06)" }}>
+                <div style={{ flex: 1, display: "flex", flexDirection: "column", gap: "2px" }}>
+                  <span style={{ fontSize: "0.7rem", textTransform: "uppercase", color: "var(--text-muted)", letterSpacing: "0.5px" }}>Estimated File Size</span>
+                  <span style={{ fontWeight: 700, fontSize: "0.95rem", color: "var(--accent-cyan)" }}>
+                    {addModalFileSize || "Unknown"}
+                  </span>
+                </div>
+
+                <div style={{ width: "1px", height: "26px", background: "rgba(255, 255, 255, 0.1)" }} />
+
+                <div style={{ flex: 1, display: "flex", flexDirection: "column", gap: "2px" }}>
+                  <span style={{ fontSize: "0.7rem", textTransform: "uppercase", color: "var(--text-muted)", letterSpacing: "0.5px" }}>Available Disk Space</span>
+                  <span style={{ fontWeight: 600, fontSize: "0.95rem", color: !addModalDiskSafe ? "#ef4444" : "var(--text-primary)" }}>
+                    {addModalDiskSpace || "Probing..."}
+                    {!addModalDiskSafe && <span style={{ marginLeft: "6px", fontSize: "0.72rem", color: "#ef4444", fontWeight: 700 }}>⚠️ Low Space</span>}
+                  </span>
+                </div>
+              </div>
             </div>
 
-            <div className="modal-footer-v2">
+            <div className="modal-footer-v2" style={{ display: "flex", justifyContent: "flex-end", gap: "10px", marginTop: "16px" }}>
               <button className="hover-action-btn" style={{ padding: "10px 20px", borderRadius: "12px" }} onClick={() => setShowAddModal(false)}>
                 Cancel
               </button>
               <button
-                className="hover-action-btn success"
-                style={{ padding: "10px 24px", borderRadius: "12px", background: "var(--accent-cyan)", color: "#000", fontWeight: 700 }}
-                onClick={handleStartDownload}
+                className="hover-action-btn"
+                style={{ padding: "10px 20px", borderRadius: "12px", display: "flex", alignItems: "center", gap: "6px" }}
+                onClick={() => handleStartDownload(true)}
+                disabled={!inputUrl || isStartingDownload}
               >
+                <Clock size={16} />
+                Download Later
+              </button>
+              <button
+                className="hover-action-btn success"
+                style={{ padding: "10px 24px", borderRadius: "12px", background: "var(--accent-cyan)", color: "#000", fontWeight: 700, display: "flex", alignItems: "center", gap: "6px" }}
+                onClick={() => handleStartDownload(false)}
+                disabled={!inputUrl || isStartingDownload}
+              >
+                <Download size={16} />
                 Start Download
               </button>
             </div>
