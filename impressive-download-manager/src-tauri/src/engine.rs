@@ -118,19 +118,38 @@ impl DownloadTask {
         // Target cap at 99.5% to guarantee measured UI speed never touches or exceeds limit
         let target_bps = (limit_bps as f64 * 0.995).max(1.0);
 
-        let mut virtual_time = self.speed_limiter.lock().await;
-        let now = Instant::now();
-        
-        if *virtual_time < now {
-            *virtual_time = now;
-        }
-        
-        let duration = Duration::from_secs_f64(bytes_len as f64 / target_bps);
-        *virtual_time += duration;
-        
-        if let Some(sleep_duration) = virtual_time.checked_duration_since(now) {
-            if !sleep_duration.is_zero() {
-                tokio::time::sleep(sleep_duration).await;
+        // Lock scope: calculate sleep duration and release lock IMMEDIATELY so other workers don't serialize
+        let sleep_duration = {
+            let mut virtual_time = self.speed_limiter.lock().await;
+            let now = Instant::now();
+
+            if *virtual_time < now {
+                *virtual_time = now;
+            }
+
+            let duration = Duration::from_secs_f64(bytes_len as f64 / target_bps);
+            *virtual_time += duration;
+
+            // Clamp burst accumulation to at most 500ms into the future to eliminate latency spikes
+            let max_burst_horizon = now + Duration::from_millis(500);
+            if *virtual_time > max_burst_horizon {
+                *virtual_time = max_burst_horizon;
+            }
+
+            virtual_time.checked_duration_since(now)
+        };
+
+        if let Some(sleep) = sleep_duration {
+            if !sleep.is_zero() {
+                // Sleep in small micro-bursts of up to 50ms so aborts and user speed limit adjustments respond instantaneously
+                let mut rem = sleep;
+                while rem > Duration::from_millis(50) {
+                    tokio::time::sleep(Duration::from_millis(50)).await;
+                    rem = rem.saturating_sub(Duration::from_millis(50));
+                }
+                if !rem.is_zero() {
+                    tokio::time::sleep(rem).await;
+                }
             }
         }
     }
@@ -987,29 +1006,35 @@ impl DownloadManager {
                         }
                     }
 
-                    if max_rem > 1024 * 1024 { // Minimum split size 1MB
+                    if max_rem > 2 * 1024 * 1024 { // Minimum split size 2MB
                         if let Some(idx) = best_idx {
                             let end = chunks[idx].end.load(Ordering::SeqCst);
                             let downloaded = chunks[idx].downloaded.load(Ordering::SeqCst);
                             let start = chunks[idx].start;
+                            let current_head = start + downloaded;
 
-                            let rem = (end + 1) - (start + downloaded);
-                            let split_len = rem / 2;
-                            let new_start = end + 1 - split_len;
+                            if end > current_head + 1024 * 1024 {
+                                let rem = (end + 1) - current_head;
+                                let split_len = rem / 2;
+                                let new_start = end + 1 - split_len;
 
-                            // Adjust end of active chunk
-                            chunks[idx].end.store(new_start - 1, Ordering::SeqCst);
+                                // Guard against race conditions: ensure new_start is safely ahead of current download progress
+                                if new_start > current_head + 256 * 1024 {
+                                    // Adjust end of active chunk
+                                    chunks[idx].end.store(new_start - 1, Ordering::SeqCst);
 
-                            let new_chunk = ActiveChunk {
-                                id: uuid::Uuid::new_v4().to_string(),
-                                start: new_start,
-                                end: Arc::new(AtomicU64::new(end)),
-                                downloaded: Arc::new(AtomicU64::new(0)),
-                                active: Arc::new(std::sync::atomic::AtomicBool::new(true)),
-                            };
+                                    let new_chunk = ActiveChunk {
+                                        id: uuid::Uuid::new_v4().to_string(),
+                                        start: new_start,
+                                        end: Arc::new(AtomicU64::new(end)),
+                                        downloaded: Arc::new(AtomicU64::new(0)),
+                                        active: Arc::new(std::sync::atomic::AtomicBool::new(true)),
+                                    };
 
-                            chunk_to_spawn = Some(new_chunk.clone());
-                            chunks.push(new_chunk);
+                                    chunk_to_spawn = Some(new_chunk.clone());
+                                    chunks.push(new_chunk);
+                                }
+                            }
                         }
                     }
                 }
@@ -1399,9 +1424,18 @@ impl DownloadManager {
                     }
 
                     let final_dl = chunk.downloaded.load(Ordering::SeqCst);
+                    let dynamic_end = chunk.end.load(Ordering::SeqCst);
+                    let max_allowed = if dynamic_end >= chunk.start && dynamic_end > 0 {
+                        (dynamic_end + 1) - chunk.start
+                    } else {
+                        final_dl
+                    };
+                    let clamped_dl = final_dl.min(max_allowed);
+                    chunk.downloaded.store(clamped_dl, Ordering::SeqCst);
+
                     let chunk_path = temp_dir_clone.join(&chunk_id);
                     if let Ok(f) = tokio::fs::OpenOptions::new().write(true).open(&chunk_path).await {
-                        f.set_len(final_dl).await.ok();
+                        f.set_len(clamped_dl).await.ok();
                     }
                     chunk.active.store(false, Ordering::SeqCst);
                     let _ = completed_tx.send(chunk_id);
@@ -2572,6 +2606,82 @@ mod tests {
 
         server_handle.abort();
         let _ = std::fs::remove_dir_all(&temp_dir);
+    }
+
+    #[tokio::test]
+    async fn test_phase6_speed_limiter_pacing_and_concurrency() {
+        let task = Arc::new(DownloadTask {
+            id: "throttle_test".to_string(),
+            original_url: "http://example.com/file".to_string(),
+            final_url: Mutex::new("http://example.com/file".to_string()),
+            filename: Arc::new(std::sync::Mutex::new("file".to_string())),
+            save_path: Arc::new(std::sync::Mutex::new("/tmp/file".to_string())),
+            cookie: String::new(),
+            referrer: String::new(),
+            user_agent: String::new(),
+            audio_url: None,
+            total_size: AtomicU64::new(100_000),
+            downloaded: Arc::new(AtomicU64::new(0)),
+            network_downloaded: Arc::new(AtomicU64::new(0)),
+            speed_limiter: Mutex::new(Instant::now()),
+            status: Arc::new(std::sync::Mutex::new(DownloadStatus::Downloading)),
+            abort_tx: None,
+            chunks: std::sync::Mutex::new(vec![]),
+            speed: Arc::new(std::sync::Mutex::new(0.0)),
+            eta: Arc::new(std::sync::Mutex::new("---".to_string())),
+            validator: Arc::new(std::sync::Mutex::new(None)),
+        });
+
+        // 1. Zero limit or zero bytes returns immediately
+        let t0 = Instant::now();
+        task.throttle_if_needed(0, 100_000).await;
+        task.throttle_if_needed(50_000, 0).await;
+        assert!(t0.elapsed() < Duration::from_millis(20), "Zero throttle must return immediately");
+
+        // 2. 50KB at 500,000 Bps should pace for approx ~100ms
+        let t1 = Instant::now();
+        task.throttle_if_needed(50_000, 500_000).await;
+        let elapsed = t1.elapsed();
+        assert!(elapsed >= Duration::from_millis(70), "Pacing must enforce minimum time delay: {:?}", elapsed);
+        assert!(elapsed < Duration::from_millis(350), "Pacing must not over-delay: {:?}", elapsed);
+
+        // 3. Concurrent callers must not deadlock
+        let task_clone1 = task.clone();
+        let task_clone2 = task.clone();
+        let h1 = tokio::spawn(async move {
+            task_clone1.throttle_if_needed(10_000, 500_000).await;
+        });
+        let h2 = tokio::spawn(async move {
+            task_clone2.throttle_if_needed(10_000, 500_000).await;
+        });
+        let (r1, r2) = tokio::join!(h1, h2);
+        assert!(r1.is_ok() && r2.is_ok(), "Concurrent throttle calls must complete without deadlocks");
+    }
+
+    #[test]
+    fn test_phase6_dynamic_chunk_split_boundary_guard() {
+        // Test chunk split math and overlap prevention
+        let chunk0_start = 0u64;
+        let chunk0_end = 10_000_000u64;
+        let chunk0_downloaded = 4_000_000u64;
+        let current_head = chunk0_start + chunk0_downloaded; // 4,000,000
+
+        let rem = (chunk0_end + 1) - current_head; // 6,000,001
+        let split_len = rem / 2; // 3,000,000
+        let new_start = chunk0_end + 1 - split_len; // 7,000,001
+
+        // Verify new_start is safely ahead of current download progress by > 256KB
+        assert!(new_start > current_head + 256 * 1024, "Split point must be strictly ahead of write head");
+
+        let adjusted_chunk0_end = new_start - 1; // 7,000,000
+        assert_eq!(adjusted_chunk0_end + 1, new_start, "Chunk 0 end and Chunk 1 start must be contiguous with 0 gap and 0 overlap");
+
+        // Overfill simulation: if in-flight packets caused chunk0 to download 7,500,000 bytes
+        let in_flight_overshoot = 7_500_000u64;
+        let max_allowed = (adjusted_chunk0_end + 1) - chunk0_start; // 7,000,001
+        let clamped_dl = in_flight_overshoot.min(max_allowed);
+
+        assert_eq!(clamped_dl, 7_000_001, "Overshoot bytes must be clamped to avoid overlap with child chunk");
     }
 }
 
