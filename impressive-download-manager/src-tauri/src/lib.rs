@@ -1,6 +1,7 @@
 mod engine;
 mod proxy;
 pub mod hls;
+pub mod mux;
 
 use std::sync::Arc;
 use tauri::{State, Manager};
@@ -28,6 +29,7 @@ async fn start_download(
     cookie: Option<String>,
     referrer: Option<String>,
     user_agent: Option<String>,
+    audio_url: Option<String>,
     manager: State<'_, Arc<DownloadManager>>,
 ) -> Result<String, String> {
     println!("[Tauri IPC] start_download called: {}", url);
@@ -39,6 +41,7 @@ async fn start_download(
             cookie.unwrap_or_default(),
             referrer.unwrap_or_default(),
             user_agent.unwrap_or_default(),
+            audio_url,
         )
         .await
 }
@@ -1022,6 +1025,8 @@ pub fn run() {
                                         mime: Option<String>,
                                         #[serde(alias = "userAgent")]
                                         user_agent: Option<String>,
+                                        #[serde(alias = "audioUrl")]
+                                        audio_url: Option<String>,
                                     }
 
                                     let body_clean = body.trim_end_matches('\0').trim();
@@ -1117,6 +1122,7 @@ pub fn run() {
                                                         cookie: payload.cookie.clone().unwrap_or_default(),
                                                         referrer: payload.referrer.clone().unwrap_or_default(),
                                                         user_agent: payload.user_agent.clone().unwrap_or_default(),
+                                                        audio_url: task.audio_url.clone(),
                                                         total_size: std::sync::atomic::AtomicU64::new(task.total_size.load(std::sync::atomic::Ordering::Relaxed)),
                                                         downloaded: task.downloaded.clone(),
                                                         network_downloaded: std::sync::Arc::new(std::sync::atomic::AtomicU64::new(task.downloaded.load(std::sync::atomic::Ordering::Relaxed))),
@@ -1159,13 +1165,14 @@ pub fn run() {
 
                                         // Popup-based flow: Spawn native popup-add window pre-filled with payload
                                         let add_url = format!(
-                                            "index.html#popup=add&url={}&filename={}&cookie={}&referrer={}&user_agent={}&size={}",
+                                            "index.html#popup=add&url={}&filename={}&cookie={}&referrer={}&user_agent={}&size={}&audio_url={}",
                                             urlencoding::encode(&target_download_url),
                                             urlencoding::encode(&filename),
                                             urlencoding::encode(&payload.cookie.unwrap_or_default()),
                                             urlencoding::encode(&payload.referrer.unwrap_or_default()),
                                             urlencoding::encode(&payload.user_agent.unwrap_or_default()),
-                                            total_size
+                                            total_size,
+                                            urlencoding::encode(&payload.audio_url.unwrap_or_default())
                                         );
                                         
                                         let _ = tauri::WebviewWindowBuilder::new(

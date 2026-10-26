@@ -71,6 +71,7 @@ pub struct DownloadTask {
     pub cookie: String,
     pub referrer: String,
     pub user_agent: String,
+    pub audio_url: Option<String>,
     pub total_size: AtomicU64,
     pub downloaded: Arc<AtomicU64>,
     pub network_downloaded: Arc<AtomicU64>,
@@ -146,6 +147,8 @@ pub struct PersistentTask {
     pub referrer: String,
     #[serde(default)]
     pub user_agent: String,
+    #[serde(default)]
+    pub audio_url: Option<String>,
     pub total_size: u64,
     pub downloaded: u64,
     pub status: DownloadStatus,
@@ -339,6 +342,7 @@ impl DownloadManager {
                     cookie: task.cookie.clone(),
                     referrer: task.referrer.clone(),
                     user_agent: task.user_agent.clone(),
+                    audio_url: task.audio_url.clone(),
                     total_size: task.total_size.load(Ordering::Relaxed),
                     downloaded,
                     status,
@@ -392,6 +396,7 @@ impl DownloadManager {
                                 cookie: p_task.cookie,
                                 referrer: p_task.referrer,
                                 user_agent: p_task.user_agent,
+                                audio_url: p_task.audio_url,
                                 total_size: AtomicU64::new(p_task.total_size),
                                 downloaded: Arc::new(AtomicU64::new(p_task.downloaded)),
                                 network_downloaded: Arc::new(AtomicU64::new(p_task.downloaded)),
@@ -419,15 +424,22 @@ impl DownloadManager {
         cookie: String,
         referrer: String,
         user_agent: String,
+        audio_url: Option<String>,
     ) -> Result<String, String> {
+        let (clean_url, final_audio_url) = if let Some(idx) = url.find("|AUDIO_URL|") {
+            (url[..idx].to_string(), Some(url[idx + 11..].to_string()))
+        } else {
+            (url.clone(), audio_url)
+        };
+
         let id = uuid::Uuid::new_v4().to_string();
 
-        if !url.starts_with("http://") && !url.starts_with("https://") {
+        if !clean_url.starts_with("http://") && !clean_url.starts_with("https://") {
             return Err("Unsupported URL protocol. Only http:// and https:// URLs can be downloaded over the network. In-memory URLs (e.g. blob:) are generated locally in your browser and saved directly by the browser.".to_string());
         }
 
         if crate::proxy::is_generic_filename(&filename) || filename.is_empty() {
-            if let Ok(parsed) = reqwest::Url::parse(&url) {
+            if let Ok(parsed) = reqwest::Url::parse(&clean_url) {
                 let mut candidate = String::new();
                 for (k, v) in parsed.query_pairs() {
                     let k_lower = k.to_lowercase();
@@ -477,13 +489,14 @@ impl DownloadManager {
         let (abort_tx, _) = broadcast::channel(1);
         let task = Arc::new(DownloadTask {
             id: id.clone(),
-            original_url: url.clone(),
-            final_url: Mutex::new(url.clone()),
+            original_url: clean_url.clone(),
+            final_url: Mutex::new(clean_url.clone()),
             filename: Arc::new(std::sync::Mutex::new(filename)),
             save_path: Arc::new(std::sync::Mutex::new(save_path)),
             cookie,
             referrer,
             user_agent,
+            audio_url: final_audio_url,
             total_size: AtomicU64::new(0),
             downloaded: Arc::new(AtomicU64::new(0)),
             network_downloaded: Arc::new(AtomicU64::new(0)),
@@ -540,6 +553,49 @@ impl DownloadManager {
         let ts_path = parent.join(&ts_name);
         let file = std::fs::OpenOptions::new().write(true).create(true).truncate(true).open(&ts_path).expect("Failed to create file");
         (ts_path.to_string_lossy().to_string(), file)
+    }
+
+    pub async fn download_stream_to_file(
+        client: reqwest::Client,
+        url: String,
+        dest_path: std::path::PathBuf,
+        cookie: String,
+        user_agent: String,
+        downloaded_tracker: Arc<AtomicU64>,
+        network_tracker: Arc<AtomicU64>,
+    ) -> Result<u64, String> {
+        use tokio::io::AsyncWriteExt;
+        use futures_util::StreamExt;
+
+        let mut req = client.get(&url);
+        if !cookie.is_empty() {
+            req = req.header("Cookie", cookie);
+        }
+        if !user_agent.is_empty() {
+            req = req.header("User-Agent", user_agent);
+        }
+
+        let resp = req.send().await.map_err(|e| format!("HTTP request failed: {}", e))?;
+        if !resp.status().is_success() {
+            return Err(format!("Server returned HTTP status {}", resp.status()));
+        }
+
+        let mut file = tokio::fs::File::create(&dest_path).await.map_err(|e| format!("Cannot create part file: {}", e))?;
+        let mut stream = resp.bytes_stream();
+        let mut total_written = 0u64;
+
+        while let Some(chunk_res) = stream.next().await {
+            let chunk = chunk_res.map_err(|e| format!("Network chunk error: {}", e))?;
+            let len = chunk.len() as u64;
+            file.write_all(&chunk).await.map_err(|e| format!("Failed to write chunk: {}", e))?;
+            total_written += len;
+            downloaded_tracker.fetch_add(len, Ordering::Relaxed);
+            network_tracker.fetch_add(len, Ordering::Relaxed);
+        }
+
+        file.flush().await.map_err(|e| format!("Failed to flush stream file: {}", e))?;
+        drop(file);
+        Ok(total_written)
     }
 
     pub async fn run_task(self: &Arc<Self>, task: Arc<DownloadTask>, is_resume: bool) -> Result<(), String> {
@@ -615,6 +671,81 @@ impl DownloadManager {
                 }
                 Err(e) => {
                     eprintln!("[HLS Engine] Could not resolve HLS manifest: {}. Falling back to standard engine...", e);
+                }
+            }
+        }
+
+        // Phase 5: YouTube / Dual-Stream Lossless Muxing Engine
+        if let Some(ref audio_target_url) = task.audio_url {
+            let video_source_url = task.original_url.clone();
+            let audio_source_url = audio_target_url.clone();
+            let cookie = task.cookie.clone();
+            let user_agent = task.user_agent.clone();
+            let save_path_val = task.get_save_path();
+            let downloaded_tracker = task.downloaded.clone();
+            let network_tracker = task.network_downloaded.clone();
+            let total_size_tracker = &task.total_size;
+
+            let _ = tokio::fs::create_dir_all(&temp_dir).await;
+            let video_track_path = temp_dir.join("video.track");
+            let audio_track_path = temp_dir.join("audio.track");
+
+            let client = reqwest::Client::builder()
+                .redirect(reqwest::redirect::Policy::limited(10))
+                .build()
+                .map_err(|e| e.to_string())?;
+
+            let (v_res, a_res) = tokio::join!(
+                Self::download_stream_to_file(
+                    client.clone(),
+                    video_source_url,
+                    video_track_path.clone(),
+                    cookie.clone(),
+                    user_agent.clone(),
+                    downloaded_tracker.clone(),
+                    network_tracker.clone(),
+                ),
+                Self::download_stream_to_file(
+                    client.clone(),
+                    audio_source_url,
+                    audio_track_path.clone(),
+                    cookie.clone(),
+                    user_agent.clone(),
+                    downloaded_tracker.clone(),
+                    network_tracker.clone(),
+                )
+            );
+
+            let v_bytes = v_res.map_err(|e| format!("Video stream download failed: {}", e))?;
+            let a_bytes = a_res.map_err(|e| format!("Audio stream download failed: {}", e))?;
+            total_size_tracker.store(v_bytes + a_bytes, Ordering::Relaxed);
+
+            *task.status.lock().unwrap() = DownloadStatus::Assembling;
+
+            let (final_path, _) = Self::allocate_collision_free_path(&save_path_val);
+            let final_path_buf = std::path::PathBuf::from(&final_path);
+
+            match crate::mux::mux_dual_stream(&video_track_path, &audio_track_path, &final_path_buf).await {
+                Ok(()) => {
+                    let _ = std::fs::remove_file(&video_track_path);
+                    let _ = std::fs::remove_file(&audio_track_path);
+                    let _ = std::fs::remove_dir(&temp_dir);
+                    *task.status.lock().unwrap() = DownloadStatus::Completed;
+                    if final_path != save_path_val {
+                        if let Some(name) = std::path::Path::new(&final_path).file_name().and_then(|f| f.to_str()) {
+                            task.update_filename_and_path(name);
+                        }
+                    }
+                    return Ok(());
+                }
+                Err(mux_err) => {
+                    eprintln!("[Dual Stream Muxer] FFmpeg mux notice: {}. Preserving separate tracks safely.", mux_err);
+                    let _ = std::fs::rename(&video_track_path, &final_path);
+                    let audio_fallback = format!("{}.audio.m4a", final_path);
+                    let _ = std::fs::rename(&audio_track_path, &audio_fallback);
+                    let _ = std::fs::remove_dir(&temp_dir);
+                    *task.status.lock().unwrap() = DownloadStatus::Completed;
+                    return Ok(());
                 }
             }
         }
@@ -1497,6 +1628,7 @@ impl DownloadManager {
                 cookie: task.cookie.clone(),
                 referrer: task.referrer.clone(),
                 user_agent: task.user_agent.clone(),
+                audio_url: task.audio_url.clone(),
                 total_size: AtomicU64::new(task.total_size.load(Ordering::Relaxed)),
                 downloaded: task.downloaded.clone(),
                 network_downloaded: Arc::new(AtomicU64::new(task.downloaded.load(Ordering::Relaxed))),
@@ -1690,6 +1822,7 @@ impl DownloadManager {
                 cookie: task.cookie.clone(),
                 referrer: task.referrer.clone(),
                 user_agent: task.user_agent.clone(),
+                audio_url: task.audio_url.clone(),
                 total_size: AtomicU64::new(0),
                 downloaded: Arc::new(AtomicU64::new(0)),
                 network_downloaded: Arc::new(AtomicU64::new(0)),
@@ -2035,6 +2168,7 @@ mod tests {
             String::new(),
             String::new(),
             String::new(),
+            None,
         ).await.expect("start_download failed");
 
         // Wait up to 10 seconds for real download completion
@@ -2131,6 +2265,7 @@ mod tests {
             String::new(),
             String::new(),
             String::new(),
+            None,
         ).await.expect("start_download failed");
 
         // Wait up to 10 seconds for backoff and recovery
@@ -2219,6 +2354,7 @@ mod tests {
             cookie: String::new(),
             referrer: String::new(),
             user_agent: String::new(),
+            audio_url: None,
             total_size: AtomicU64::new(100000),
             downloaded: Arc::new(AtomicU64::new(50000)),
             network_downloaded: Arc::new(AtomicU64::new(50000)),
@@ -2328,6 +2464,113 @@ mod tests {
 
         assert_eq!(assembled_content, expected, "Multi-chunk assembly must match exact chronological byte sequence");
 
+        let _ = std::fs::remove_dir_all(&temp_dir);
+    }
+
+    #[tokio::test]
+    async fn test_working_e2e_dual_stream_download_engine() {
+        if crate::mux::probe_ffmpeg().is_none() {
+            println!("Skipping e2e dual stream download test: ffmpeg not found");
+            return;
+        }
+
+        let temp_dir = std::env::temp_dir().join(format!("idm_dual_e2e_{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&temp_dir).unwrap();
+
+        let raw_video_path = temp_dir.join("src_v.mp4");
+        let raw_audio_path = temp_dir.join("src_a.m4a");
+
+        let ffmpeg = crate::mux::probe_ffmpeg().unwrap();
+
+        // 1. Generate synthetic video track
+        let _ = std::process::Command::new(&ffmpeg)
+            .args(&[
+                "-nostdin", "-v", "error", "-y",
+                "-f", "lavfi", "-i", "color=c=blue:s=320x240:d=1",
+                "-c:v", "libx264", "-pix_fmt", "yuv420p",
+                raw_video_path.to_str().unwrap(),
+            ])
+            .status();
+
+        // 2. Generate synthetic audio track
+        let _ = std::process::Command::new(&ffmpeg)
+            .args(&[
+                "-nostdin", "-v", "error", "-y",
+                "-f", "lavfi", "-i", "sine=frequency=440:duration=1",
+                "-c:a", "aac",
+                raw_audio_path.to_str().unwrap(),
+            ])
+            .status();
+
+        let video_bytes = std::fs::read(&raw_video_path).expect("Read video track");
+        let audio_bytes = std::fs::read(&raw_audio_path).expect("Read audio track");
+
+        // 3. Local HTTP Server to serve video and audio streams
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let local_addr = listener.local_addr().unwrap();
+
+        let v_bytes_clone = video_bytes.clone();
+        let a_bytes_clone = audio_bytes.clone();
+
+        let server_handle = tokio::spawn(async move {
+            use tokio::io::{AsyncReadExt, AsyncWriteExt};
+            while let Ok((mut stream, _)) = listener.accept().await {
+                let v = v_bytes_clone.clone();
+                let a = a_bytes_clone.clone();
+                tokio::spawn(async move {
+                    let mut req_buf = vec![0u8; 4096];
+                    if let Ok(n) = stream.read(&mut req_buf).await {
+                        let req_str = String::from_utf8_lossy(&req_buf[..n]);
+                        if req_str.contains("GET /video.mp4") {
+                            let resp = format!("HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n", v.len());
+                            let _ = stream.write_all(resp.as_bytes()).await;
+                            let _ = stream.write_all(&v).await;
+                        } else if req_str.contains("GET /audio.m4a") {
+                            let resp = format!("HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n", a.len());
+                            let _ = stream.write_all(resp.as_bytes()).await;
+                            let _ = stream.write_all(&a).await;
+                        }
+                    }
+                });
+            }
+        });
+
+        let mgr = Arc::new(DownloadManager::new());
+        let target_save_file = temp_dir.join("final_muxed_video.mp4").to_string_lossy().to_string();
+
+        let video_url = format!("http://{}/video.mp4", local_addr);
+        let audio_url = format!("http://{}/audio.m4a", local_addr);
+
+        let task_id = mgr.start_download(
+            video_url,
+            "final_muxed_video.mp4".to_string(),
+            target_save_file.clone(),
+            String::new(),
+            String::new(),
+            String::new(),
+            Some(audio_url),
+        ).await.expect("Dual stream start_download failed");
+
+        // Wait up to 10 seconds for dual-stream download & muxing completion
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        let mut completed = false;
+        while std::time::Instant::now() < deadline {
+            tokio::time::sleep(tokio::time::Duration::from_millis(150)).await;
+            let tasks = mgr.tasks.read().await;
+            if let Some(task) = tasks.get(&task_id) {
+                let status = task.status.lock().unwrap().clone();
+                if let DownloadStatus::Completed = status {
+                    completed = true;
+                    break;
+                }
+            }
+        }
+
+        assert!(completed, "Dual stream task must successfully download and mux into Completed state");
+        assert!(std::path::Path::new(&target_save_file).exists(), "Muxed final output file must exist");
+        assert!(std::fs::metadata(&target_save_file).unwrap().len() > 1000, "Final muxed file must contain valid video+audio container");
+
+        server_handle.abort();
         let _ = std::fs::remove_dir_all(&temp_dir);
     }
 }

@@ -1,7 +1,7 @@
 // Service worker for Impressive Download Manager Extension
 if (typeof importScripts === "function") {
   try {
-    importScripts("hls.js", "media-choices.js");
+    importScripts("hls.js", "media-choices.js", "youtube-media.js");
   } catch (e) {}
 }
 
@@ -16,6 +16,8 @@ let desktopAppInterceptionDisabled = false;
 const handledDownloadIds = new Set();
 const webRequestCapturedUrls = new Map(); // filename -> direct HTTPS URL
 const capturedMediaByTab = new Map(); // tabId -> media items
+const youtubeDataByTab = new Map(); // tabId -> sanitized player response
+const observedVideoUrlsByTab = new Map(); // tabId -> list of videoplayback URLs
 
 function rememberMediaForTab(tabId, items) {
   if (!tabId || !Array.isArray(items)) return;
@@ -34,6 +36,8 @@ function rememberMediaForTab(tabId, items) {
 
 chrome.tabs.onRemoved?.addListener((tabId) => {
   capturedMediaByTab.delete(tabId);
+  youtubeDataByTab.delete(tabId);
+  observedVideoUrlsByTab.delete(tabId);
 });
 
 // Check desktop app interception setting every 4 seconds
@@ -190,6 +194,13 @@ if (chrome.webRequest && chrome.webRequest.onResponseStarted) {
             title = t?.title || "";
           } catch {}
           rememberMediaForTab(details.tabId, [{ url: u, title, format: "MP4" }]);
+        } else if (u.includes("googlevideo.com/videoplayback") && details.tabId >= 0) {
+          const list = observedVideoUrlsByTab.get(details.tabId) || [];
+          if (!list.includes(u)) {
+            list.push(u);
+            if (list.length > 50) list.shift();
+            observedVideoUrlsByTab.set(details.tabId, list);
+          }
         }
       },
       { urls: ["http://*/*", "https://*/*"] }
@@ -409,6 +420,22 @@ function extractFilename(url) {
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   const tabId = sender?.tab?.id;
 
+  if (message.action === "playerResponse" && tabId) {
+    if (globalThis.youtubeMedia) {
+      const clean = globalThis.youtubeMedia.playerData(message.data);
+      if (clean) {
+        youtubeDataByTab.set(tabId, clean);
+        const observed = observedVideoUrlsByTab.get(tabId) || [];
+        const choices = globalThis.youtubeMedia.choices(clean, observed);
+        if (choices.length > 0) {
+          rememberMediaForTab(tabId, choices);
+        }
+      }
+    }
+    sendResponse({ ok: true });
+    return true;
+  }
+
   if (message.action === "remember") {
     if (tabId && Array.isArray(message.items)) {
       rememberMediaForTab(tabId, message.items);
@@ -418,7 +445,15 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   }
 
   if (message.action === "listForFrame") {
-    const list = (tabId ? capturedMediaByTab.get(tabId) : []) || [];
+    let list = (tabId ? capturedMediaByTab.get(tabId) : []) || [];
+    if (tabId && youtubeDataByTab.has(tabId) && globalThis.youtubeMedia) {
+      const clean = youtubeDataByTab.get(tabId);
+      const observed = observedVideoUrlsByTab.get(tabId) || [];
+      const ytChoices = globalThis.youtubeMedia.choices(clean, observed);
+      if (ytChoices.length > 0) {
+        list = [...ytChoices, ...list.filter(i => i.provider !== "youtube")];
+      }
+    }
     sendResponse({ ok: true, items: list });
     return true;
   }
@@ -434,6 +469,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       const cookies = await getCookiesForUrl(targetUrl, sender?.tab?.url);
       const payload = {
         url: targetUrl,
+        audio_url: item.audioUrl || undefined,
         filename: item.filename || extractFilename(targetUrl),
         size: item.size || 0,
         mime: item.mime || "",

@@ -79,6 +79,7 @@ function App() {
   const [popupTaskId, setPopupTaskId] = useState<string | null>(null);
   const [popupProgress, setPopupProgress] = useState<DownloadProgress | null>(null);
   const [popupSize, setPopupSize] = useState("0");
+  const [popupAudioUrl, setPopupAudioUrl] = useState("");
 
   // Main Dashboard State
   const [activeCategory, setActiveCategory] = useState("all");
@@ -547,6 +548,7 @@ function App() {
     const userAgent = searchParams.get("user_agent") || hashParams.get("user_agent") || "";
     const size = searchParams.get("size") || hashParams.get("size") || "0";
     const taskId = searchParams.get("id") || hashParams.get("id") || null;
+    const audioUrl = searchParams.get("audio_url") || hashParams.get("audio_url") || "";
 
     // Fetch OS default download directory if no custom saved path exists
     const savedDir = localStorage.getItem("default_save_dir");
@@ -634,6 +636,7 @@ function App() {
       setPopupUserAgent(userAgent);
       setPopupTaskId(taskId);
       setPopupSize(size);
+      setPopupAudioUrl(audioUrl);
 
       // Fetch progress state immediately from Rust backend to prevent Connecting... freeze
       if (mode === "progress" && taskId) {
@@ -872,7 +875,8 @@ function App() {
         savePath: finalSavePath,
         cookie: popupCookie || "",
         referrer: popupReferrer || "",
-        userAgent: popupUserAgent || ""
+        userAgent: popupUserAgent || "",
+        audioUrl: popupAudioUrl || undefined
       });
 
       // Open standalone Progress window (Popup 2), which closes this Add window

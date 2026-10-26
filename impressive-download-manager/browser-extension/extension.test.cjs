@@ -122,8 +122,150 @@ test('Phase 3 Functionality: Extension Manifest Structure', () => {
   assert(manifest.permissions.includes('webRequest'));
   assert(manifest.permissions.includes('cookies'));
 
-  const contentScripts = manifest.content_scripts[0];
-  assert(contentScripts.js.includes('media-choices.js'));
-  assert(contentScripts.js.includes('hls.js'));
-  assert(contentScripts.js.includes('content.js'));
+  // Content script for all URLs
+  const genericScript = manifest.content_scripts.find(c => c.matches.includes('<all_urls>'));
+  assert(genericScript, 'Must register generic content script');
+  assert(genericScript.js.includes('media-choices.js'));
+  assert(genericScript.js.includes('hls.js'));
+  assert(genericScript.js.includes('content.js'));
+
+  // Phase 5: YouTube MAIN world and relay content scripts
+  const ytMain = manifest.content_scripts.find(c => c.world === 'MAIN');
+  assert(ytMain, 'Must have MAIN world content script for YouTube');
+  assert(ytMain.js.includes('youtube-media.js'));
+  assert(ytMain.js.includes('youtube-page.js'));
+
+  const ytRelay = manifest.content_scripts.find(c => c.js.includes('youtube-relay.js'));
+  assert(ytRelay, 'Must have YouTube relay script');
 });
+
+// =========================================================================
+// Phase 5 Security & Real-World Functional Tests
+// =========================================================================
+
+require('./youtube-media.js');
+const { youtubeMedia } = globalThis;
+
+test('Phase 5 Security: YouTube Media URL Validation & Range Stripping', () => {
+  assert(youtubeMedia, 'youtubeMedia must be exported');
+
+  // 1. Valid GoogleVideo URL
+  const validUrl = 'https://rr1---sn-4g5ednks.googlevideo.com/videoplayback?expire=1730000000&ei=xyz&ip=1.2.3.4&id=o-ABC&itag=137&range=0-1048576';
+  const sanitized = youtubeMedia.mediaUrl(validUrl);
+  assert(sanitized, 'Valid googlevideo URL must be accepted');
+  assert(!sanitized.includes('range='), 'Stand-alone range parameter must be stripped to download whole file');
+
+  // 2. Reject domain spoofing / phishing attempts
+  assert.equal(youtubeMedia.mediaUrl('https://fake-googlevideo.com/videoplayback'), null, 'Spoofed domain must be rejected');
+  assert.equal(youtubeMedia.mediaUrl('https://googlevideo.com.attacker.com/videoplayback'), null, 'Subdomain hijack must be rejected');
+  assert.equal(youtubeMedia.mediaUrl('http://googlevideo.com/videoplayback'), null, 'Insecure HTTP must be rejected');
+
+  // 3. Reject credentials in URL
+  assert.equal(youtubeMedia.mediaUrl('https://admin:pass@googlevideo.com/videoplayback'), null, 'Embedded credentials must be rejected');
+
+  // 4. Reject live broadcast streams
+  assert.equal(youtubeMedia.mediaUrl('https://googlevideo.com/videoplayback?source=yt_live_broadcast'), null, 'Live broadcast must be rejected');
+});
+
+test('Phase 5 Security: YouTube Player Data Sanitization & Live Stream Guard', () => {
+  // 1. Malicious / invalid video ID
+  const invalidPlayer = {
+    videoDetails: { videoId: '../../evil/hack', title: 'Hacked Video' },
+    streamingData: { formats: [] }
+  };
+  assert.equal(youtubeMedia.playerData(invalidPlayer), null, 'Invalid video ID must be rejected');
+
+  // 2. Live stream content
+  const livePlayer = {
+    videoDetails: { videoId: 'dQw4w9WgXcQ', title: 'Live Rickroll', isLiveContent: true },
+    streamingData: { formats: [] }
+  };
+  assert.equal(youtubeMedia.playerData(livePlayer), null, 'Live stream videoDetails must be rejected');
+
+  // 3. File name traversal and invalid characters in title
+  const rawPlayer = {
+    videoDetails: { videoId: 'dQw4w9WgXcQ', title: 'My Video: Episode 1 / <Special> *Edition* ?' },
+    streamingData: {
+      formats: [
+        {
+          itag: 18,
+          url: 'https://rr1---sn-4g5ednks.googlevideo.com/videoplayback?itag=18&expire=' + (Math.floor(Date.now() / 1000) + 3600),
+          mimeType: 'video/mp4; codecs="avc1.42001E, mp4a.40.2"',
+          width: 640,
+          height: 360,
+          bitrate: 500000
+        }
+      ]
+    }
+  };
+
+  const parsed = youtubeMedia.playerData(rawPlayer);
+  assert(parsed, 'Valid player response must parse');
+  const choices = youtubeMedia.choices(parsed);
+  assert(choices.length > 0, 'Must produce choices');
+  assert(!/[<>:"/\\|?*]/.test(choices[0].filename), 'Filename must be sanitized of dangerous path characters');
+});
+
+test('Phase 5 Functionality: YouTube Adaptive 1080p Video + Audio Pairing', () => {
+  const futureExpire = Math.floor(Date.now() / 1000) + 7200;
+  const mockPlayer = {
+    videoDetails: {
+      videoId: 'abcdef12345',
+      title: 'Awesome 4K Nature Documentary'
+    },
+    streamingData: {
+      adaptiveFormats: [
+        // 1080p 60fps video-only stream (no audio)
+        {
+          itag: 299,
+          url: `https://rr2---sn-4g5ednks.googlevideo.com/videoplayback?id=o-123&itag=299&expire=${futureExpire}`,
+          mimeType: 'video/mp4; codecs="avc1.64002a"',
+          width: 1920,
+          height: 1080,
+          fps: 60,
+          bitrate: 5500000
+        },
+        // 720p video-only stream
+        {
+          itag: 136,
+          url: `https://rr2---sn-4g5ednks.googlevideo.com/videoplayback?id=o-123&itag=136&expire=${futureExpire}`,
+          mimeType: 'video/mp4; codecs="avc1.4d401f"',
+          width: 1280,
+          height: 720,
+          fps: 30,
+          bitrate: 2200000
+        },
+        // High quality AAC audio stream
+        {
+          itag: 140,
+          url: `https://rr2---sn-4g5ednks.googlevideo.com/videoplayback?id=o-123&itag=140&expire=${futureExpire}`,
+          mimeType: 'audio/mp4; codecs="mp4a.40.2"',
+          bitrate: 128000,
+          audioQuality: 'AUDIO_QUALITY_MEDIUM'
+        }
+      ]
+    }
+  };
+
+  const data = youtubeMedia.playerData(mockPlayer);
+  assert(data, 'Player data must be successfully parsed');
+
+  const choices = youtubeMedia.choices(data);
+  assert.equal(choices.length, 3, 'Must generate 1080p, 720p, and Audio-only choices');
+
+  // Verify 1080p choice is paired with audio track
+  const choice1080p = choices.find(c => c.quality.includes('1080p'));
+  assert(choice1080p, 'Must include 1080p 60fps choice');
+  assert.equal(choice1080p.quality, '1080p 60fps');
+  assert.equal(choice1080p.outputFormat, 'mp4');
+  assert.equal(choice1080p.audioState, 'Video + audio');
+  assert(choice1080p.audioUrl, 'Adaptive 1080p stream must be paired with audioUrl');
+  assert(choice1080p.audioUrl.includes('itag=140'), 'Audio URL must be the itag 140 track');
+
+  // Verify Audio-only MP3 choice
+  const audioChoice = choices.find(c => c.format === 'MP3');
+  assert(audioChoice, 'Must include MP3 audio option');
+  assert.equal(audioChoice.audioState, 'Audio only');
+  assert(audioChoice.filename.endsWith('.mp3'), 'MP3 choice must have .mp3 filename');
+});
+
