@@ -226,12 +226,6 @@ async function interceptDownloadItem(item) {
     return false;
   }
 
-  // Reject streaming media chunks / fragments (.m4s, .ts, .aac, .vtt)
-  if (isFragment(url) || isFragment(targetRealUrl) || isFragment(finalUrl)) {
-    console.log("[Extension] Ignored streaming media chunk fragment:", targetRealUrl);
-    return false;
-  }
-
   const mime = item.mime || "";
   const filenameStr = item.filename ? item.filename.replace(/^.*[\\\/]/, "") : "";
   const fileSize = (item.fileSize && item.fileSize > 0) ? item.fileSize : (item.totalBytes && item.totalBytes > 0 ? item.totalBytes : 0);
@@ -241,6 +235,12 @@ async function interceptDownloadItem(item) {
   let targetRealUrl = directUrlSignal || finalUrl;
   if ((url.includes("sourceforge.net") || targetRealUrl.includes("sourceforge.net")) && url.includes("/project/")) {
     targetRealUrl = url;
+  }
+
+  // Reject streaming media chunks / fragments (.m4s, .ts, .aac, .vtt)
+  if (isFragment(url) || isFragment(targetRealUrl) || isFragment(finalUrl)) {
+    console.log("[Extension] Ignored streaming media chunk fragment:", targetRealUrl);
+    return false;
   }
 
   // Reject HTML web pages and redirector landing URLs strictly
@@ -264,8 +264,9 @@ async function interceptDownloadItem(item) {
     /\.(run|exe|zip|deb|dmg|msi|tar|gz|iso|apk|appimage|7z|rar|bz2|xz|pdf|docx?|xlsx?|pptx?|mp4|mkv|webm|mp3|wav|flac|bin|pkg|csv|epub|mobi)$/i.test(targetRealUrl);
   const isNonTextMime = mime && !mime.startsWith("text/");
   const hasSubstantialSize = fileSize >= 1024 * 1024;
+  const hasDownloadExt = /\.[a-z0-9]{2,8}$/i.test(cleanFilename) && !/\.(html?|php|asp|jsp|cgi)$/i.test(cleanFilename);
 
-  const isRealFile = (hasSubstantialSize || isNonTextMime || isBinaryExt);
+  const isRealFile = (hasSubstantialSize || isNonTextMime || isBinaryExt || hasDownloadExt);
 
   if (isRealFile) {
     let tabUrl = "";
@@ -317,9 +318,16 @@ async function interceptDownloadItem(item) {
 if (chrome.downloads && chrome.downloads.onDeterminingFilename) {
   chrome.downloads.onDeterminingFilename.addListener((item, suggest) => {
     (async () => {
-      const intercepted = await interceptDownloadItem(item);
-      if (!intercepted && typeof suggest === "function") {
-        suggest();
+      try {
+        const intercepted = await interceptDownloadItem(item);
+        if (!intercepted && typeof suggest === "function") {
+          suggest();
+        }
+      } catch (err) {
+        console.error("[Extension] Error during download interception:", err);
+        if (typeof suggest === "function") {
+          suggest();
+        }
       }
     })();
     return true;
@@ -359,7 +367,7 @@ function sendViaNativeHost(payload) {
   });
 }
 
-// Helper to send payloads to Tauri backend (prioritizing Native Messaging, fallback to port 9600)
+// Helper to send payloads to Tauri backend (fast HTTP daemon first, Native Messaging fallback)
 async function sendToDesktopApp(payload) {
   const url = payload.url;
   const now = Date.now();
@@ -375,23 +383,11 @@ async function sendToDesktopApp(payload) {
     }
   }
 
-  // 1. Prioritize Native Messaging Host (works even if desktop app was closed)
-  try {
-    const nativeResult = await sendViaNativeHost(payload);
-    if (nativeResult && nativeResult.ok) {
-      recentInterceptions.set(url, now);
-      console.log("Native messaging host successfully accepted download:", nativeResult);
-      return true;
-    }
-  } catch (nativeErr) {
-    console.info("Native messaging host inactive or unreachable (" + nativeErr.message + "). Falling back to HTTP daemon...");
-  }
-
-  // 2. HTTP Port 9600 Fallback
+  // 1. Fast path: Direct HTTP port 9600 (instant < 2ms when IDM is running)
   for (let attempt = 1; attempt <= 2; attempt++) {
     try {
       const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), 1500);
+      const timeoutId = setTimeout(() => controller.abort(), 1200);
 
       const response = await fetch(`http://127.0.0.1:${PORT}/download`, {
         method: "POST",
@@ -413,19 +409,30 @@ async function sendToDesktopApp(payload) {
         console.log("Download interception is toggled OFF in desktop app settings.");
         return false;
       }
-    } catch (err) {
+    } catch (httpErr) {
+      // If port 9600 failed on first attempt, try native messaging or protocol wakeup before retry
       if (attempt === 1) {
-        console.warn("Tauri backend offline on port 9600. Trying protocol wakeup...");
+        console.info("Port 9600 unreachable (" + httpErr.message + "). Trying Native Messaging Host...");
         try {
-          chrome.tabs.create({ url: "idm://wakeup", active: false }, (tab) => {
-            if (tab && tab.id) {
-              setTimeout(() => {
-                chrome.tabs.remove(tab.id, () => { });
-              }, 400);
-            }
-          });
-        } catch (e) { }
-        await new Promise((r) => setTimeout(r, 800));
+          const nativeResult = await sendViaNativeHost(payload);
+          if (nativeResult && nativeResult.ok) {
+            recentInterceptions.set(url, now);
+            console.log("Native messaging host successfully accepted download:", nativeResult);
+            return true;
+          }
+        } catch (nativeErr) {
+          console.info("Native messaging host inactive (" + nativeErr.message + "). Trying protocol wakeup...");
+          try {
+            chrome.tabs.create({ url: "idm://wakeup", active: false }, (tab) => {
+              if (tab && tab.id) {
+                setTimeout(() => {
+                  chrome.tabs.remove(tab.id, () => { });
+                }, 400);
+              }
+            });
+          } catch (e) { }
+          await new Promise((r) => setTimeout(r, 600));
+        }
       }
     }
   }

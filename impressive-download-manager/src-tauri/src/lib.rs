@@ -1154,13 +1154,20 @@ pub fn run() {
                                         .center()
                                         .build();
                                         
-                                        let response = "HTTP/1.1 200 OK\r\n\
-                                                        Access-Control-Allow-Origin: *\r\n\
-                                                        Access-Control-Allow-Methods: POST, OPTIONS\r\n\
-                                                        Access-Control-Allow-Headers: Content-Type\r\n\
-                                                        Content-Type: application/json\r\n\r\n\
-                                                        {\"status\":\"ok\"}";
+                                        let body = "{\"status\":\"ok\"}";
+                                        let response = format!(
+                                            "HTTP/1.1 200 OK\r\n\
+                                             Access-Control-Allow-Origin: *\r\n\
+                                             Access-Control-Allow-Methods: POST, OPTIONS\r\n\
+                                             Access-Control-Allow-Headers: Content-Type\r\n\
+                                             Content-Type: application/json\r\n\
+                                             Content-Length: {}\r\n\
+                                             Connection: close\r\n\r\n{}",
+                                            body.len(),
+                                            body
+                                        );
                                         let _ = stream.write_all(response.as_bytes()).await;
+                                        let _ = stream.flush().await;
                                         return;
                                     }
                                 }

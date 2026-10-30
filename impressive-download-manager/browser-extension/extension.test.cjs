@@ -315,4 +315,29 @@ test('Phase 8 Functionality: Safe Download Cancellation Logic', async () => {
   );
 });
 
+test('Phase 8 Reliability: background.js Interception Execution & No TDZ ReferenceErrors', () => {
+  const bgJs = fs.readFileSync(path.join(__dirname, 'background.js'), 'utf8');
+
+  // Verify JavaScript syntax by compiling
+  assert.doesNotThrow(() => {
+    new Function(bgJs);
+  }, 'background.js must have valid JavaScript syntax');
+
+  // Verify targetRealUrl is defined BEFORE any isFragment calls inside interceptDownloadItem
+  const interceptFnMatch = bgJs.match(/async function interceptDownloadItem\([\s\S]*?\n\}/);
+  assert(interceptFnMatch, 'interceptDownloadItem must be defined in background.js');
+
+  const fnBody = interceptFnMatch[0];
+  const targetRealUrlDeclIdx = fnBody.indexOf('let targetRealUrl');
+  const isFragmentCheckIdx = fnBody.indexOf('isFragment(targetRealUrl)');
+
+  assert(targetRealUrlDeclIdx !== -1, 'targetRealUrl must be declared');
+  assert(isFragmentCheckIdx !== -1, 'isFragment(targetRealUrl) must exist');
+  assert(
+    targetRealUrlDeclIdx < isFragmentCheckIdx,
+    'targetRealUrl MUST be declared before isFragment(targetRealUrl) to avoid TDZ ReferenceError!'
+  );
+});
+
+
 

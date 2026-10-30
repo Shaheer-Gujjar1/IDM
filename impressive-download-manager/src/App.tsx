@@ -30,7 +30,10 @@ import {
   Sun,
   Laptop,
   Rocket,
-  Terminal
+  Terminal,
+  Folder,
+  AlertTriangle,
+  AlertCircle
 } from "lucide-react";
 import { listen } from "@tauri-apps/api/event";
 import { invoke } from "@tauri-apps/api/core";
@@ -54,6 +57,7 @@ interface DownloadProgress {
   file_exists?: boolean;
   speed_limited?: boolean;
   category?: string;
+  added_at?: number;
 }
 
 interface PreflightProbeResult {
@@ -101,6 +105,63 @@ const saveCategoryFolder = (cat: string, folder: string) => {
   }
 };
 
+const getOrAssignTaskTimestamp = (id: string, indexFallback: number = 0): number => {
+  try {
+    const raw = localStorage.getItem("idm_task_timestamps");
+    const map: Record<string, number> = raw ? JSON.parse(raw) : {};
+    if (map[id]) {
+      return map[id];
+    }
+    const ts = Date.now() - (indexFallback * 1000);
+    map[id] = ts;
+    localStorage.setItem("idm_task_timestamps", JSON.stringify(map));
+    return ts;
+  } catch {
+    return Date.now();
+  }
+};
+
+const recordTaskTimestamp = (id: string, timestamp: number = Date.now()): void => {
+  try {
+    const raw = localStorage.getItem("idm_task_timestamps");
+    const map: Record<string, number> = raw ? JSON.parse(raw) : {};
+    map[id] = timestamp;
+    localStorage.setItem("idm_task_timestamps", JSON.stringify(map));
+  } catch {
+    // Ignore storage errors
+  }
+};
+
+const syncTimestampsAndSetDownloads = (
+  list: DownloadProgress[],
+  setDownloads: React.Dispatch<React.SetStateAction<DownloadProgress[]>>
+) => {
+  try {
+    const raw = localStorage.getItem("idm_task_timestamps");
+    const map: Record<string, number> = raw ? JSON.parse(raw) : {};
+    let changed = false;
+    const baseNow = Date.now();
+    list.forEach((item, idx) => {
+      if (!map[item.id]) {
+        map[item.id] = baseNow - (idx * 1000);
+        changed = true;
+      }
+    });
+    if (changed) {
+      localStorage.setItem("idm_task_timestamps", JSON.stringify(map));
+    }
+    const withTimestamps = list.map((item) => ({
+      ...item,
+      added_at: map[item.id] || baseNow,
+    }));
+    setDownloads(withTimestamps);
+  } catch {
+    setDownloads(list);
+  }
+};
+
+const diskSpaceMemoryCache = new Map<string, { res: DiskSpaceInfo; ts: number }>();
+
 const checkDiskSpace = async (
   path: string,
   setSpace: (s: string) => void,
@@ -108,9 +169,23 @@ const checkDiskSpace = async (
   expectedSize: number = 0
 ) => {
   if (!path) return;
+  const now = Date.now();
+  const cached = diskSpaceMemoryCache.get(path);
+  if (cached && now - cached.ts < 10000) {
+    const res = cached.res;
+    setSpace(res.formatted_available);
+    if (expectedSize > 0) {
+      setSafe(res.available_bytes >= expectedSize);
+    } else {
+      setSafe(res.available_bytes > 50 * 1024 * 1024);
+    }
+    return;
+  }
+
   try {
     const res = await invoke<DiskSpaceInfo>("get_disk_space", { targetPath: path });
     if (res && res.formatted_available) {
+      diskSpaceMemoryCache.set(path, { res, ts: now });
       setSpace(res.formatted_available);
       if (expectedSize > 0) {
         setSafe(res.available_bytes >= expectedSize);
@@ -122,6 +197,7 @@ const checkDiskSpace = async (
     console.warn("get_disk_space failed:", err);
   }
 };
+
 
 interface Category {
   id: string;
@@ -137,9 +213,24 @@ const formatBytes = (bytes: number): string => {
   return `${(bytes / Math.pow(k, i)).toFixed(2)} ${sizes[i]}`;
 };
 
+const getInitialPopupMode = (): string | null => {
+  if (typeof window === "undefined") return null;
+  try {
+    const url = new URL(window.location.href);
+    const searchMode = url.searchParams.get("mode");
+    if (searchMode) return searchMode;
+    if (window.location.hash) {
+      const hashParams = new URLSearchParams(window.location.hash.replace(/^#\/?/, ""));
+      const hashMode = hashParams.get("mode");
+      if (hashMode) return hashMode;
+    }
+  } catch {}
+  return null;
+};
+
 function App() {
-  // Query routing state
-  const [popupMode, setPopupMode] = useState<string | null>(null);
+  // Query routing state (synchronously resolved to avoid main-window frame flashing in popups)
+  const [popupMode, setPopupMode] = useState<string | null>(getInitialPopupMode);
   const [popupUrl, setPopupUrl] = useState("");
   const [popupFilename, setPopupFilename] = useState("");
   const [popupSavePath, setPopupSavePath] = useState("");
@@ -246,7 +337,7 @@ function App() {
   const [pendingRelaunch, setPendingRelaunch] = useState(false);
   const [isDownloadingUpdate, setIsDownloadingUpdate] = useState(false);
   const [updatedFromVersion, setUpdatedFromVersion] = useState<string | null>("0.7.7");
-  const [showUpdateSuccessModal, setShowUpdateSuccessModal] = useState(true);
+  const [showUpdateSuccessModal, setShowUpdateSuccessModal] = useState(false);
 
   const [updateProgressInfo, setUpdateProgressInfo] = useState<{
     downloaded: number;
@@ -267,12 +358,16 @@ function App() {
   });
 
   useEffect(() => {
-    const savedVersion = localStorage.getItem("installed_app_version");
-    if (savedVersion && savedVersion !== CURRENT_APP_VERSION) {
-      setUpdatedFromVersion(savedVersion);
-      setShowUpdateSuccessModal(true);
+    // Strictly prohibit update celebration modal from showing inside popup windows
+    const isPopup = getInitialPopupMode() !== null || window.location.href.includes("mode=") || window.location.href.includes("popup");
+    if (!isPopup) {
+      const savedVersion = localStorage.getItem("installed_app_version");
+      if (savedVersion && savedVersion !== CURRENT_APP_VERSION) {
+        setUpdatedFromVersion(savedVersion);
+        setShowUpdateSuccessModal(true);
+      }
+      localStorage.setItem("installed_app_version", CURRENT_APP_VERSION);
     }
-    localStorage.setItem("installed_app_version", CURRENT_APP_VERSION);
   }, []);
 
   // Native Messaging Host State
@@ -554,7 +649,10 @@ function App() {
   });
 
   useEffect(() => {
-    localStorage.setItem("theme_mode", themeMode);
+    // Only write to localStorage if changed to prevent cross-window storage loop
+    if (localStorage.getItem("theme_mode") !== themeMode) {
+      localStorage.setItem("theme_mode", themeMode);
+    }
 
     const applyTheme = () => {
       let resolvedTheme = "dark";
@@ -564,7 +662,10 @@ function App() {
       } else {
         resolvedTheme = themeMode;
       }
-      document.documentElement.setAttribute("data-theme", resolvedTheme);
+
+      if (document.documentElement.getAttribute("data-theme") !== resolvedTheme) {
+        document.documentElement.setAttribute("data-theme", resolvedTheme);
+      }
 
       try {
         invoke("sync_theme_mode", { themeMode: resolvedTheme, theme_mode: resolvedTheme }).catch(() => { });
@@ -583,13 +684,13 @@ function App() {
 
   useEffect(() => {
     const handleStorageChange = (e: StorageEvent) => {
-      if (e.key === "theme_mode") {
-        setThemeMode((e.newValue as any) || "dark");
+      if (e.key === "theme_mode" && e.newValue && e.newValue !== themeMode) {
+        setThemeMode(e.newValue as any);
       }
     };
     window.addEventListener("storage", handleStorageChange);
     return () => window.removeEventListener("storage", handleStorageChange);
-  }, []);
+  }, [themeMode]);
 
   const daysOfWeek = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
 
@@ -819,7 +920,7 @@ function App() {
       // Main dashboard: fetch all active/completed downloads from backend
       invoke<DownloadProgress[]>("get_all_downloads")
         .then((list) => {
-          if (list) setDownloads(list);
+          if (list) syncTimestampsAndSetDownloads(list, setDownloads);
         })
         .catch((err) => {
           console.error("get_all_downloads error:", err);
@@ -869,7 +970,7 @@ function App() {
     const interval = setInterval(async () => {
       try {
         const list = await invoke<DownloadProgress[]>("get_all_downloads");
-        if (list) setDownloads(list);
+        if (list) syncTimestampsAndSetDownloads(list, setDownloads);
       } catch (e) {
         console.error("Failed to sync downloads:", e);
       }
@@ -889,8 +990,19 @@ function App() {
       while (!stopped) {
         try {
           const prog = await invoke<DownloadProgress | null>("get_download_progress", { id });
-          if (prog) {
-            setPopupProgress(prog);
+          if (prog && !stopped) {
+            setPopupProgress((prev) => {
+              if (
+                prev &&
+                prev.downloaded === prog.downloaded &&
+                prev.speed === prog.speed &&
+                prev.status === prog.status &&
+                prev.eta === prog.eta
+              ) {
+                return prev;
+              }
+              return prog;
+            });
             if (prog.status === "Completed") {
               stopped = true;
               await invoke("open_complete_window", { filename: prog.filename, savePath: prog.save_path || "" });
@@ -901,7 +1013,7 @@ function App() {
         } catch (e) {
           console.error("Progress poll error:", e);
         }
-        await new Promise<void>((res) => setTimeout(res, 200));
+        await new Promise<void>((res) => setTimeout(res, 800));
       }
     };
 
@@ -926,7 +1038,18 @@ function App() {
 
         if (mode === "progress") {
           if (!taskId || event.payload.id === taskId) {
-            setPopupProgress(event.payload);
+            setPopupProgress((prev) => {
+              if (
+                prev &&
+                prev.downloaded === event.payload.downloaded &&
+                prev.speed === event.payload.speed &&
+                prev.status === event.payload.status &&
+                prev.eta === event.payload.eta
+              ) {
+                return prev;
+              }
+              return event.payload;
+            });
             if (event.payload.status === "Completed") {
               invoke("open_complete_window", { filename: event.payload.filename, savePath: event.payload.save_path || "" });
               invoke("close_window");
@@ -939,10 +1062,15 @@ function App() {
           const index = prev.findIndex((d) => d.id === event.payload.id);
           const updated = [...prev];
           if (index !== -1) {
-            updated[index] = { ...prev[index], ...event.payload };
+            updated[index] = {
+              ...prev[index],
+              ...event.payload,
+              added_at: prev[index].added_at || getOrAssignTaskTimestamp(event.payload.id),
+            };
             return updated;
           } else {
-            return [event.payload, ...prev];
+            const added_at = getOrAssignTaskTimestamp(event.payload.id);
+            return [{ ...event.payload, added_at }, ...prev];
           }
         });
       });
@@ -1007,6 +1135,8 @@ function App() {
         return;
       }
 
+      const added_at = Date.now();
+      recordTaskTimestamp(id, added_at);
       const newTask: DownloadProgress = {
         id,
         filename: finalFilename,
@@ -1018,6 +1148,7 @@ function App() {
         url: inputUrl,
         save_path: finalSavePath,
         category: addModalCategory || detectCategory(finalFilename),
+        added_at,
       };
 
       setDownloads((prev) => [newTask, ...prev]);
@@ -1068,6 +1199,9 @@ function App() {
         queueOnly,
         reuseActive: true,
       });
+
+      const actualId = id.startsWith("EXISTS:") ? id.slice(7) : id;
+      recordTaskTimestamp(actualId, Date.now());
 
       if (queueOnly) {
         await invoke("close_window");
@@ -1124,6 +1258,7 @@ function App() {
   const handleRedownload = async (e: React.MouseEvent | null, id: string) => {
     if (e) e.stopPropagation();
     try {
+      recordTaskTimestamp(id, Date.now());
       if (popupMode === "progress") {
         await invoke("redownload_task", { id });
       } else {
@@ -1315,9 +1450,15 @@ function App() {
   });
 
   const sortedDownloads = [...filteredDownloads].sort((a, b) => {
+    // 1. Sort by most recent on top (added_at timestamp descending)
+    const timeA = a.added_at ?? 0;
+    const timeB = b.added_at ?? 0;
+    if (timeB !== timeA) {
+      return timeB - timeA;
+    }
+    // 2. Fallback: active downloads first if timestamps equal
     const statusA = getStatusText(a.status);
     const statusB = getStatusText(b.status);
-
     const isAActive = statusA === "Downloading" || statusA === "Queued" || statusA === "Paused";
     const isBActive = statusB === "Downloading" || statusB === "Queued" || statusB === "Paused";
 
@@ -1346,27 +1487,30 @@ function App() {
   if (popupMode === "add") {
     const isDangerousSpace = !popupDiskSafe && popupDiskSpace;
     return (
-      <div className="modal-content-v2" style={{ height: "100vh", overflowY: "auto", animation: "none", boxShadow: "none", border: "none", padding: "18px", display: "flex", flexDirection: "column" }}>
+      <div className="modal-content-v2" style={{ height: "100vh", overflowY: "auto", animation: "none", boxShadow: "none", border: "none", padding: "20px 24px", display: "flex", flexDirection: "column" }}>
         <div className="modal-header-divider">
           <div style={{ display: "flex", alignItems: "center", gap: "10px" }}>
-            <span style={{ fontSize: "1.05rem", fontWeight: 700, letterSpacing: "-0.01em", color: "var(--text-primary)" }}>
+            <img
+              src="/logo.png"
+              alt="IDM Logo"
+              style={{
+                width: "24px",
+                height: "24px",
+                borderRadius: "6px",
+                objectFit: "contain",
+                filter: "drop-shadow(0 2px 4px rgba(6, 182, 212, 0.35))"
+              }}
+            />
+            <span style={{ fontSize: "1.1rem", fontWeight: 700, letterSpacing: "-0.01em", color: "var(--text-primary)" }}>
               Download File Info
             </span>
             <span style={{ fontSize: "0.72rem", padding: "2px 8px", borderRadius: "100px", background: "rgba(6, 182, 212, 0.15)", color: "var(--accent-cyan)", fontWeight: 600 }}>
               IDM Pre-Flight
             </span>
           </div>
-          <button
-            className="hover-action-btn"
-            style={{ width: "28px", height: "28px", padding: 0, borderRadius: "50%" }}
-            onClick={handleClosePopup}
-            title="Cancel & Close"
-          >
-            <X size={16} />
-          </button>
         </div>
 
-        <div className="modal-body-v2" style={{ display: "flex", flexDirection: "column", gap: "10px", padding: 0, flex: 1 }}>
+        <div className="modal-body-v2" style={{ display: "flex", flexDirection: "column", gap: "12px", padding: "8px 0", flex: 1 }}>
           <div className="form-group-v2">
             <span className="form-label-v2" style={{ fontSize: "0.75rem", marginBottom: "4px" }}>Source Address (URL)</span>
             <input
@@ -1378,28 +1522,36 @@ function App() {
             />
           </div>
 
+          {/* Modern Category Pills */}
           <div className="form-group-v2">
             <span className="form-label-v2" style={{ fontSize: "0.75rem", marginBottom: "4px" }}>Category</span>
-            <select
-              className="spotlight-input"
-              style={{ padding: "8px 12px", fontSize: "0.85rem" }}
-              value={popupCategory}
-              onChange={(e) => {
-                const newCat = e.target.value;
-                setPopupCategory(newCat);
-                const newFolder = getCategoryFolder(newCat, defaultSaveDir);
-                setPopupSavePath(newFolder);
-                setSavePath(newFolder);
-                checkDiskSpace(newFolder, setPopupDiskSpace, setPopupDiskSafe, parseInt(popupSize) || 0);
-              }}
-            >
-              <option value="Video">Video</option>
-              <option value="Audio">Audio</option>
-              <option value="Compressed">Compressed</option>
-              <option value="Documents">Documents</option>
-              <option value="Programs">Programs</option>
-              <option value="Other">Other / General</option>
-            </select>
+            <div className="category-pills-row">
+              {[
+                { key: "Video", label: "Video", icon: <Film size={13} /> },
+                { key: "Audio", label: "Audio", icon: <Music size={13} /> },
+                { key: "Compressed", label: "Compressed", icon: <Archive size={13} /> },
+                { key: "Documents", label: "Documents", icon: <FileText size={13} /> },
+                { key: "Programs", label: "Programs", icon: <Terminal size={13} /> },
+                { key: "Other", label: "Other", icon: <Folder size={13} /> },
+              ].map((cat) => (
+                <button
+                  key={cat.key}
+                  type="button"
+                  className={`category-pill-btn ${popupCategory === cat.key ? "active" : ""}`}
+                  style={{ padding: "4px 11px", fontSize: "0.78rem" }}
+                  onClick={() => {
+                    setPopupCategory(cat.key);
+                    const newFolder = getCategoryFolder(cat.key, defaultSaveDir);
+                    setPopupSavePath(newFolder);
+                    setSavePath(newFolder);
+                    checkDiskSpace(newFolder, setPopupDiskSpace, setPopupDiskSafe, parseInt(popupSize) || 0);
+                  }}
+                >
+                  {cat.icon}
+                  <span>{cat.label}</span>
+                </button>
+              ))}
+            </div>
           </div>
 
           <div className="form-group-v2">
@@ -1460,63 +1612,65 @@ function App() {
             </div>
           </div>
 
-          <label style={{ display: "flex", alignItems: "center", gap: "8px", fontSize: "0.82rem", color: "var(--text-secondary)", cursor: "pointer", marginTop: "2px" }}>
-            <input
-              type="checkbox"
-              checked={rememberCategoryFolder}
-              onChange={(e) => setRememberCategoryFolder(e.target.checked)}
-              style={{ accentColor: "var(--accent-cyan)", width: "16px", height: "16px" }}
-            />
-            Remember this folder for <strong style={{ color: "var(--text-primary)" }}>{popupCategory}</strong> category
-          </label>
-
-          <div className="preflight-info-box">
-            <div style={{ flex: 1, display: "flex", flexDirection: "column", gap: "2px" }}>
-              <span style={{ fontSize: "0.7rem", textTransform: "uppercase", color: "var(--text-muted)", letterSpacing: "0.5px" }}>Estimated File Size</span>
-              <span style={{ fontWeight: 700, fontSize: "0.95rem", color: "var(--accent-cyan)" }}>
-                {popupSize && popupSize !== "0" ? formatBytes(parseInt(popupSize)) : "Unknown (Server Streaming)"}
-              </span>
+          {/* Pre-flight Info & Disk Space Bar */}
+          <div className="preflight-pill-bar" style={{ marginTop: "2px" }}>
+            <div className="preflight-pill-badge" style={{ color: "var(--text-secondary)" }}>
+              <span>Size:</span>
+              <strong style={{ color: "var(--accent-cyan)", fontSize: "0.9rem" }}>
+                {popupSize && popupSize !== "0" ? formatBytes(parseInt(popupSize)) : "Streaming"}
+              </strong>
             </div>
 
-            <div className="preflight-divider" />
+            <div style={{ width: "1px", height: "16px", background: "rgba(255, 255, 255, 0.08)" }} />
 
-            <div style={{ flex: 1, display: "flex", flexDirection: "column", gap: "2px" }}>
-              <span style={{ fontSize: "0.7rem", textTransform: "uppercase", color: "var(--text-muted)", letterSpacing: "0.5px" }}>Available Disk Space</span>
-              <span style={{ fontWeight: 600, fontSize: "0.95rem", color: isDangerousSpace ? "#ef4444" : "var(--text-primary)" }}>
-                {popupDiskSpace || "Probing..."}
-                {isDangerousSpace && <span style={{ marginLeft: "6px", fontSize: "0.72rem", color: "#ef4444", fontWeight: 700 }}>⚠️ Low Space</span>}
-              </span>
+            <div className="preflight-pill-badge" style={{ color: isDangerousSpace ? "#ef4444" : "var(--text-secondary)" }}>
+              <span>Disk:</span>
+              <strong style={{ color: isDangerousSpace ? "#ef4444" : "var(--accent-green)", fontSize: "0.9rem" }}>
+                {popupDiskSpace || "Checking..."}
+              </strong>
+              {isDangerousSpace && <span style={{ color: "#ef4444", fontWeight: 700 }}>⚠️ Low</span>}
             </div>
+
+            <label style={{ display: "flex", alignItems: "center", gap: "6px", fontSize: "0.78rem", color: "var(--text-secondary)", cursor: "pointer", marginLeft: "auto" }}>
+              <input
+                type="checkbox"
+                checked={rememberCategoryFolder}
+                onChange={(e) => setRememberCategoryFolder(e.target.checked)}
+                style={{ accentColor: "var(--accent-cyan)", width: "14px", height: "14px" }}
+              />
+              Remember for <strong>{popupCategory}</strong>
+            </label>
           </div>
         </div>
 
-        <div className="modal-actions-v2" style={{ marginTop: "14px", paddingTop: "10px", display: "flex", justifyContent: "flex-end", gap: "10px" }}>
+        <div className="modal-actions-v2" style={{ marginTop: "auto", paddingTop: "14px", display: "flex", justifyContent: "flex-end", gap: "12px" }}>
           <button
-            className="hover-action-btn"
-            style={{ width: "auto", padding: "0 16px", height: "38px", fontSize: "0.85rem" }}
-            onClick={handleClosePopup}
-            disabled={isStartingDownload}
-          >
-            Cancel
-          </button>
-          <button
-            className="hover-action-btn"
-            style={{ width: "auto", padding: "0 16px", height: "38px", fontSize: "0.85rem", display: "flex", alignItems: "center", gap: "6px" }}
+            className="download-later-pill"
+            style={{ height: "40px", fontSize: "0.85rem", padding: "0 18px" }}
             onClick={() => handlePopupStartDownload(true)}
             disabled={!popupUrl || isStartingDownload}
             title="Add to queue in paused state"
           >
-            <Clock size={16} />
-            Download Later
+            <Clock size={15} />
+            <span>Download Later</span>
           </button>
           <button
             className="accent-pill"
-            style={{ padding: "0 22px", borderRadius: "100px", fontWeight: 700, fontSize: "0.9rem", height: "38px", opacity: isStartingDownload ? 0.7 : 1, display: "flex", alignItems: "center", gap: "6px" }}
+            style={{
+              padding: "0 24px",
+              height: "40px",
+              opacity: isStartingDownload ? 0.7 : 1,
+              display: "flex",
+              alignItems: "center",
+              gap: "8px",
+              boxShadow: "0 4px 18px rgba(6, 182, 212, 0.4)",
+              fontSize: "0.88rem"
+            }}
             onClick={() => handlePopupStartDownload(false)}
             disabled={!popupUrl || isStartingDownload}
           >
             <Download size={16} />
-            {isStartingDownload ? "Starting..." : "Start Download"}
+            <span>{isStartingDownload ? "Starting..." : "Start Download"}</span>
           </button>
         </div>
       </div>
@@ -1535,32 +1689,94 @@ function App() {
       popupProgress.status === "Paused" ||
       JSON.stringify(popupProgress.status) === JSON.stringify("Paused")
     );
+    const isFailed = popupProgress?.status && (
+      typeof popupProgress.status === "object" && "Failed" in popupProgress.status
+    );
+    const failureMessage = isFailed && typeof popupProgress.status === "object" && "Failed" in popupProgress.status
+      ? (popupProgress.status as { Failed: string }).Failed
+      : "";
     const catClass = popupProgress ? `cat-${getFileCategory(popupProgress.filename)}` : "";
+
+    const statusBadgeClass = isFailed
+      ? "failed"
+      : isPaused
+      ? "paused"
+      : isCompleted
+      ? "completed"
+      : "downloading";
 
     return (
       <div className="modal-content-v2" style={{ height: "100vh", animation: "none", boxShadow: "none", border: "none", alignItems: "center", justifyContent: "center", position: "relative" }}>
-
-        <div className="liquid-progress-container" style={{ width: "100px", height: "100px", marginBottom: "16px" }}>
-          <div
-            className={`liquid-fill ${isPaused ? "paused" : ""} ${isCompleted ? "completed" : ""} ${isChunkedStream ? "streaming-fill" : ""} ${catClass}`}
-            style={{ transform: isChunkedStream ? "translateY(15%)" : `translateY(${100 - progressPercent}%)` }}
-          />
-          <div style={{ position: "absolute", inset: 0, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", zIndex: 10 }}>
-            <span style={{ fontSize: isChunkedStream ? "1.1rem" : "1.8rem", fontWeight: 800, color: "#fff", textShadow: "0 1px 3px rgba(0,0,0,0.9), 0 0 2px rgba(0,0,0,0.9)", lineHeight: 1 }}>
-              {isChunkedStream ? "LIVE" : `${progressPercent}%`}
+        {/* Top Window Header Bar with App Icon (Rock-solid Hardware-composited anti-flicker) */}
+        <div className="popup-header-bar">
+          <div style={{ display: "flex", alignItems: "center", gap: "10px" }}>
+            <img
+              src="/logo.png"
+              alt="IDM Logo"
+              style={{
+                width: "22px",
+                height: "22px",
+                borderRadius: "5px",
+                objectFit: "contain"
+              }}
+            />
+            <span className="popup-header-title">
+              Download Progress
             </span>
-            <span style={{ fontSize: "0.7rem", color: "rgba(255,255,255,0.9)", fontWeight: 600, marginTop: "2px", textShadow: "0 1px 3px rgba(0,0,0,0.9), 0 0 2px rgba(0,0,0,0.9)" }}>
-              {popupProgress ? (isChunkedStream ? "Streaming" : getStatusText(popupProgress.status)) : "Connecting"}
+          </div>
+          {popupProgress && (
+            <span className={`popup-status-pill ${statusBadgeClass}`}>
+              {isFailed ? "Failed" : isPaused ? "Paused" : isCompleted ? "Completed" : "Downloading"}
+            </span>
+          )}
+        </div>
+
+        <div className="liquid-progress-container" style={{ width: "100px", height: "100px", marginTop: "24px", marginBottom: "14px" }}>
+          <div
+            className={`liquid-fill ${isPaused ? "paused" : ""} ${isCompleted ? "completed" : ""} ${isFailed ? "failed" : ""} ${isChunkedStream ? "streaming-fill" : ""} ${catClass}`}
+            style={{ transform: isFailed ? "translateY(40%)" : (isChunkedStream ? "translateY(15%)" : `translateY(${100 - progressPercent}%)`) }}
+          />
+          {(!isPaused && !isFailed && !isCompleted && (progressPercent > 0 || isChunkedStream)) && (
+            <div
+              className="liquid-bubbles-layer"
+              style={{ height: isChunkedStream ? "85%" : `${progressPercent}%` }}
+            >
+              <span className="liquid-bubble b1" />
+              <span className="liquid-bubble b2" />
+              <span className="liquid-bubble b3" />
+              <span className="liquid-bubble b4" />
+              <span className="liquid-bubble b5" />
+              <span className="liquid-bubble b6" />
+            </div>
+          )}
+          <div className="liquid-text-overlay">
+            {isFailed ? (
+              <AlertCircle size={32} color="#ffffff" style={{ filter: "drop-shadow(0 2px 4px rgba(0,0,0,0.6))" }} />
+            ) : (
+              <span className="liquid-percent-text" style={{ fontSize: isChunkedStream ? "1.1rem" : "1.8rem" }}>
+                {isChunkedStream ? "LIVE" : `${progressPercent}%`}
+              </span>
+            )}
+            <span className="liquid-status-text">
+              {isFailed ? "Failed" : (popupProgress ? (isChunkedStream ? "Streaming" : getStatusText(popupProgress.status)) : "Connecting")}
             </span>
           </div>
         </div>
+
+        {/* Display full error message OUTSIDE the liquid progress container */}
+        {isFailed && (
+          <div className="liquid-error-banner">
+            <AlertTriangle size={15} style={{ flexShrink: 0, color: "var(--accent-red)" }} />
+            <span>{failureMessage || "Download failed. Please check network connection or URL."}</span>
+          </div>
+        )}
 
         <div style={{ textAlign: "center", width: "90%" }}>
           <div className="file-display-box" style={{ background: "rgba(255,255,255,0.05)", border: "none", fontSize: "0.85rem", padding: "8px 12px", marginBottom: "12px", borderRadius: "8px", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }} title={popupProgress?.filename}>
             {popupProgress?.filename || "Loading..."}
           </div>
 
-          {popupProgress && (
+          {popupProgress && !isFailed && (
             <div style={{ display: "flex", justifyContent: "space-between", background: "rgba(0,0,0,0.2)", borderRadius: "12px", padding: "10px", border: "1px solid rgba(255,255,255,0.03)" }}>
               <div style={{ display: "flex", flexDirection: "column", flex: 1 }}>
                 <span style={{ fontSize: "0.65rem", color: "var(--text-secondary)", textTransform: "uppercase", letterSpacing: "0.5px" }}>Downloaded</span>
@@ -1585,20 +1801,24 @@ function App() {
           )}
         </div>
 
-        <div style={{ position: "absolute", bottom: "16px", left: "16px", right: "16px", display: "flex", gap: "8px", justifyContent: "center" }}>
+        <div style={{ position: "absolute", bottom: "16px", left: "16px", right: "16px", display: "flex", gap: "10px", justifyContent: "center" }}>
           {popupProgress && (
             <>
-              {isPaused ? (
-                <button className="hover-action-btn" style={{ flex: 1, padding: "14px 0", borderRadius: "16px" }} onClick={() => handleResume(null, popupProgress.id)}>
-                  <Play size={18} style={{ marginRight: "8px" }} /> Resume
+              {isFailed ? (
+                <button className="popup-action-btn resume-btn" onClick={() => handleRedownload(null, popupProgress.id)}>
+                  <RefreshCw size={17} /> Retry
+                </button>
+              ) : isPaused ? (
+                <button className="popup-action-btn resume-btn" onClick={() => handleResume(null, popupProgress.id)}>
+                  <Play size={17} /> Resume
                 </button>
               ) : (
-                <button className="hover-action-btn" style={{ flex: 1, padding: "14px 0", borderRadius: "16px" }} onClick={() => handlePause(null, popupProgress.id)}>
-                  <Pause size={18} style={{ marginRight: "8px" }} /> Pause
+                <button className="popup-action-btn pause-btn" onClick={() => handlePause(null, popupProgress.id)}>
+                  <Pause size={17} /> Pause
                 </button>
               )}
-              <button className="hover-action-btn" style={{ flex: 1, padding: "14px 0", borderRadius: "16px", color: "var(--accent-red)" }} onClick={() => handleCancel(null, popupProgress.id)}>
-                <X size={18} style={{ marginRight: "8px" }} /> Cancel
+              <button className="popup-action-btn cancel-btn" onClick={() => handleCancel(null, popupProgress.id)}>
+                <X size={17} /> {isFailed || isCompleted ? "Close" : "Cancel"}
               </button>
             </>
           )}
@@ -1611,15 +1831,41 @@ function App() {
     const pId = new URLSearchParams(window.location.search).get("id") || "";
     return (
       <div className="modal-content-v2" style={{ height: "100vh", animation: "none", boxShadow: "none", border: "none", alignItems: "center", justifyContent: "center", position: "relative" }}>
-        <RefreshCw size={56} className="spin-slow" color="var(--accent-orange)" style={{ marginBottom: "24px" }} />
+        {/* Top Window Header Bar with App Icon */}
+        <div className="popup-header-bar">
+          <div style={{ display: "flex", alignItems: "center", gap: "10px" }}>
+            <img
+              src="/logo.png"
+              alt="IDM Logo"
+              style={{
+                width: "22px",
+                height: "22px",
+                borderRadius: "5px",
+                objectFit: "contain"
+              }}
+            />
+            <span className="popup-header-title">
+              Refresh Download Link
+            </span>
+          </div>
+          <span className="popup-status-pill paused">
+            Waiting
+          </span>
+        </div>
+
+        <RefreshCw size={56} className="spin-slow" color="var(--accent-orange)" style={{ marginTop: "20px", marginBottom: "24px" }} />
         <div style={{ color: "var(--accent-orange)", fontSize: "1.6rem", fontWeight: 800, marginBottom: "12px" }}>
           Waiting for Capture
         </div>
         <p style={{ fontSize: "1rem", color: "var(--text-secondary)", textAlign: "center", width: "85%", lineHeight: 1.6 }}>
           We opened your web browser to the download page. Simply click the download button in your browser now. We will capture the updated address and resume automatically!
         </p>
-        <button className="hover-action-btn" style={{ position: "absolute", bottom: "16px", width: "calc(100% - 48px)", padding: "12px", borderRadius: "16px", color: "var(--accent-red)", fontWeight: 700, fontSize: "0.85rem" }} onClick={() => handleCancel(null, pId)}>
-          Cancel Refresh
+        <button
+          className="popup-action-btn cancel-btn"
+          style={{ position: "absolute", bottom: "16px", left: "16px", right: "16px", width: "calc(100% - 32px)", height: "44px" }}
+          onClick={() => handleCancel(null, pId)}
+        >
+          <X size={17} /> Cancel Refresh
         </button>
       </div>
     );
@@ -1628,7 +1874,29 @@ function App() {
   if (popupMode === "complete") {
     return (
       <div className="modal-content-v2" style={{ height: "100vh", animation: "none", boxShadow: "none", border: "none", alignItems: "center", justifyContent: "center", position: "relative", padding: "24px" }}>
-        <div style={{ width: "80px", height: "80px", borderRadius: "50%", background: "rgba(16, 185, 129, 0.1)", display: "flex", alignItems: "center", justifyContent: "center", marginBottom: "16px", boxShadow: "0 0 30px rgba(16, 185, 129, 0.15)" }}>
+        {/* Top Window Header Bar with App Icon */}
+        <div className="popup-header-bar">
+          <div style={{ display: "flex", alignItems: "center", gap: "10px" }}>
+            <img
+              src="/logo.png"
+              alt="IDM Logo"
+              style={{
+                width: "22px",
+                height: "22px",
+                borderRadius: "5px",
+                objectFit: "contain"
+              }}
+            />
+            <span className="popup-header-title">
+              Download Finished
+            </span>
+          </div>
+          <span className="popup-status-pill completed">
+            Finished
+          </span>
+        </div>
+
+        <div style={{ marginTop: "24px", width: "80px", height: "80px", borderRadius: "50%", background: "rgba(16, 185, 129, 0.1)", display: "flex", alignItems: "center", justifyContent: "center", marginBottom: "16px", boxShadow: "0 0 30px rgba(16, 185, 129, 0.15)" }}>
           <CheckCircle size={40} color="var(--accent-green)" />
         </div>
         <div style={{ fontSize: "1.6rem", fontWeight: 800, color: "var(--text-primary)", marginBottom: "12px", letterSpacing: "-0.5px" }}>
@@ -1641,16 +1909,14 @@ function App() {
         <div style={{ position: "absolute", bottom: "24px", left: "24px", right: "24px", display: "flex", gap: "12px" }}>
           {popupSavePath && (
             <button
-              className="hover-action-btn"
-              style={{ flex: 1, padding: "14px", borderRadius: "12px", color: "var(--accent-green)", fontWeight: 700, fontSize: "0.95rem", background: "rgba(16, 185, 129, 0.05)", border: "1px solid rgba(16, 185, 129, 0.15)" }}
+              className="popup-action-btn resume-btn"
               onClick={() => handleOpenFileDir(null, popupSavePath, popupFilename)}
             >
-              Open Folder
+              <Folder size={18} /> Open Folder
             </button>
           )}
           <button
-            className="hover-action-btn"
-            style={{ flex: 1, padding: "14px", borderRadius: "12px", fontWeight: 700, fontSize: "0.95rem" }}
+            className="popup-action-btn"
             onClick={handleClosePopup}
           >
             Close
@@ -2557,9 +2823,22 @@ function App() {
                         <div className="card-left-v2">
                           <div className="liquid-progress-container">
                             <div
-                              className={`liquid-fill ${isPaused ? "paused" : ""} ${isCompleted ? "completed" : ""} ${isChunkedStream ? "streaming-fill" : ""} ${catClass}`}
-                              style={{ transform: isChunkedStream ? "translateY(25%)" : `translateY(${100 - progressPercent}%)` }}
+                              className={`liquid-fill ${isPaused ? "paused" : ""} ${isCompleted ? "completed" : ""} ${isFailed ? "failed" : ""} ${isChunkedStream ? "streaming-fill" : ""} ${catClass}`}
+                              style={{ transform: isFailed ? "translateY(40%)" : (isChunkedStream ? "translateY(25%)" : `translateY(${100 - progressPercent}%)`) }}
                             />
+                            {isDownloading && (progressPercent > 0 || isChunkedStream) && (
+                              <div
+                                className="liquid-bubbles-layer"
+                                style={{ height: isChunkedStream ? "75%" : `${progressPercent}%` }}
+                              >
+                                <span className="liquid-bubble b1" />
+                                <span className="liquid-bubble b2" />
+                                <span className="liquid-bubble b3" />
+                                <span className="liquid-bubble b4" />
+                                <span className="liquid-bubble b5" />
+                                <span className="liquid-bubble b6" />
+                              </div>
+                            )}
                             <div className="circular-icon-inner">
                               {getFileIcon(d.filename)}
                             </div>
@@ -2727,28 +3006,30 @@ function App() {
         </footer>
       </div>
 
-      {/* Main Window Modal: Add New Download (triggered manually) */}
+      {/* Main Window Modal: Add New Download (Modern Bottom Popup) */}
       {showAddModal && (
         <div className="modal-backdrop-v2" onClick={() => setShowAddModal(false)}>
-          <div className="modal-content-v2" style={{ maxWidth: "560px" }} onClick={(e) => e.stopPropagation()}>
+          <div
+            className="modal-content-v2"
+            style={{ borderTop: "2px solid var(--accent-cyan)" }}
+            onClick={(e) => e.stopPropagation()}
+          >
             <div className="modal-header-v2">
-              <div style={{ display: "flex", alignItems: "center", gap: "10px" }}>
-                <span className="modal-title-v2">New Download</span>
-                <span style={{ fontSize: "0.72rem", padding: "2px 8px", borderRadius: "100px", background: "rgba(6, 182, 212, 0.15)", color: "var(--accent-cyan)", fontWeight: 600 }}>
-                  Pre-Flight Router
-                </span>
-              </div>
+              <span className="modal-title-v2" style={{ color: "var(--accent-cyan)", display: "flex", alignItems: "center", gap: "12px", fontSize: "1.45rem" }}>
+                <Download size={24} strokeWidth={2.5} />
+                New Download
+              </span>
               <button className="modal-close-btn-v2" onClick={() => setShowAddModal(false)}>
                 <X size={20} />
               </button>
             </div>
 
-            <div className="modal-body-v2" style={{ display: "flex", flexDirection: "column", gap: "12px" }}>
+            <div className="modal-body-v2">
               <div className="form-group-v2">
-                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "4px" }}>
-                  <span className="form-label-v2" style={{ fontSize: "0.75rem" }}>Download URL</span>
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                  <span className="form-label-v2">Download Address (URL)</span>
                   {isProbingUrl && (
-                    <span style={{ fontSize: "0.72rem", color: "var(--accent-cyan)", display: "flex", alignItems: "center", gap: "4px" }}>
+                    <span style={{ fontSize: "0.75rem", color: "var(--accent-cyan)", display: "flex", alignItems: "center", gap: "6px" }}>
                       <RefreshCw size={12} className="spin" /> Probing server headers...
                     </span>
                   )}
@@ -2757,127 +3038,152 @@ function App() {
                   type="text"
                   placeholder="Paste HTTP / HTTPS address..."
                   className="spotlight-input"
+                  style={{ padding: "10px 14px", fontSize: "0.9rem" }}
                   value={inputUrl}
                   onChange={(e) => handleUrlChange(e.target.value)}
+                  autoFocus
                 />
               </div>
 
+              {/* Modern Category Pills */}
               <div className="form-group-v2">
-                <span className="form-label-v2" style={{ fontSize: "0.75rem", marginBottom: "4px" }}>Category</span>
-                <select
-                  className="spotlight-input"
-                  style={{ padding: "8px 12px", fontSize: "0.85rem", background: "rgba(255, 255, 255, 0.04)", color: "var(--text-primary)" }}
-                  value={addModalCategory}
-                  onChange={(e) => {
-                    const newCat = e.target.value;
-                    setAddModalCategory(newCat);
-                    const newFolder = getCategoryFolder(newCat, defaultSaveDir);
-                    setSavePath(newFolder);
-                    checkDiskSpace(newFolder, setAddModalDiskSpace, setAddModalDiskSafe);
-                  }}
-                >
-                  <option value="Video">Video</option>
-                  <option value="Audio">Audio</option>
-                  <option value="Compressed">Compressed</option>
-                  <option value="Documents">Documents</option>
-                  <option value="Programs">Programs</option>
-                  <option value="Other">Other / General</option>
-                </select>
+                <span className="form-label-v2">Category</span>
+                <div className="category-pills-row">
+                  {[
+                    { key: "Video", label: "Video", icon: <Film size={14} /> },
+                    { key: "Audio", label: "Audio", icon: <Music size={14} /> },
+                    { key: "Compressed", label: "Compressed", icon: <Archive size={14} /> },
+                    { key: "Documents", label: "Documents", icon: <FileText size={14} /> },
+                    { key: "Programs", label: "Programs", icon: <Terminal size={14} /> },
+                    { key: "Other", label: "Other", icon: <Folder size={14} /> },
+                  ].map((cat) => (
+                    <button
+                      key={cat.key}
+                      type="button"
+                      className={`category-pill-btn ${addModalCategory === cat.key ? "active" : ""}`}
+                      onClick={() => {
+                        setAddModalCategory(cat.key);
+                        const newFolder = getCategoryFolder(cat.key, defaultSaveDir);
+                        setSavePath(newFolder);
+                        checkDiskSpace(newFolder, setAddModalDiskSpace, setAddModalDiskSafe);
+                      }}
+                    >
+                      {cat.icon}
+                      <span>{cat.label}</span>
+                    </button>
+                  ))}
+                </div>
               </div>
 
-              <div className="form-group-v2">
-                <span className="form-label-v2" style={{ fontSize: "0.75rem", marginBottom: "4px" }}>Save Filename</span>
-                <input
-                  type="text"
-                  className="spotlight-input"
-                  value={customFilename}
-                  onChange={(e) => {
-                    const newName = e.target.value;
-                    setCustomFilename(newName);
-                    const detected = detectCategory(newName);
-                    if (detected !== addModalCategory) {
-                      setAddModalCategory(detected);
-                      const newFolder = getCategoryFolder(detected, defaultSaveDir);
-                      setSavePath(newFolder);
-                      checkDiskSpace(newFolder, setAddModalDiskSpace, setAddModalDiskSafe);
-                    }
-                  }}
-                />
-              </div>
-
-              <div className="form-group-v2">
-                <span className="form-label-v2" style={{ fontSize: "0.75rem", marginBottom: "4px" }}>Save Path</span>
-                <div style={{ display: "flex", gap: "8px" }}>
+              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "16px" }}>
+                <div className="form-group-v2">
+                  <span className="form-label-v2">Save As (Filename)</span>
                   <input
                     type="text"
                     className="spotlight-input"
-                    value={savePath}
+                    style={{ padding: "10px 14px", fontSize: "0.88rem" }}
+                    value={customFilename}
                     onChange={(e) => {
-                      const p = e.target.value;
-                      setSavePath(p);
-                      checkDiskSpace(p, setAddModalDiskSpace, setAddModalDiskSafe);
+                      const newName = e.target.value;
+                      setCustomFilename(newName);
+                      const detected = detectCategory(newName);
+                      if (detected !== addModalCategory) {
+                        setAddModalCategory(detected);
+                        const newFolder = getCategoryFolder(detected, defaultSaveDir);
+                        setSavePath(newFolder);
+                        checkDiskSpace(newFolder, setAddModalDiskSpace, setAddModalDiskSafe);
+                      }
                     }}
-                    style={{ flex: 1 }}
                   />
-                  <button className="hover-action-btn" style={{ padding: "0 16px", borderRadius: "12px" }} onClick={handlePickFolder}>
-                    Browse
-                  </button>
+                </div>
+
+                <div className="form-group-v2">
+                  <span className="form-label-v2">Save Location</span>
+                  <div style={{ display: "flex", gap: "8px" }}>
+                    <input
+                      type="text"
+                      className="spotlight-input"
+                      style={{ padding: "10px 14px", fontSize: "0.88rem", flex: 1 }}
+                      value={savePath}
+                      onChange={(e) => {
+                        const p = e.target.value;
+                        setSavePath(p);
+                        checkDiskSpace(p, setAddModalDiskSpace, setAddModalDiskSafe);
+                      }}
+                    />
+                    <button
+                      className="hover-action-btn"
+                      style={{ padding: "0 18px", borderRadius: "12px", height: "42px", fontSize: "0.85rem" }}
+                      onClick={handlePickFolder}
+                    >
+                      Browse
+                    </button>
+                  </div>
                 </div>
               </div>
 
-              {/* Remember Category Folder Checkbox */}
-              <label style={{ display: "flex", alignItems: "center", gap: "8px", fontSize: "0.82rem", color: "var(--text-secondary)", cursor: "pointer" }}>
-                <input
-                  type="checkbox"
-                  checked={rememberCategoryFolder}
-                  onChange={(e) => setRememberCategoryFolder(e.target.checked)}
-                  style={{ accentColor: "var(--accent-cyan)", width: "16px", height: "16px" }}
-                />
-                Remember this folder for <strong style={{ color: "var(--text-primary)" }}>{addModalCategory}</strong> category
-              </label>
-
-              {/* Pre-flight Info Bar */}
-              <div className="preflight-info-box">
-                <div style={{ flex: 1, display: "flex", flexDirection: "column", gap: "2px" }}>
-                  <span style={{ fontSize: "0.7rem", textTransform: "uppercase", color: "var(--text-muted)", letterSpacing: "0.5px" }}>Estimated File Size</span>
-                  <span style={{ fontWeight: 700, fontSize: "0.95rem", color: "var(--accent-cyan)" }}>
-                    {addModalFileSize || "Unknown"}
-                  </span>
+              {/* Pre-flight Info & Disk Space Bar */}
+              <div className="preflight-pill-bar">
+                <div className="preflight-pill-badge" style={{ color: "var(--text-secondary)" }}>
+                  <span>Size:</span>
+                  <strong style={{ color: "var(--accent-cyan)", fontSize: "0.95rem" }}>
+                    {addModalFileSize || "Server Streaming"}
+                  </strong>
                 </div>
 
-                <div className="preflight-divider" />
+                <div style={{ width: "1px", height: "18px", background: "rgba(255, 255, 255, 0.08)" }} />
 
-                <div style={{ flex: 1, display: "flex", flexDirection: "column", gap: "2px" }}>
-                  <span style={{ fontSize: "0.7rem", textTransform: "uppercase", color: "var(--text-muted)", letterSpacing: "0.5px" }}>Available Disk Space</span>
-                  <span style={{ fontWeight: 600, fontSize: "0.95rem", color: !addModalDiskSafe ? "#ef4444" : "var(--text-primary)" }}>
-                    {addModalDiskSpace || "Probing..."}
-                    {!addModalDiskSafe && <span style={{ marginLeft: "6px", fontSize: "0.72rem", color: "#ef4444", fontWeight: 700 }}>⚠️ Low Space</span>}
-                  </span>
+                <div className="preflight-pill-badge" style={{ color: !addModalDiskSafe ? "#ef4444" : "var(--text-secondary)" }}>
+                  <span>Free Disk Space:</span>
+                  <strong style={{ color: !addModalDiskSafe ? "#ef4444" : "var(--accent-green)", fontSize: "0.95rem" }}>
+                    {addModalDiskSpace || "Checking..."}
+                  </strong>
+                  {!addModalDiskSafe && <span style={{ color: "#ef4444", fontWeight: 700 }}>⚠️ Low Space</span>}
                 </div>
+
+                <label style={{ display: "flex", alignItems: "center", gap: "8px", fontSize: "0.82rem", color: "var(--text-secondary)", cursor: "pointer", marginLeft: "auto" }}>
+                  <input
+                    type="checkbox"
+                    checked={rememberCategoryFolder}
+                    onChange={(e) => setRememberCategoryFolder(e.target.checked)}
+                    style={{ accentColor: "var(--accent-cyan)", width: "15px", height: "15px" }}
+                  />
+                  Remember folder for <strong>{addModalCategory}</strong>
+                </label>
               </div>
             </div>
 
-            <div className="modal-footer-v2" style={{ display: "flex", justifyContent: "flex-end", gap: "10px", marginTop: "16px" }}>
-              <button className="hover-action-btn" style={{ padding: "10px 20px", borderRadius: "12px" }} onClick={() => setShowAddModal(false)}>
+            <div className="modal-actions-v2">
+              <button
+                className="hover-action-btn"
+                style={{ width: "auto", padding: "0 22px", height: "42px" }}
+                onClick={() => setShowAddModal(false)}
+              >
                 Cancel
               </button>
               <button
-                className="hover-action-btn"
-                style={{ padding: "10px 20px", borderRadius: "12px", display: "flex", alignItems: "center", gap: "6px" }}
+                className="download-later-pill"
                 onClick={() => handleStartDownload(true)}
                 disabled={!inputUrl || isStartingDownload}
               >
                 <Clock size={16} />
-                Download Later
+                <span>Download Later</span>
               </button>
               <button
-                className="hover-action-btn success"
-                style={{ padding: "10px 24px", borderRadius: "12px", background: "var(--accent-cyan)", color: "#000", fontWeight: 700, display: "flex", alignItems: "center", gap: "6px" }}
+                className="accent-pill"
+                style={{
+                  height: "42px",
+                  padding: "0 28px",
+                  display: "flex",
+                  alignItems: "center",
+                  gap: "8px",
+                  boxShadow: "0 4px 22px rgba(6, 182, 212, 0.4)"
+                }}
                 onClick={() => handleStartDownload(false)}
                 disabled={!inputUrl || isStartingDownload}
               >
-                <Download size={16} />
-                Start Download
+                <Download size={17} />
+                <span>Start Download</span>
               </button>
             </div>
           </div>
@@ -3159,8 +3465,8 @@ function App() {
         </div>
       )}
 
-      {/* Update Success Celebration Upgrade Modal */}
-      {showUpdateSuccessModal && (
+      {/* Update Success Celebration Upgrade Modal (Only for Main Dashboard Window) */}
+      {!popupMode && showUpdateSuccessModal && (
         <div className="modal-backdrop-v2" style={{ display: "flex", alignItems: "center", justifyContent: "center" }} onClick={() => setShowUpdateSuccessModal(false)}>
           <div className="celebration-modal-dialog" onClick={(e) => e.stopPropagation()}>
             <div className="celebration-ambient-glow" />

@@ -115,25 +115,28 @@ pub fn get_disk_space(target_path: &str) -> Result<DiskSpaceInfo, String> {
 
     #[cfg(unix)]
     {
-        let output = std::process::Command::new("df")
-            .arg("-k")
-            .arg(check_path)
-            .output()
-            .map_err(|e| format!("Failed to run df: {}", e))?;
+        use std::ffi::CString;
+        use std::mem::MaybeUninit;
+        use std::os::unix::ffi::OsStrExt;
 
-        if !output.status.success() {
-            return Err("df command failed".to_string());
-        }
+        let path_bytes = if check_path.as_os_str().is_empty() {
+            b".".as_slice()
+        } else {
+            check_path.as_os_str().as_bytes()
+        };
 
-        let stdout = String::from_utf8_lossy(&output.stdout);
-        let lines: Vec<&str> = stdout.lines().collect();
-        if lines.len() >= 2 {
-            let cols: Vec<&str> = lines[1].split_whitespace().collect();
-            if cols.len() >= 4 {
-                let total_kb: u64 = cols[1].parse().unwrap_or(0);
-                let avail_kb: u64 = cols[3].parse().unwrap_or(0);
-                let total_bytes = total_kb * 1024;
-                let available_bytes = avail_kb * 1024;
+        if let Ok(c_path) = CString::new(path_bytes) {
+            let mut stat: MaybeUninit<libc::statvfs> = MaybeUninit::uninit();
+            let res = unsafe { libc::statvfs(c_path.as_ptr(), stat.as_mut_ptr()) };
+            if res == 0 {
+                let stat = unsafe { stat.assume_init() };
+                let block_size = if stat.f_frsize > 0 {
+                    stat.f_frsize as u64
+                } else {
+                    stat.f_bsize as u64
+                };
+                let total_bytes = stat.f_blocks as u64 * block_size;
+                let available_bytes = stat.f_bavail as u64 * block_size;
                 return Ok(DiskSpaceInfo {
                     total_bytes,
                     available_bytes,
@@ -141,7 +144,33 @@ pub fn get_disk_space(target_path: &str) -> Result<DiskSpaceInfo, String> {
                 });
             }
         }
-        Err("Could not parse df output".to_string())
+
+        // Secondary fallback to df only if statvfs fails
+        let output = std::process::Command::new("df")
+            .arg("-k")
+            .arg(check_path)
+            .output()
+            .map_err(|e| format!("Failed to inspect disk space: {}", e))?;
+
+        if output.status.success() {
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            let lines: Vec<&str> = stdout.lines().collect();
+            if lines.len() >= 2 {
+                let cols: Vec<&str> = lines[1].split_whitespace().collect();
+                if cols.len() >= 4 {
+                    let total_kb: u64 = cols[1].parse().unwrap_or(0);
+                    let avail_kb: u64 = cols[3].parse().unwrap_or(0);
+                    let total_bytes = total_kb * 1024;
+                    let available_bytes = avail_kb * 1024;
+                    return Ok(DiskSpaceInfo {
+                        total_bytes,
+                        available_bytes,
+                        formatted_available: format_bytes(available_bytes),
+                    });
+                }
+            }
+        }
+        Err("Could not inspect disk space".to_string())
     }
 
     #[cfg(not(unix))]

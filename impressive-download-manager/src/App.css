@@ -2471,3 +2471,347 @@ html[data-theme="light"] .category-folder-row .form-input {
   color: #0f172a !important;
 }
 
+/* Premium Category Pills Selector */
+.category-pills-row {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  align-items: center;
+}
+
+.category-pill-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 14px;
+  border-radius: 999px;
+  font-size: 0.8rem;
+  font-weight: 500;
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  color: var(--text-secondary);
+  cursor: pointer;
+  transition: all 0.2s cubic-bezier(0.16, 1, 0.3, 1);
+  user-select: none;
+}
+
+.category-pill-btn:hover {
+  background: rgba(255, 255, 255, 0.09);
+  color: var(--text-primary);
+  border-color: rgba(255, 255, 255, 0.18);
+  transform: translateY(-1px);
+}
+
+.category-pill-btn.active {
+  background: rgba(6, 182, 212, 0.16);
+  border-color: var(--accent-cyan);
+  color: #ffffff;
+  font-weight: 700;
+  box-shadow: 0 0 14px rgba(6, 182, 212, 0.3);
+}
+
+html[data-theme="light"] .category-pill-btn {
+  background: rgba(0, 0, 0, 0.04);
+  border-color: rgba(0, 0, 0, 0.08);
+  color: #4b5563;
+}
+
+html[data-theme="light"] .category-pill-btn:hover {
+  background: rgba(0, 0, 0, 0.08);
+  color: #111827;
+}
+
+html[data-theme="light"] .category-pill-btn.active {
+  background: rgba(6, 182, 212, 0.12);
+  border-color: var(--accent-cyan);
+  color: #0891b2;
+}
+
+/* Pre-Flight Pill Bar */
+.preflight-pill-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 16px;
+  border-radius: 14px;
+  background: rgba(255, 255, 255, 0.03);
+  border: 1px solid rgba(255, 255, 255, 0.06);
+  margin-top: 2px;
+}
+
+html[data-theme="light"] .preflight-pill-bar {
+  background: rgba(0, 0, 0, 0.03);
+  border-color: rgba(0, 0, 0, 0.06);
+}
+
+.preflight-pill-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 0.82rem;
+}
+
+/* Download Later Pill Button with Perfect Dark/Light Contrast */
+.download-later-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  height: 42px;
+  padding: 0 20px;
+  border-radius: 999px;
+  font-size: 0.88rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.2s cubic-bezier(0.16, 1, 0.3, 1);
+  user-select: none;
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  color: #f1f5f9;
+}
+
+.download-later-pill:hover {
+  background: rgba(255, 255, 255, 0.12);
+  border-color: rgba(255, 255, 255, 0.24);
+  color: #ffffff;
+  transform: translateY(-1px);
+}
+
+html[data-theme="light"] .download-later-pill {
+  background: #f1f5f9 !important;
+  border: 1px solid #94a3b8 !important;
+  color: #0f172a !important;
+  font-weight: 700 !important;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1) !important;
+}
+
+html[data-theme="light"] .download-later-pill:hover {
+  background: #e2e8f0 !important;
+  border-color: #64748b !important;
+  color: #020617 !important;
+  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.14) !important;
+  transform: translateY(-1px);
+}
+
+/* Rock-Solid Non-Flickering Popup Action Buttons */
+.popup-action-btn {
+  flex: 1;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  height: 44px;
+  padding: 0 18px;
+  border-radius: 14px;
+  font-size: 0.92rem;
+  font-weight: 700;
+  cursor: pointer;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  background: rgba(255, 255, 255, 0.06);
+  color: #f1f5f9;
+  outline: none;
+  user-select: none;
+  transition: background 0.15s ease, border-color 0.15s ease, box-shadow 0.15s ease;
+}
+
+.popup-action-btn:hover {
+  background: rgba(255, 255, 255, 0.14);
+  border-color: rgba(255, 255, 255, 0.28);
+  color: #ffffff;
+}
+
+.popup-action-btn.pause-btn {
+  color: var(--accent-cyan);
+  border-color: rgba(6, 182, 212, 0.3);
+  background: rgba(6, 182, 212, 0.08);
+}
+
+.popup-action-btn.pause-btn:hover {
+  background: rgba(6, 182, 212, 0.18);
+  border-color: rgba(6, 182, 212, 0.5);
+  box-shadow: 0 0 14px rgba(6, 182, 212, 0.2);
+}
+
+.popup-action-btn.resume-btn {
+  color: var(--accent-green);
+  border-color: rgba(16, 185, 129, 0.3);
+  background: rgba(16, 185, 129, 0.08);
+}
+
+.popup-action-btn.resume-btn:hover {
+  background: rgba(16, 185, 129, 0.18);
+  border-color: rgba(16, 185, 129, 0.5);
+  box-shadow: 0 0 14px rgba(16, 185, 129, 0.2);
+}
+
+.popup-action-btn.cancel-btn {
+  color: var(--accent-red);
+  border-color: rgba(239, 68, 68, 0.3);
+  background: rgba(239, 68, 68, 0.08);
+}
+
+.popup-action-btn.cancel-btn:hover {
+  background: rgba(239, 68, 68, 0.18);
+  border-color: rgba(239, 68, 68, 0.5);
+  box-shadow: 0 0 14px rgba(239, 68, 68, 0.2);
+}
+
+/* Light Theme overrides for popup-action-btn */
+html[data-theme="light"] .popup-action-btn {
+  background: #f1f5f9;
+  border-color: #cbd5e1;
+  color: #0f172a;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.06);
+}
+
+html[data-theme="light"] .popup-action-btn:hover {
+  background: #e2e8f0;
+  border-color: #94a3b8;
+  color: #020617;
+}
+
+html[data-theme="light"] .popup-action-btn.pause-btn {
+  color: #0284c7;
+  background: #e0f2fe;
+  border-color: #7dd3fc;
+}
+
+html[data-theme="light"] .popup-action-btn.pause-btn:hover {
+  background: #bae6fd;
+  border-color: #38bdf8;
+  box-shadow: 0 2px 8px rgba(2, 132, 199, 0.15);
+}
+
+html[data-theme="light"] .popup-action-btn.resume-btn {
+  color: #059669;
+  background: #d1fae5;
+  border-color: #6ee7b7;
+}
+
+html[data-theme="light"] .popup-action-btn.resume-btn:hover {
+  background: #a7f3d0;
+  border-color: #34d399;
+  box-shadow: 0 2px 8px rgba(5, 150, 105, 0.15);
+}
+
+html[data-theme="light"] .popup-action-btn.cancel-btn {
+  color: #dc2626;
+  background: #fee2e2;
+  border-color: #fca5a5;
+}
+
+html[data-theme="light"] .popup-action-btn.cancel-btn:hover {
+  background: #fecaca;
+  border-color: #f87171;
+  box-shadow: 0 2px 8px rgba(220, 38, 38, 0.15);
+}
+
+/* Stable Non-Flickering Popup Window Elements */
+.popup-header-bar {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 48px;
+  padding: 0 16px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  z-index: 30;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+  background: rgba(15, 23, 42, 0.9);
+  transform: translateZ(0);
+  -webkit-transform: translateZ(0);
+  backface-visibility: hidden;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+html[data-theme="light"] .popup-header-bar {
+  background: rgba(248, 250, 252, 0.95);
+  border-bottom-color: rgba(0, 0, 0, 0.08);
+}
+
+.popup-header-title {
+  font-size: 0.95rem;
+  font-weight: 700;
+  letter-spacing: -0.01em;
+  color: var(--text-primary);
+  transform: translateZ(0);
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+.popup-status-pill {
+  font-size: 0.72rem;
+  font-weight: 700;
+  padding: 3px 10px;
+  border-radius: 100px;
+  line-height: 1.2;
+  letter-spacing: 0.2px;
+  transform: translateZ(0);
+  -webkit-transform: translateZ(0);
+  backface-visibility: hidden;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  border: 1px solid transparent;
+}
+
+.popup-status-pill.downloading {
+  background: rgba(6, 182, 212, 0.16);
+  color: var(--accent-cyan);
+  border-color: rgba(6, 182, 212, 0.3);
+}
+
+.popup-status-pill.paused {
+  background: rgba(245, 158, 11, 0.16);
+  color: var(--accent-orange);
+  border-color: rgba(245, 158, 11, 0.3);
+}
+
+.popup-status-pill.completed {
+  background: rgba(16, 185, 129, 0.16);
+  color: var(--accent-green);
+  border-color: rgba(16, 185, 129, 0.3);
+}
+
+.popup-status-pill.failed {
+  background: rgba(239, 68, 68, 0.16);
+  color: var(--accent-red);
+  border-color: rgba(239, 68, 68, 0.3);
+}
+
+/* Stable Centered Text Inside Liquid Circle */
+.liquid-text-overlay {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  z-index: 15;
+  pointer-events: none;
+  transform: translateZ(0);
+  -webkit-transform: translateZ(0);
+  backface-visibility: hidden;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+.liquid-percent-text {
+  font-weight: 800;
+  color: #ffffff;
+  line-height: 1;
+  text-shadow: 0 1px 4px rgba(0, 0, 0, 0.9);
+  transform: translateZ(0);
+  -webkit-font-smoothing: antialiased;
+}
+
+.liquid-status-text {
+  font-size: 0.72rem;
+  font-weight: 700;
+  color: rgba(255, 255, 255, 0.95);
+  margin-top: 3px;
+  text-shadow: 0 1px 4px rgba(0, 0, 0, 0.9);
+  transform: translateZ(0);
+  -webkit-font-smoothing: antialiased;
+}
