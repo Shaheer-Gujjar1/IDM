@@ -10,6 +10,8 @@ pub mod checksum;
 pub mod github_accelerator;
 pub mod huggingface;
 pub mod ftp;
+pub mod ed2k;
+pub mod youtube_batch;
 
 use std::sync::Arc;
 use tauri::{State, Manager};
@@ -118,6 +120,47 @@ async fn verify_file_checksum(
         &expected_hash,
         algorithm.as_deref(),
     )
+}
+
+#[tauri::command]
+async fn resolve_youtube_playlist(
+    url: String,
+    limit: Option<usize>,
+) -> Result<youtube_batch::YouTubePlaylistInfo, String> {
+    youtube_batch::resolve_youtube_playlist(&url, limit).await
+}
+
+#[tauri::command]
+async fn download_youtube_subtitles(
+    video_url: String,
+    lang: Option<String>,
+    format: Option<String>,
+    output_dir: String,
+    custom_filename: Option<String>,
+) -> Result<String, String> {
+    let out_path = youtube_batch::download_youtube_subtitles_standalone(
+        &video_url,
+        lang.as_deref(),
+        &format.unwrap_or_else(|| "srt".to_string()),
+        std::path::Path::new(&output_dir),
+        custom_filename.as_deref(),
+    ).await?;
+    Ok(out_path.to_string_lossy().to_string())
+}
+
+#[tauri::command]
+async fn parse_ed2k_links(
+    content: String,
+) -> Result<Vec<ed2k::Ed2kFileInfo>, String> {
+    Ok(ed2k::parse_ed2k_pack(&content))
+}
+
+#[tauri::command]
+async fn verify_ed2k_checksum(
+    path: String,
+    expected_hash: String,
+) -> Result<bool, String> {
+    ed2k::verify_ed2k_file(std::path::Path::new(&path), &expected_hash)
 }
 
 #[tauri::command]
@@ -1327,7 +1370,11 @@ pub fn run() {
             register_native_messaging,
             get_browser_integration_status,
             calculate_file_checksum,
-            verify_file_checksum
+            verify_file_checksum,
+            resolve_youtube_playlist,
+            download_youtube_subtitles,
+            parse_ed2k_links,
+            verify_ed2k_checksum
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

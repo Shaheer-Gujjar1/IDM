@@ -740,13 +740,30 @@ impl DownloadManager {
             }
         }
 
+        // Feature: eDonkey2000 / eMule Protocol
+        if crate::ed2k::is_ed2k_url(&clean_url) {
+            if let Ok(ed2k_info) = crate::ed2k::parse_ed2k_link(&clean_url) {
+                if crate::proxy::is_generic_filename(&filename) || filename.is_empty() {
+                    filename = ed2k_info.filename.clone();
+                }
+                if download_size.is_none() || download_size == Some(0) {
+                    download_size = Some(ed2k_info.file_size);
+                }
+                // If ed2k link has HTTP web seeds (s=http://...), route download_url to the web seed
+                if let Some(webseed) = ed2k_info.sources.iter().find(|s| s.starts_with("http://") || s.starts_with("https://")) {
+                    download_url = webseed.clone();
+                }
+            }
+        }
+
         if !download_url.starts_with("http://")
             && !download_url.starts_with("https://")
             && !download_url.starts_with("magnet:?")
             && !download_url.starts_with("ftp://")
             && !download_url.starts_with("ftps://")
+            && !download_url.starts_with("ed2k://")
         {
-            return Err("Unsupported URL protocol. Only http://, https://, ftp://, ftps://, and magnet:? URLs can be downloaded over the network. In-memory URLs (e.g. blob:) are generated locally in your browser and saved directly by the browser.".to_string());
+            return Err("Unsupported URL protocol. Only http://, https://, ftp://, ftps://, ed2k://, and magnet:? URLs can be downloaded over the network. In-memory URLs (e.g. blob:) are generated locally in your browser and saved directly by the browser.".to_string());
         }
 
         if crate::proxy::is_generic_filename(&filename) || filename.is_empty() {
@@ -1328,6 +1345,13 @@ impl DownloadManager {
             ));
             cmd.arg("--merge-output-format").arg("mp4");
         }
+
+        // Feature: YouTube Subtitles (.srt / .vtt) extraction alongside video
+        cmd.arg("--write-sub")
+           .arg("--write-auto-sub")
+           .arg("--sub-lang").arg("en,ur,hi,all")
+           .arg("--sub-format").arg("srt/vtt/best")
+           .arg("--embed-subs");
 
         // Edge Case 5: YouTube Cookie & Authentication Passing
         let temp_cookie_file = if !task.cookie.is_empty() {

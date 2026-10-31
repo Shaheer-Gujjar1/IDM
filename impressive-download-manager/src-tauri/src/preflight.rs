@@ -242,8 +242,50 @@ pub async fn probe_download_url(
         });
     }
 
+    // eDonkey2000 / eMule Protocol Probe Handling
+    if crate::ed2k::is_ed2k_url(url) {
+        let ed2k_info = crate::ed2k::parse_ed2k_link(url)?;
+        let filename_candidate = crate::proxy::sanitize_filename(&ed2k_info.filename);
+        let category = detect_category(&filename_candidate, None).to_string();
+        let total_size = ed2k_info.file_size;
+
+        let target_folder = save_folder.unwrap_or(".");
+        let target_file_path = std::path::Path::new(target_folder).join(&filename_candidate);
+        let file_already_exists = target_file_path.exists();
+        let existing_file_size = if file_already_exists {
+            std::fs::metadata(&target_file_path).map(|m| m.len()).ok()
+        } else {
+            None
+        };
+
+        let disk_info = get_disk_space(target_folder).ok();
+        let (available_disk_space, formatted_disk_space, has_enough_space) = match disk_info {
+            Some(info) => {
+                let enough = if total_size > 0 { info.available_bytes >= total_size } else { true };
+                (Some(info.available_bytes), Some(info.formatted_available), enough)
+            }
+            None => (None, None, true),
+        };
+
+        return Ok(PreflightProbeResult {
+            url: url.to_string(),
+            final_url: url.to_string(),
+            filename: filename_candidate,
+            total_size,
+            formatted_size: format_bytes(total_size),
+            supports_range: true,
+            category,
+            mime_type: None,
+            available_disk_space,
+            formatted_disk_space,
+            has_enough_space,
+            file_already_exists,
+            existing_file_size,
+        });
+    }
+
     if !url.starts_with("http://") && !url.starts_with("https://") {
-        return Err("Unsupported protocol. Only http://, https://, ftp://, and ftps:// URLs are supported.".to_string());
+        return Err("Unsupported protocol. Only http://, https://, ftp://, ftps://, and ed2k:// URLs are supported.".to_string());
     }
 
     // Hugging Face AI URL normalization (/blob/ -> /resolve/)
