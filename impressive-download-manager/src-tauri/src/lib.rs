@@ -4,6 +4,8 @@ pub mod hls;
 pub mod mux;
 pub mod preflight;
 pub mod native_host;
+pub mod aria2_rpc;
+pub mod torrent;
 
 use std::sync::Arc;
 use tauri::{State, Manager};
@@ -788,6 +790,12 @@ pub fn run() {
 
                 // Automatically register and sync Native Messaging Host manifests across all installed browsers
                 let _ = native_host::register_all_browser_manifests(None);
+
+                // Start Aria2 JSON-RPC 2.0 Compatibility Server on port 6800
+                let manager_for_aria2 = manager_for_init.clone();
+                tauri::async_runtime::spawn(async move {
+                    let _ = aria2_rpc::start_aria2_server(aria2_rpc::DEFAULT_ARIA2_PORT, manager_for_aria2).await;
+                });
 
                 // Windows Autostart Run registry key
                 #[cfg(target_os = "windows")]

@@ -129,25 +129,50 @@
 }
 
 /* Spotlight Search */
+/* Spotlight Search & Topbar */
 .topbar-v2 {
   height: 80px;
   display: flex;
   align-items: center;
-  justify-content: center;
+  justify-content: space-between;
+  gap: 16px;
   padding: 0 32px;
   border-bottom: 1px solid rgba(255, 255, 255, 0.02);
-  position: relative;
+  box-sizing: border-box;
 }
 
-.topbar-right-actions {
-  position: absolute;
-  right: 32px;
-  top: 50%;
-  transform: translateY(-50%);
+.topbar-left-zone {
   display: flex;
   align-items: center;
-  gap: 12px;
-  z-index: 10;
+  min-width: 140px;
+  flex: 1;
+}
+
+.topbar-category-title {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 1.05rem;
+  font-weight: 700;
+  color: var(--text-primary);
+  letter-spacing: -0.3px;
+}
+
+.topbar-center-zone {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex: 2;
+  max-width: 440px;
+  min-width: 0;
+}
+
+.topbar-right-zone {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  min-width: 140px;
+  flex: 1;
 }
 
 .empty-trash-btn {
@@ -162,6 +187,8 @@
   background: rgba(239, 68, 68, 0.12);
   border: 1px solid rgba(239, 68, 68, 0.3);
   cursor: pointer;
+  white-space: nowrap;
+  flex-shrink: 0;
   transition: all 0.25s cubic-bezier(0.16, 1, 0.3, 1);
 }
 
@@ -193,12 +220,13 @@ html[data-theme="light"] .empty-trash-btn:hover:not(:disabled) {
 
 .spotlight-search-container {
   position: relative;
-  width: 400px;
-  max-width: 100%;
+  width: 100%;
+  max-width: 400px;
 }
 
 .spotlight-input {
   width: 100%;
+  box-sizing: border-box;
   background: rgba(0, 0, 0, 0.2);
   border: 1px solid rgba(255, 255, 255, 0.08);
   border-radius: 100px;

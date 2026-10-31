@@ -270,6 +270,75 @@ fn download_captured_response() -> Response<BoxBody<Bytes, hyper::Error>> {
     resp
 }
 
+/// Truncates a UTF-8 string to at most `max_bytes` without slicing inside a multi-byte code point,
+/// and ensures character count does not exceed `max_chars`.
+pub fn truncate_safe_utf8(s: &str, max_bytes: usize, max_chars: usize) -> &str {
+    if s.is_empty() || (max_bytes == 0 && max_chars == 0) {
+        return "";
+    }
+    let mut boundary = max_bytes.min(s.len());
+    while boundary > 0 && !s.is_char_boundary(boundary) {
+        boundary -= 1;
+    }
+    let mut slice = &s[..boundary];
+    if slice.chars().count() > max_chars {
+        if let Some((idx, _)) = slice.char_indices().nth(max_chars) {
+            slice = &slice[..idx];
+        }
+    }
+    slice
+}
+
+/// Helper to split stem and extension, recognizing compound archive extensions (.tar.gz, .tar.bz2, etc.).
+pub fn split_stem_and_extension(name: &str) -> (&str, &str) {
+    let lower = name.to_lowercase();
+    let compound_exts = [
+        ".tar.gz", ".tar.bz2", ".tar.xz", ".tar.zst", ".tar.lz", ".tar.lzma",
+        ".user.js",
+    ];
+    for ext in compound_exts {
+        if lower.ends_with(ext) {
+            let split_pos = name.len() - ext.len();
+            return (&name[..split_pos], &name[split_pos..]);
+        }
+    }
+    if let Some(pos) = name.rfind('.') {
+        if pos > 0 {
+            return (&name[..pos], &name[pos..]);
+        }
+    }
+    (name, "")
+}
+
+/// Checks if a file stem collides with Windows reserved device names or NTFS system files.
+pub fn is_windows_reserved_stem(stem: &str) -> bool {
+    let clean = stem.trim_end_matches([' ', '.']).to_lowercase();
+    if clean.is_empty() {
+        return false;
+    }
+
+    // Windows normalizes superscript numbers (¹, ², ³) to ASCII digits (1, 2, 3) in device lookups
+    let normalized: String = clean.chars().map(|c| match c {
+        '\u{00B9}' => '1',
+        '\u{00B2}' => '2',
+        '\u{00B3}' => '3',
+        _ => c,
+    }).collect();
+
+    let reserved = [
+        // Standard MS-DOS / Windows device names
+        "con", "prn", "aux", "nul",
+        "conin$", "conout$", "clock$",
+        "com0", "com1", "com2", "com3", "com4", "com5", "com6", "com7", "com8", "com9",
+        "lpt0", "lpt1", "lpt2", "lpt3", "lpt4", "lpt5", "lpt6", "lpt7", "lpt8", "lpt9",
+        // NTFS internal metadata files that fail or corrupt if created at root/shares
+        "$mft", "$mftmirr", "$logfile", "$volume", "$attrdef", "$bitmap",
+        "$boot", "$badclus", "$secure", "$upcase", "$extend",
+    ];
+
+    reserved.contains(&normalized.as_str())
+}
+
 pub fn sanitize_filename(name: &str) -> String {
     let clean = name.trim().trim_matches('"').trim_matches('\'');
 
@@ -312,48 +381,49 @@ pub fn sanitize_filename(name: &str) -> String {
         clean.to_string()
     };
 
-    // Check Windows reserved device names: CON, PRN, AUX, NUL, COM1-9, LPT1-9, CONIN$, CONOUT$, CLOCK$
-    let stem = if let Some(dot_idx) = clean.find('.') {
-        &clean[..dot_idx]
-    } else {
-        &clean
-    };
-
-    let reserved = [
-        "con", "prn", "aux", "nul",
-        "conin$", "conout$", "clock$",
-        "com1", "com2", "com3", "com4", "com5", "com6", "com7", "com8", "com9",
-        "lpt1", "lpt2", "lpt3", "lpt4", "lpt5", "lpt6", "lpt7", "lpt8", "lpt9",
-    ];
-
-    let mut result = if reserved.contains(&stem.to_lowercase().as_str()) {
-        format!("download_{}", clean)
+    // Check Windows reserved device names: CON, PRN, AUX, NUL, COM0-9, LPT0-9, CONIN$, CONOUT$, CLOCK$, $MFT, etc.
+    let (stem, ext) = split_stem_and_extension(&clean);
+    let mut working_name = if is_windows_reserved_stem(stem) {
+        let clean_stem = stem.trim_end_matches([' ', '.']);
+        format!("download_{}{}", clean_stem, ext)
     } else {
         clean
     };
 
-    // Cap filename length to 180 characters to respect filesystem MAX_PATH limits
-    if result.len() > 180 {
-        let ext_len = if result.to_lowercase().ends_with(".tar.gz") {
-            7
-        } else if result.to_lowercase().ends_with(".tar.bz2") || result.to_lowercase().ends_with(".tar.xz") {
-            8
-        } else if let Some(ext_idx) = result.rfind('.') {
-            result.len() - ext_idx
+    // Cap filename length to 180 bytes & 180 characters to respect filesystem MAX_PATH and 255-byte limits
+    // Uses UTF-8 character-boundary safe truncation to completely prevent slicing panics on multi-byte characters!
+    const MAX_LIMIT: usize = 180;
+    if working_name.len() > MAX_LIMIT || working_name.chars().count() > MAX_LIMIT {
+        let (cur_stem, cur_ext) = split_stem_and_extension(&working_name);
+        if !cur_ext.is_empty() && cur_ext.len() < MAX_LIMIT && cur_ext.chars().count() < MAX_LIMIT {
+            let max_stem_bytes = MAX_LIMIT.saturating_sub(cur_ext.len());
+            let max_stem_chars = MAX_LIMIT.saturating_sub(cur_ext.chars().count());
+            let safe_stem = truncate_safe_utf8(cur_stem, max_stem_bytes, max_stem_chars)
+                .trim_end_matches([' ', '.']);
+            let safe_stem = if safe_stem.is_empty() {
+                "download_file"
+            } else {
+                safe_stem
+            };
+            working_name = format!("{}{}", safe_stem, cur_ext);
         } else {
-            0
-        };
+            let safe = truncate_safe_utf8(&working_name, MAX_LIMIT, MAX_LIMIT)
+                .trim_end_matches([' ', '.']);
+            working_name = if safe.is_empty() {
+                "download_file".to_string()
+            } else {
+                safe.to_string()
+            };
+        }
 
-        if ext_len > 0 && ext_len < 180 {
-            let ext = result[result.len() - ext_len..].to_string();
-            let max_stem_len = 180usize.saturating_sub(ext_len);
-            result = format!("{}{}", &result[..max_stem_len], ext);
-        } else {
-            result.truncate(180);
+        // Post-truncation safety check: if truncation caused the stem to become a reserved device name
+        let (post_stem, post_ext) = split_stem_and_extension(&working_name);
+        if is_windows_reserved_stem(post_stem) && !working_name.starts_with("download_") {
+            working_name = format!("download_{}{}", post_stem.trim_end_matches([' ', '.']), post_ext);
         }
     }
 
-    result
+    working_name
 }
 
 pub fn parse_content_disposition(value: &str) -> Option<String> {
@@ -704,6 +774,82 @@ mod tests {
         let sanitized = sanitize_filename(&long_filename);
         assert!(sanitized.len() <= 180, "Sanitized filename length must be <= 180, got {}", sanitized.len());
         assert!(sanitized.ends_with(".tar.gz"), "File extension must be preserved during truncation");
+    }
+
+    #[test]
+    fn test_edge_case_4_extended_windows_reserved_names() {
+        // Test extended Windows device names, trailing spaces, dots, superscripts, and NTFS system files
+        let test_cases = [
+            ("aux.pdf", "download_aux.pdf"),
+            ("prn.log", "download_prn.log"),
+            ("con.tar.gz", "download_con.tar.gz"),
+            ("NUL.zip", "download_NUL.zip"),
+            ("com0.bin", "download_com0.bin"),
+            ("lpt0.dat", "download_lpt0.dat"),
+            ("COM1.png", "download_COM1.png"),
+            ("lpt9.txt", "download_lpt9.txt"),
+            ("prn .txt", "download_prn.txt"),
+            ("aux  .tar.bz2", "download_aux.tar.bz2"),
+            ("CONIN$", "download_CONIN$"),
+            ("conout$.pdf", "download_conout$.pdf"),
+            ("clock$", "download_clock$"),
+            ("COM¹", "download_COM¹"),
+            ("lpt².zip", "download_lpt².zip"),
+            ("$mft.dat", "download_$mft.dat"),
+            ("$secure.sys", "download_$secure.sys"),
+            ("my_notes...  ", "my_notes"),
+        ];
+
+        for (input, expected) in test_cases {
+            let res = sanitize_filename(input);
+            assert_eq!(res, expected, "Failed for input: {}", input);
+        }
+    }
+
+    #[test]
+    fn test_edge_case_4_utf8_char_boundary_long_filename_no_panic() {
+        // Multi-byte Urdu string: each Urdu character is 2 bytes.
+        // If sliced on raw byte index without boundary checking, will trigger an instant Rust panic!
+        let base_urdu = "یہ_ایک_بہت_ہی_طویل_فائل_کا_نام_ہے_جو_کہ_اردو_زبان_میں_لکھی_گئی_ہے_اور_ہم_ٹیسٹنگ_کر_رہے_ہیں";
+        let long_urdu = format!("{}_{}_{}.pdf", base_urdu, base_urdu, base_urdu);
+        assert!(long_urdu.len() > 200, "Must be long multi-byte string, got {}", long_urdu.len());
+
+        let sanitized_urdu = sanitize_filename(&long_urdu);
+        assert!(sanitized_urdu.len() <= 180, "Urdu byte length must be <= 180, got {}", sanitized_urdu.len());
+        assert!(sanitized_urdu.chars().count() <= 180, "Urdu char count must be <= 180");
+        assert!(sanitized_urdu.ends_with(".pdf"), "Extension .pdf must be preserved");
+        assert!(std::str::from_utf8(sanitized_urdu.as_bytes()).is_ok(), "Must be valid UTF-8");
+
+        // Multi-byte Chinese compound extension:
+        let base_cn = "这是一个非常非常非常长的测试文件名称用来验证中文字符边界截断是否安全";
+        let long_cn = format!("{}_{}_{}.tar.gz", base_cn, base_cn, base_cn);
+        assert!(long_cn.len() > 300, "Must be long multi-byte string, got {}", long_cn.len());
+
+        let sanitized_cn = sanitize_filename(&long_cn);
+        assert!(sanitized_cn.len() <= 180, "Chinese byte length must be <= 180, got {}", sanitized_cn.len());
+        assert!(sanitized_cn.chars().count() <= 180, "Chinese char count must be <= 180");
+        assert!(sanitized_cn.ends_with(".tar.gz"), "Compound extension .tar.gz must be preserved");
+        assert!(std::str::from_utf8(sanitized_cn.as_bytes()).is_ok(), "Must be valid UTF-8");
+
+        // 4-byte UTF-8 Emoji boundary safety test:
+        let emojis = "🚀🔥🎉⚡️🌟💎📦🎯🏆🎨".repeat(20);
+        let long_emoji_file = format!("{}.mp4", emojis);
+        let sanitized_emoji = sanitize_filename(&long_emoji_file);
+        assert!(sanitized_emoji.len() <= 180, "Emoji byte length must be <= 180, got {}", sanitized_emoji.len());
+        assert!(sanitized_emoji.ends_with(".mp4"), "Extension .mp4 must be preserved");
+        assert!(std::str::from_utf8(sanitized_emoji.as_bytes()).is_ok(), "Must be valid UTF-8");
+    }
+
+    #[test]
+    fn test_edge_case_4_post_truncation_reserved_name_collision() {
+        // If truncation accidentally reduces a long filename to a reserved Windows device name
+        let target_stem = format!("con_{}", "x".repeat(250));
+        let filename = format!("{}.log", target_stem);
+        let sanitized = sanitize_filename(&filename);
+        assert!(sanitized.len() <= 180);
+        assert!(sanitized.ends_with(".log"));
+        // Check that device collision avoidance is maintained
+        assert!(!sanitized.to_lowercase().starts_with("con."));
     }
 
     #[test]

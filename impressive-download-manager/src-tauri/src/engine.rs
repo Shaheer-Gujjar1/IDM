@@ -47,6 +47,185 @@ impl Clone for ActiveChunk {
     }
 }
 
+pub fn write_at_offset(file: &std::fs::File, #[allow(unused_mut)] mut buf: &[u8], #[allow(unused_mut)] mut offset: u64) -> std::io::Result<()> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::FileExt;
+        file.write_all_at(buf, offset)
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::FileExt;
+        while !buf.is_empty() {
+            let n = file.seek_write(buf, offset)?;
+            if n == 0 {
+                return Err(std::io::Error::new(std::io::ErrorKind::WriteZero, "Failed to write bytes at offset"));
+            }
+            buf = &buf[n..];
+            offset += n as u64;
+        }
+        Ok(())
+    }
+    #[cfg(not(any(unix, windows)))]
+    {
+        use std::io::{Seek, Write};
+        let mut f = file.try_clone()?;
+        f.seek(std::io::SeekFrom::Start(offset))?;
+        f.write_all(buf)
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BrowserProfile {
+    pub user_agent: String,
+    pub brand: String,
+    pub version: String,
+    pub platform: String,
+    pub is_mobile: bool,
+    pub sec_ch_ua: Option<String>,
+}
+
+impl BrowserProfile {
+    pub fn detect(raw_ua: &str) -> Self {
+        let ua = if raw_ua.trim().is_empty() {
+            #[cfg(target_os = "windows")]
+            { "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36" }
+            #[cfg(target_os = "macos")]
+            { "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36" }
+            #[cfg(not(any(target_os = "windows", target_os = "macos")))]
+            { "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36" }
+        } else {
+            raw_ua
+        };
+
+        let is_mobile = ua.contains("Mobile") || ua.contains("Android");
+
+        let platform = if ua.contains("Windows") {
+            "\"Windows\""
+        } else if ua.contains("Macintosh") || ua.contains("Mac OS") {
+            "\"macOS\""
+        } else if ua.contains("Android") {
+            "\"Android\""
+        } else {
+            "\"Linux\""
+        };
+
+        if ua.contains("Firefox") {
+            return Self {
+                user_agent: ua.to_string(),
+                brand: "Firefox".to_string(),
+                version: "132".to_string(),
+                platform: platform.to_string(),
+                is_mobile,
+                sec_ch_ua: None,
+            };
+        }
+
+        if ua.contains("Safari") && !ua.contains("Chrome") && !ua.contains("Chromium") {
+            return Self {
+                user_agent: ua.to_string(),
+                brand: "Safari".to_string(),
+                version: "17".to_string(),
+                platform: platform.to_string(),
+                is_mobile,
+                sec_ch_ua: None,
+            };
+        }
+
+        let (brand, ver) = if ua.contains("Edg/") {
+            let ver = ua.split("Edg/").nth(1).and_then(|s| s.split('.').next()).unwrap_or("131");
+            ("Edge", ver)
+        } else if ua.contains("Chrome/") {
+            let ver = ua.split("Chrome/").nth(1).and_then(|s| s.split('.').next()).unwrap_or("131");
+            ("Chrome", ver)
+        } else {
+            ("Chrome", "131")
+        };
+
+        let sec_ch_ua = if brand == "Edge" {
+            format!("\"Chromium\";v=\"{}\", \"Microsoft Edge\";v=\"{}\", \"Not-A.Brand\";v=\"99\"", ver, ver)
+        } else {
+            format!("\"Chromium\";v=\"{}\", \"Google Chrome\";v=\"{}\", \"Not-A.Brand\";v=\"99\"", ver, ver)
+        };
+
+        Self {
+            user_agent: ua.to_string(),
+            brand: brand.to_string(),
+            version: ver.to_string(),
+            platform: platform.to_string(),
+            is_mobile,
+            sec_ch_ua: Some(sec_ch_ua),
+        }
+    }
+
+    pub fn apply_headers(
+        &self,
+        mut req: reqwest::RequestBuilder,
+        target_url: &str,
+        user_referer: &str,
+        user_cookie: &str,
+        is_retry_403: bool,
+    ) -> reqwest::RequestBuilder {
+        use reqwest::header::*;
+
+        req = req.header(USER_AGENT, &self.user_agent);
+
+        if let Some(ref sec_ch) = self.sec_ch_ua {
+            req = req.header("sec-ch-ua", sec_ch);
+            req = req.header("sec-ch-ua-mobile", if self.is_mobile { "?1" } else { "?0" });
+            req = req.header("sec-ch-ua-platform", &self.platform);
+        }
+
+        if self.brand == "Firefox" {
+            req = req.header(ACCEPT, "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8");
+            req = req.header(ACCEPT_LANGUAGE, "en-US,en;q=0.5");
+        } else {
+            req = req.header(ACCEPT, "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7");
+            req = req.header(ACCEPT_LANGUAGE, "en-US,en;q=0.9");
+        }
+
+        req = req.header(ACCEPT_ENCODING, "gzip, deflate, br, zstd");
+        req = req.header("upgrade-insecure-requests", "1");
+        req = req.header(CONNECTION, "keep-alive");
+
+        if is_retry_403 {
+            req = req.header("sec-fetch-dest", "empty");
+            req = req.header("sec-fetch-mode", "cors");
+            req = req.header("sec-fetch-site", "same-origin");
+        } else {
+            req = req.header("sec-fetch-dest", "document");
+            req = req.header("sec-fetch-mode", "navigate");
+            req = req.header("sec-fetch-site", "cross-site");
+            req = req.header("sec-fetch-user", "?1");
+        }
+
+        let parsed_url = reqwest::Url::parse(target_url).ok();
+        let target_origin = parsed_url.as_ref().map(|u| {
+            if let Some(port) = u.port() {
+                format!("{}://{}:{}", u.scheme(), u.host_str().unwrap_or(""), port)
+            } else {
+                format!("{}://{}", u.scheme(), u.host_str().unwrap_or(""))
+            }
+        });
+
+        if !user_referer.is_empty() {
+            req = req.header(REFERER, user_referer);
+        } else if let Some(ref origin) = target_origin {
+            req = req.header(REFERER, format!("{}/", origin));
+        }
+
+        if let Some(ref origin) = target_origin {
+            req = req.header("origin", origin);
+        }
+
+        if !user_cookie.is_empty() {
+            req = req.header(COOKIE, user_cookie);
+        }
+
+        req
+    }
+}
+
 #[derive(Debug, Clone, Serialize)]
 pub struct DownloadProgress {
     pub id: String,
@@ -102,18 +281,19 @@ impl DownloadTask {
     }
 
     pub fn update_filename_and_path(&self, new_name: &str) {
+        let clean_name = crate::proxy::sanitize_filename(new_name);
         let mut fn_guard = self.filename.lock().unwrap();
         let mut sp_guard = self.save_path.lock().unwrap();
-        *fn_guard = new_name.to_string();
+        *fn_guard = clean_name.clone();
         let path = std::path::Path::new(&*sp_guard);
         if let Some(parent) = path.parent() {
             if !parent.as_os_str().is_empty() {
-                *sp_guard = parent.join(new_name).to_string_lossy().to_string();
+                *sp_guard = parent.join(&clean_name).to_string_lossy().to_string();
             } else {
-                *sp_guard = new_name.to_string();
+                *sp_guard = clean_name;
             }
         } else {
-            *sp_guard = new_name.to_string();
+            *sp_guard = clean_name;
         }
     }
 
@@ -277,13 +457,10 @@ impl DownloadManager {
     pub fn new() -> Self {
         let client = reqwest::Client::builder()
             .danger_accept_invalid_certs(true)
-            .user_agent("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36")
             .pool_max_idle_per_host(32)
             .redirect(reqwest::redirect::Policy::limited(10))
-            .no_gzip()
-            .no_brotli()
-            .no_deflate()
             .tcp_keepalive(Duration::from_secs(30))
+            .tcp_nodelay(true)
             .connect_timeout(Duration::from_secs(30))
             .http2_adaptive_window(true)
             .connection_verbose(false)
@@ -499,12 +676,36 @@ impl DownloadManager {
 
         let id = uuid::Uuid::new_v4().to_string();
 
-        if !clean_url.starts_with("http://") && !clean_url.starts_with("https://") {
+        let mut download_url = clean_url.clone();
+        let mut download_size = size;
+
+        // Feature 3: BitTorrent Magnet Protocol Handler (BEP 9 / BEP 19 / BEP 53)
+        if clean_url.starts_with("magnet:?") {
+            let magnet = crate::torrent::parse_magnet(&clean_url)?;
+            if crate::proxy::is_generic_filename(&filename) || filename.is_empty() {
+                filename = magnet.name.clone();
+            }
+            if let Some(len) = magnet.exact_length {
+                if download_size.is_none() {
+                    download_size = Some(len);
+                }
+            }
+            if let Some(ws) = magnet.web_seeds.first() {
+                download_url = ws.clone();
+            } else {
+                return Err(format!(
+                    "Magnet link for '{}' (Info-Hash: {}) parsed successfully, but contains no HTTP/HTTPS WebSeeds (ws=). Standalone P2P swarming requires a full BitTorrent client.",
+                    magnet.name, magnet.info_hash
+                ));
+            }
+        }
+
+        if !download_url.starts_with("http://") && !download_url.starts_with("https://") {
             return Err("Unsupported URL protocol. Only http:// and https:// URLs can be downloaded over the network. In-memory URLs (e.g. blob:) are generated locally in your browser and saved directly by the browser.".to_string());
         }
 
         if crate::proxy::is_generic_filename(&filename) || filename.is_empty() {
-            if let Ok(parsed) = reqwest::Url::parse(&clean_url) {
+            if let Ok(parsed) = reqwest::Url::parse(&download_url) {
                 let mut candidate = String::new();
                 for (k, v) in parsed.query_pairs() {
                     let k_lower = k.to_lowercase();
@@ -551,6 +752,19 @@ impl DownloadManager {
             }
         }
 
+        // Ensure filename and save_path are always fully sanitized and clamped to filesystem limits
+        filename = crate::proxy::sanitize_filename(&filename);
+        let path = std::path::Path::new(&save_path);
+        if let Some(parent) = path.parent() {
+            if !parent.as_os_str().is_empty() {
+                save_path = parent.join(&filename).to_string_lossy().to_string();
+            } else {
+                save_path = filename.clone();
+            }
+        } else {
+            save_path = filename.clone();
+        }
+
         let final_category = match category {
             Some(cat) if !cat.trim().is_empty() => cat,
             _ => crate::preflight::detect_category(&filename, None).to_string(),
@@ -566,7 +780,7 @@ impl DownloadManager {
         let task = Arc::new(DownloadTask {
             id: id.clone(),
             original_url: clean_url.clone(),
-            final_url: Mutex::new(clean_url.clone()),
+            final_url: Mutex::new(download_url.clone()),
             filename: Arc::new(std::sync::Mutex::new(filename)),
             save_path: Arc::new(std::sync::Mutex::new(save_path)),
             category: Arc::new(std::sync::Mutex::new(final_category)),
@@ -574,7 +788,7 @@ impl DownloadManager {
             referrer,
             user_agent,
             audio_url: final_audio_url,
-            total_size: AtomicU64::new(size.unwrap_or(0)),
+            total_size: AtomicU64::new(download_size.unwrap_or(0)),
             downloaded: Arc::new(AtomicU64::new(0)),
             network_downloaded: Arc::new(AtomicU64::new(0)),
             speed_limiter: Mutex::new(Instant::now()),
@@ -1049,14 +1263,54 @@ impl DownloadManager {
             cmd.arg("--merge-output-format").arg("mp4");
         }
 
+        // Edge Case 5: YouTube Cookie & Authentication Passing
+        let temp_cookie_file = if !task.cookie.is_empty() {
+            let temp_cookie_dir = std::env::temp_dir().join(format!("idm_yt_cookie_{}", task.id));
+            let _ = std::fs::create_dir_all(&temp_cookie_dir);
+            let cookie_path = temp_cookie_dir.join("cookies.txt");
+            if let Ok(()) = crate::mux::write_netscape_cookies(&task.cookie, &[".youtube.com", ".google.com"], &cookie_path) {
+                cmd.arg("--cookies").arg(&cookie_path);
+                Some(cookie_path)
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+
+        if !task.user_agent.is_empty() {
+            cmd.arg("--user-agent").arg(&task.user_agent);
+        }
+
         cmd.arg("-o").arg(target_path);
         cmd.arg(&url);
 
         cmd.stdout(std::process::Stdio::piped());
         cmd.stderr(std::process::Stdio::piped());
 
-        let mut child = cmd.spawn().map_err(|e| format!("Failed to spawn yt-dlp: {}", e))?;
+        let mut child = cmd.spawn().map_err(|e| {
+            if let Some(ref cp) = temp_cookie_file {
+                let _ = std::fs::remove_file(cp);
+                if let Some(parent) = cp.parent() { let _ = std::fs::remove_dir(parent); }
+            }
+            format!("Failed to spawn yt-dlp: {}", e)
+        })?;
         let stdout = child.stdout.take().ok_or_else(|| "Failed to capture yt-dlp stdout".to_string())?;
+        let stderr = child.stderr.take().ok_or_else(|| "Failed to capture yt-dlp stderr".to_string())?;
+
+        // Read stderr in background task to avoid pipe buffer deadlock and capture YouTube error messages
+        let stderr_handle = tokio::spawn(async move {
+            use tokio::io::AsyncBufReadExt;
+            let mut lines = tokio::io::BufReader::new(stderr).lines();
+            let mut captured = Vec::new();
+            while let Ok(Some(line)) = lines.next_line().await {
+                captured.push(line);
+                if captured.len() > 100 {
+                    captured.remove(0);
+                }
+            }
+            captured.join("\n")
+        });
 
         use tokio::io::AsyncBufReadExt;
         let mut reader = tokio::io::BufReader::new(stdout).lines();
@@ -1138,8 +1392,19 @@ impl DownloadManager {
         }
 
         let status = child.wait().await.map_err(|e| format!("yt-dlp process wait failed: {}", e))?;
+        let stderr_output = stderr_handle.await.unwrap_or_default();
+
+        // Clean up temp cookie file
+        if let Some(ref cp) = temp_cookie_file {
+            let _ = std::fs::remove_file(cp);
+            if let Some(parent) = cp.parent() {
+                let _ = std::fs::remove_dir(parent);
+            }
+        }
+
         if !status.success() {
-            return Err("yt-dlp process returned non-zero exit status".to_string());
+            let diag = crate::mux::parse_youtube_error(&stderr_output);
+            return Err(diag);
         }
 
         // If yt-dlp wrote with an alternate extension (e.g. .mp4.webm or .mkv), reconcile it
@@ -1793,7 +2058,9 @@ impl DownloadManager {
 
         let temp_dir_exists = temp_dir.exists();
         let chunks_empty = task.chunks.lock().unwrap().is_empty();
-        let should_initialize = !is_resume || chunks_empty || !temp_dir_exists;
+        let part_path = format!("{}.part", save_path_val);
+        let part_exists = std::path::Path::new(&part_path).exists();
+        let should_initialize = !is_resume || chunks_empty || (!temp_dir_exists && !part_exists);
 
         if should_initialize {
             task.downloaded.store(0, Ordering::Relaxed);
@@ -1816,12 +2083,32 @@ impl DownloadManager {
                 downloaded: Arc::new(AtomicU64::new(0)),
                 active: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             });
+
+            if part_exists {
+                let _ = std::fs::remove_file(&part_path);
+            }
         } else {
             if !temp_dir.exists() {
                 if let Err(e) = std::fs::create_dir_all(&temp_dir) {
                     return Err(format!("Could not create temp directory: {}", e));
                 }
             }
+        }
+
+        // Direct Sparse File Pre-Allocation (Zero-Merge Architecture)
+        let target_file = match std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .open(&part_path)
+        {
+            Ok(f) => Arc::new(f),
+            Err(e) => return Err(format!("Could not create target part file: {}", e)),
+        };
+
+        let init_total_size = task.total_size.load(Ordering::Relaxed);
+        if init_total_size > 0 {
+            let _ = target_file.set_len(init_total_size);
         }
 
         // XDM Dynamic Chunk Spawner Logic
@@ -1859,7 +2146,7 @@ impl DownloadManager {
             }
 
             let current_total_size = task.total_size.load(Ordering::Relaxed);
-            let can_multi_segment = accept_ranges_flag.load(Ordering::SeqCst) && current_total_size > 2 * 1024 * 1024;
+            let can_multi_segment = accept_ranges_flag.load(Ordering::SeqCst) && current_total_size > 512 * 1024;
             let target_workers = if can_multi_segment {
                 self.max_chunks.load(Ordering::Relaxed).max(1) as usize
             } else {
@@ -1885,7 +2172,7 @@ impl DownloadManager {
                 continue;
             }
 
-            // Find an inactive chunk or dynamically split the largest chunk
+            // Find an inactive chunk or dynamically steal/split the largest remaining work
             let mut chunk_to_spawn = None;
             {
                 let mut chunks = task.chunks.lock().unwrap();
@@ -1908,8 +2195,16 @@ impl DownloadManager {
                     }
                 }
 
-                // 2. Dynamic split of the largest remaining chunk (if range requests supported)
+                // 2. Dynamic Work-Stealing / Slowest Chunk Splitting (Ghost-Downloader architecture)
                 if chunk_to_spawn.is_none() && can_multi_segment {
+                    // Adaptive threshold: allow splitting down to 256KB when few active workers remain,
+                    // so the download never gets stuck on a slow tail chunk!
+                    let min_split_threshold: u64 = if active_tasks.len() <= 2 {
+                        256 * 1024 // 256 KB
+                    } else {
+                        1024 * 1024 // 1 MB
+                    };
+
                     let mut max_rem = 0;
                     let mut best_idx = None;
                     for (i, chunk) in chunks.iter().enumerate() {
@@ -1926,20 +2221,20 @@ impl DownloadManager {
                         }
                     }
 
-                    if max_rem > 2 * 1024 * 1024 { // Minimum split size 2MB
+                    if max_rem >= min_split_threshold * 2 {
                         if let Some(idx) = best_idx {
                             let end = chunks[idx].end.load(Ordering::SeqCst);
                             let downloaded = chunks[idx].downloaded.load(Ordering::SeqCst);
                             let start = chunks[idx].start;
                             let current_head = start + downloaded;
 
-                            if end > current_head + 1024 * 1024 {
+                            if end > current_head + min_split_threshold {
                                 let rem = (end + 1) - current_head;
                                 let split_len = rem / 2;
                                 let new_start = end + 1 - split_len;
 
-                                // Guard against race conditions: ensure new_start is safely ahead of current download progress
-                                if new_start > current_head + 256 * 1024 {
+                                // Guard against race conditions: ensure new_start is safely ahead of current download progress by at least 64KB
+                                if new_start > current_head + 64 * 1024 {
                                     // Adjust end of active chunk
                                     chunks[idx].end.store(new_start - 1, Ordering::SeqCst);
 
@@ -1963,7 +2258,6 @@ impl DownloadManager {
             if let Some(chunk) = chunk_to_spawn {
                 let task_clone = task.clone();
                 let client = self.client.clone();
-                let temp_dir_clone = temp_dir.clone();
                 let downloaded_counter_clone = task.downloaded.clone();
                 let manager_for_worker = self.clone();
                 let completed_tx = worker_completed_tx.clone();
@@ -1971,6 +2265,7 @@ impl DownloadManager {
                 let mut worker_abort_rx = abort_tx.subscribe();
                 let is_first_req_clone = is_first_request.clone();
                 let accept_ranges_flag_clone = accept_ranges_flag.clone();
+                let target_file_worker = target_file.clone();
 
                 let worker = tokio::spawn(async move {
                     let max_retries: u32 = 5;
@@ -1978,6 +2273,8 @@ impl DownloadManager {
                     let mut retry_with_no_range: bool = false;
                     let mut last_error_msg = String::new();
                     let mut net_buffer = Vec::with_capacity(64 * 1024);
+                    let profile = BrowserProfile::detect(&task_clone.user_agent);
+                    let mut is_retry_403 = false;
 
                     let clean_header_val = |v: &str| -> Option<reqwest::header::HeaderValue> {
                         let sanitized: String = v.chars()
@@ -1987,42 +2284,30 @@ impl DownloadManager {
                     };
 
                     'reconnect: loop {
-                        use tokio::io::{AsyncSeekExt, AsyncWriteExt};
                         net_buffer.clear();
 
-                        let chunk_path = temp_dir_clone.join(&chunk_id);
-                        let mut file = match tokio::fs::OpenOptions::new().write(true).create(true).open(&chunk_path).await {
-                            Ok(f) => f,
-                            Err(e) => {
-                                last_error_msg = format!("Disk file error: {}", e);
-                                retry_count += 1;
-                                if retry_count >= max_retries {
-                                    *task_clone.status.lock().unwrap() = DownloadStatus::Failed(last_error_msg);
-                                    break 'reconnect;
-                                }
-                                tokio::time::sleep(Duration::from_millis(1000)).await;
-                                continue 'reconnect;
-                            }
-                        };
-
                         let local_downloaded = chunk.downloaded.load(Ordering::SeqCst);
-                        if let Err(e) = file.seek(std::io::SeekFrom::Start(local_downloaded)).await {
-                            last_error_msg = format!("Disk seek error: {}", e);
-                            retry_count += 1;
-                            if retry_count >= max_retries {
-                                *task_clone.status.lock().unwrap() = DownloadStatus::Failed(last_error_msg);
-                                break 'reconnect;
-                            }
-                            tokio::time::sleep(Duration::from_millis(1000)).await;
-                            continue 'reconnect;
-                        }
-
                         let current_end = chunk.end.load(Ordering::SeqCst);
                         let current_start = chunk.start + local_downloaded;
 
                         if current_end > 0 && current_end >= chunk.start && current_start > current_end {
                             break 'reconnect;
                         }
+
+                        let flush_data = |buf: &mut Vec<u8>| -> bool {
+                            if buf.is_empty() {
+                                return true;
+                            }
+                            let flushed = std::mem::replace(buf, Vec::with_capacity(64 * 1024));
+                            let offset = chunk.start + chunk.downloaded.load(Ordering::SeqCst);
+                            if let Err(e) = write_at_offset(&target_file_worker, &flushed, offset) {
+                                eprintln!("[Worker Error] Failed to write {} bytes at offset {}: {}", flushed.len(), offset, e);
+                                return false;
+                            }
+                            chunk.downloaded.fetch_add(flushed.len() as u64, Ordering::SeqCst);
+                            downloaded_counter_clone.fetch_add(flushed.len() as u64, Ordering::Relaxed);
+                            true
+                        };
 
                         if retry_count >= max_retries {
                             let failure_reason = if !last_error_msg.is_empty() {
@@ -2039,43 +2324,15 @@ impl DownloadManager {
                         }
 
                         let worker_url = task_clone.final_url.lock().await.clone();
-                        let mut req = client.get(&worker_url)
-                            .header(reqwest::header::ACCEPT, "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7")
-                            .header(reqwest::header::ACCEPT_ENCODING, "identity")
-                            .header(reqwest::header::ACCEPT_LANGUAGE, "en-US,en;q=0.9")
-                            .header("sec-ch-ua", "\"Chromium\";v=\"124\", \"Google Chrome\";v=\"124\", \"Not-A.Brand\";v=\"99\"")
-                            .header("sec-ch-ua-mobile", "?0")
-                            .header("sec-ch-ua-platform", "\"Windows\"")
-                            .header("sec-fetch-dest", "document")
-                            .header("sec-fetch-mode", "navigate")
-                            .header("sec-fetch-site", "cross-site")
-                            .header("sec-fetch-user", "?1")
-                            .header("upgrade-insecure-requests", "1")
-                            .header(reqwest::header::CONNECTION, "keep-alive");
+                        let mut req = client.get(&worker_url);
 
-                        if let Some(ua) = clean_header_val(&task_clone.user_agent) {
-                            req = req.header(reqwest::header::USER_AGENT, ua);
-                        } else {
-                            req = req.header(reqwest::header::USER_AGENT, "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36");
-                        }
-
-                        // Cross-origin check: only send cookies if worker_url origin matches original_url origin
-                        let should_send_cookies = if let (Ok(u1), Ok(u2)) = (reqwest::Url::parse(&task_clone.original_url), reqwest::Url::parse(&worker_url)) {
-                            u1.origin() == u2.origin()
-                        } else {
-                            true
-                        };
-
-                        if should_send_cookies && !task_clone.cookie.is_empty() {
-                            if let Some(hv) = clean_header_val(&task_clone.cookie) {
-                                req = req.header(reqwest::header::COOKIE, hv);
-                            }
-                        }
-                        if !task_clone.referrer.is_empty() {
-                            if let Some(hv) = clean_header_val(&task_clone.referrer) {
-                                req = req.header(reqwest::header::REFERER, hv);
-                            }
-                        }
+                        req = profile.apply_headers(
+                            req,
+                            &worker_url,
+                            &task_clone.referrer,
+                            &task_clone.cookie,
+                            is_retry_403,
+                        );
 
                         // Send Range header: unless fallback without Range requested
                         if !retry_with_no_range {
@@ -2128,7 +2385,16 @@ impl DownloadManager {
                             break 'reconnect;
                         }
 
-                        // 3. Fallback on range rejections (416, 400, 403, 405)
+                        // 3. Anti-Bot / Cloudflare 403 WAF Bypass: Retry with CORS same-origin headers
+                        if status == reqwest::StatusCode::FORBIDDEN && !is_retry_403 {
+                            eprintln!("[Worker Anti-Bot] HTTP 403 Forbidden received for chunk {}. Applying browser-origin CORS WAF bypass...", chunk_id);
+                            is_retry_403 = true;
+                            retry_count += 1;
+                            tokio::time::sleep(Duration::from_millis(500)).await;
+                            continue 'reconnect;
+                        }
+
+                        // 4. Fallback on range rejections (416, 400, 403, 405)
                         if (status == reqwest::StatusCode::RANGE_NOT_SATISFIABLE || status == reqwest::StatusCode::BAD_REQUEST || status == reqwest::StatusCode::FORBIDDEN || status == reqwest::StatusCode::METHOD_NOT_ALLOWED) && !retry_with_no_range {
                             eprintln!("[Worker] Range header rejected with status {}. Retrying without Range...", status);
                             retry_with_no_range = true;
@@ -2176,6 +2442,7 @@ impl DownloadManager {
 
                             if probed_total_size > 0 {
                                 task_clone.total_size.store(probed_total_size, Ordering::Relaxed);
+                                let _ = target_file_worker.set_len(probed_total_size);
                             }
 
                             // Dynamic validator inspection (strong ETag or Last-Modified)
@@ -2210,10 +2477,10 @@ impl DownloadManager {
                                 }
                             }
 
-                            // If ranges supported and file > 2MB, dynamically split segments for parallel workers!
+                            // If ranges supported and file > 512KB, dynamically split segments for parallel workers!
                             let max_c = manager_for_worker.max_chunks.load(Ordering::Relaxed).max(1) as usize;
-                            if is_partial && probed_total_size > 2 * 1024 * 1024 && max_c > 1 {
-                                let num_workers = ((probed_total_size / (1024 * 1024)) as usize).clamp(1, max_c);
+                            if is_partial && probed_total_size > 512 * 1024 && max_c > 1 {
+                                let num_workers = ((probed_total_size / (512 * 1024)) as usize).clamp(1, max_c);
                                 if num_workers > 1 {
                                     let seg_size = probed_total_size / (num_workers as u64);
                                     let mut chunks_guard = task_clone.chunks.lock().unwrap();
@@ -2246,27 +2513,15 @@ impl DownloadManager {
                                 biased;
                                 res = worker_abort_rx.recv() => {
                                     if res.is_ok() {
-                                        if !net_buffer.is_empty() {
-                                            let flushed = std::mem::replace(&mut net_buffer, Vec::with_capacity(64 * 1024));
-                                            if let Ok(_) = file.write_all(&flushed).await {
-                                                chunk.downloaded.fetch_add(flushed.len() as u64, Ordering::SeqCst);
-                                                downloaded_counter_clone.fetch_add(flushed.len() as u64, Ordering::Relaxed);
-                                            }
-                                        }
+                                        let _ = flush_data(&mut net_buffer);
                                         break 'reconnect;
                                     }
                                 }
-                                bytes_chunk_res = tokio::time::timeout(Duration::from_secs(60), stream.next()) => {
+                                bytes_chunk_res = tokio::time::timeout(Duration::from_secs(15), stream.next()) => {
                                     let bytes_chunk = match bytes_chunk_res {
                                         Ok(b) => b,
                                         Err(_) => {
-                                            if !net_buffer.is_empty() {
-                                                let flushed = std::mem::replace(&mut net_buffer, Vec::with_capacity(64 * 1024));
-                                                if let Ok(_) = file.write_all(&flushed).await {
-                                                    chunk.downloaded.fetch_add(flushed.len() as u64, Ordering::SeqCst);
-                                                    downloaded_counter_clone.fetch_add(flushed.len() as u64, Ordering::Relaxed);
-                                                }
-                                            }
+                                            let _ = flush_data(&mut net_buffer);
                                             retry_count += 1;
                                             continue 'reconnect;
                                         }
@@ -2283,13 +2538,7 @@ impl DownloadManager {
 
                                             if dynamic_end > 0 && dynamic_end >= chunk.start {
                                                 if current_pos >= dynamic_end + 1 {
-                                                    if !net_buffer.is_empty() {
-                                                        let flushed = std::mem::replace(&mut net_buffer, Vec::with_capacity(64 * 1024));
-                                                        if let Ok(_) = file.write_all(&flushed).await {
-                                                            chunk.downloaded.fetch_add(flushed.len() as u64, Ordering::SeqCst);
-                                                            downloaded_counter_clone.fetch_add(flushed.len() as u64, Ordering::Relaxed);
-                                                        }
-                                                    }
+                                                    let _ = flush_data(&mut net_buffer);
                                                     break 'reconnect; // Chunk completed!
                                                 }
 
@@ -2306,35 +2555,20 @@ impl DownloadManager {
                                             task_clone.throttle_if_needed(bytes_to_add.len() as u64, limit_bps).await;
 
                                             if net_buffer.len() >= 64 * 1024 {
-                                                let flushed = std::mem::replace(&mut net_buffer, Vec::with_capacity(64 * 1024));
-                                                if let Err(_) = file.write_all(&flushed).await {
+                                                if !flush_data(&mut net_buffer) {
                                                     retry_count += 1;
                                                     continue 'reconnect;
                                                 }
-                                                chunk.downloaded.fetch_add(flushed.len() as u64, Ordering::SeqCst);
-                                                downloaded_counter_clone.fetch_add(flushed.len() as u64, Ordering::Relaxed);
                                             }
                                         }
                                         Some(Err(_)) => {
-                                            if !net_buffer.is_empty() {
-                                                let flushed = std::mem::replace(&mut net_buffer, Vec::with_capacity(64 * 1024));
-                                                if let Ok(_) = file.write_all(&flushed).await {
-                                                    chunk.downloaded.fetch_add(flushed.len() as u64, Ordering::SeqCst);
-                                                    downloaded_counter_clone.fetch_add(flushed.len() as u64, Ordering::Relaxed);
-                                                }
-                                            }
+                                            let _ = flush_data(&mut net_buffer);
                                             retry_count += 1;
                                             continue 'reconnect;
                                         }
                                         None => {
                                             // Stream reached EOF cleanly
-                                            if !net_buffer.is_empty() {
-                                                let flushed = std::mem::replace(&mut net_buffer, Vec::with_capacity(64 * 1024));
-                                                if let Ok(_) = file.write_all(&flushed).await {
-                                                    chunk.downloaded.fetch_add(flushed.len() as u64, Ordering::SeqCst);
-                                                    downloaded_counter_clone.fetch_add(flushed.len() as u64, Ordering::Relaxed);
-                                                }
-                                            }
+                                            let _ = flush_data(&mut net_buffer);
                                             break 'reconnect;
                                         }
                                     }
@@ -2353,10 +2587,6 @@ impl DownloadManager {
                     let clamped_dl = final_dl.min(max_allowed);
                     chunk.downloaded.store(clamped_dl, Ordering::SeqCst);
 
-                    let chunk_path = temp_dir_clone.join(&chunk_id);
-                    if let Ok(f) = tokio::fs::OpenOptions::new().write(true).open(&chunk_path).await {
-                        f.set_len(clamped_dl).await.ok();
-                    }
                     chunk.active.store(false, Ordering::SeqCst);
                     let _ = completed_tx.send(chunk_id);
                 });
@@ -2379,6 +2609,9 @@ impl DownloadManager {
                             break;
                         }
                     }
+                    _ = tokio::time::sleep(Duration::from_millis(500)) => {
+                        // Periodic work-stealing pulse: allows manager to inspect chunk progress and steal from slowest active chunk
+                    }
                 }
             }
         }
@@ -2398,74 +2631,85 @@ impl DownloadManager {
                 || (total_size_val == 0 && downloaded_bytes > 0);
 
             if is_success {
-                *task.status.lock().unwrap() = DownloadStatus::Assembling;
-
                 let cur_filename = task.get_filename();
                 let cur_save_path = task.get_save_path();
 
-                let progress = DownloadProgress {
-                    id: task.id.clone(),
-                    url: task.original_url.clone(),
-                    filename: cur_filename.clone(),
-                    save_path: cur_save_path.clone(),
-                    total_size: total_size_val,
-                    downloaded: downloaded_bytes,
-                    speed: 0.0,
-                    eta: "Assembling...".to_string(),
-                    status: DownloadStatus::Assembling,
-                    file_exists: std::path::Path::new(&cur_save_path).exists(),
-                    speed_limited: false,
-                    category: task.get_category(),
-                };
-                if let Some(ref handle) = self.app_handle.lock().await.clone() {
-                    use tauri::Emitter;
-                    let _ = handle.emit("download-progress", progress);
-                }
+                // If total size was open-ended or zero, ensure file length is set to total downloaded bytes
+                let _ = target_file.set_len(downloaded_bytes);
+                let _ = target_file.sync_all();
 
-                let temp_dir_clone = temp_dir.clone();
-                let save_path_clone = cur_save_path.clone();
-                let chunks_clone = task.chunks.lock().unwrap().clone();
+                // Drop target_file handle before renaming to release file locks across OSes (critical on Windows)
+                drop(target_file);
 
-                let assembly_result = tokio::task::spawn_blocking(move || -> Result<String, String> {
-                    let (final_path, mut out_file) = DownloadManager::allocate_collision_free_path(&save_path_clone);
+                let (final_path, placeholder) = DownloadManager::allocate_collision_free_path(&cur_save_path);
+                drop(placeholder); // Close placeholder handle immediately
 
-                    let mut sorted_chunks = chunks_clone;
-                    sorted_chunks.sort_by_key(|c| c.start);
+                let part_path_buf = std::path::PathBuf::from(&part_path);
+                let final_path_buf = std::path::PathBuf::from(&final_path);
 
-                    let mut buf = vec![0u8; 1024 * 1024 * 2]; // 2MB assembly buffer
-
-                    for chunk in sorted_chunks {
-                        let part_path = temp_dir_clone.join(&chunk.id);
-                        if let Ok(mut part_file) = std::fs::File::open(&part_path) {
-                            use std::io::Read;
-                            use std::io::Write;
-
-                            let downloaded = chunk.downloaded.load(Ordering::SeqCst);
-                            let chunk_end = chunk.end.load(Ordering::SeqCst);
-                            let expected_len = if chunk_end >= chunk.start && chunk_end > 0 {
-                                (chunk_end - chunk.start + 1).min(downloaded)
-                            } else {
-                                downloaded
-                            };
-
-                            let mut remaining_to_read = expected_len;
-                            while remaining_to_read > 0 {
-                                let to_read = (remaining_to_read as usize).min(buf.len());
-                                let n = part_file.read(&mut buf[..to_read]).map_err(|e| format!("Read part err: {}", e))?;
-                                if n == 0 { break; }
-                                out_file.write_all(&buf[..n]).map_err(|e| format!("Write final err: {}", e))?;
-                                remaining_to_read -= n as u64;
+                // Zero-Merge Fast Atomic Finalization:
+                // Instantly renames the .part file directly to the destination filename in < 1ms without 2x disk usage or copying delay!
+                let finalize_result = if part_path_buf.exists() {
+                    if final_path_buf.exists() && final_path_buf != part_path_buf {
+                        let _ = std::fs::remove_file(&final_path_buf);
+                    }
+                    match std::fs::rename(&part_path_buf, &final_path_buf) {
+                        Ok(_) => Ok(final_path.clone()),
+                        Err(rename_err) => {
+                            // Cross-filesystem or permissions fallback
+                            match std::fs::copy(&part_path_buf, &final_path_buf) {
+                                Ok(_) => {
+                                    let _ = std::fs::remove_file(&part_path_buf);
+                                    Ok(final_path.clone())
+                                }
+                                Err(copy_err) => Err(format!("Finalize rename/copy failed: rename: {}, copy: {}", rename_err, copy_err)),
                             }
                         }
                     }
-                    let _ = out_file.sync_all();
-                    Ok(final_path)
-                }).await;
+                } else if temp_dir.exists() {
+                    // Legacy multi-chunk fallback assembly (for tasks initiated prior to zero-merge)
+                    let temp_dir_clone = temp_dir.clone();
+                    let save_path_clone = cur_save_path.clone();
+                    let chunks_clone = task.chunks.lock().unwrap().clone();
+                    tokio::task::spawn_blocking(move || -> Result<String, String> {
+                        let (final_path, mut out_file) = DownloadManager::allocate_collision_free_path(&save_path_clone);
+                        let mut sorted_chunks = chunks_clone;
+                        sorted_chunks.sort_by_key(|c| c.start);
+                        let mut buf = vec![0u8; 1024 * 1024 * 2];
+                        for chunk in sorted_chunks {
+                            let part_path = temp_dir_clone.join(&chunk.id);
+                            if let Ok(mut part_file) = std::fs::File::open(&part_path) {
+                                use std::io::{Read, Write};
+                                let downloaded = chunk.downloaded.load(Ordering::SeqCst);
+                                let chunk_end = chunk.end.load(Ordering::SeqCst);
+                                let expected_len = if chunk_end >= chunk.start && chunk_end > 0 {
+                                    (chunk_end - chunk.start + 1).min(downloaded)
+                                } else {
+                                    downloaded
+                                };
+                                let mut remaining_to_read = expected_len;
+                                while remaining_to_read > 0 {
+                                    let to_read = (remaining_to_read as usize).min(buf.len());
+                                    let n = part_file.read(&mut buf[..to_read]).map_err(|e| format!("Read part err: {}", e))?;
+                                    if n == 0 { break; }
+                                    out_file.write_all(&buf[..n]).map_err(|e| format!("Write final err: {}", e))?;
+                                    remaining_to_read -= n as u64;
+                                }
+                            }
+                        }
+                        let _ = out_file.sync_all();
+                        Ok(final_path)
+                    }).await.unwrap_or_else(|_| Err("Legacy assembly panicked".to_string()))
+                } else {
+                    Err("Neither .part file nor temp chunks exist".to_string())
+                };
 
-                match assembly_result {
-                    Ok(Ok(final_path)) => {
+                match finalize_result {
+                    Ok(final_path) => {
                         *task.status.lock().unwrap() = DownloadStatus::Completed;
-                        let _ = std::fs::remove_dir_all(&temp_dir);
+                        if temp_dir.exists() {
+                            let _ = std::fs::remove_dir_all(&temp_dir);
+                        }
                         if final_path != cur_save_path {
                             let new_filename = std::path::Path::new(&final_path)
                                 .file_name()
@@ -2473,12 +2717,9 @@ impl DownloadManager {
                                 .unwrap_or(&cur_filename);
                             task.update_filename_and_path(new_filename);
                         }
-                    },
-                    Ok(Err(e)) => {
-                        *task.status.lock().unwrap() = DownloadStatus::Failed(format!("Assembly failed: {}", e));
-                    },
-                    Err(_) => {
-                        *task.status.lock().unwrap() = DownloadStatus::Failed("Assembly panicked".to_string());
+                    }
+                    Err(e) => {
+                        *task.status.lock().unwrap() = DownloadStatus::Failed(format!("Finalization failed: {}", e));
                     }
                 }
             } else if total_size_val == 0 && downloaded_bytes == 0 {
@@ -2670,7 +2911,10 @@ impl DownloadManager {
 
             let path = task.get_save_path();
             tokio::spawn(async move {
-                if delete_file { let _ = tokio::fs::remove_file(path).await; }
+                if delete_file {
+                    let _ = tokio::fs::remove_file(&path).await;
+                    let _ = tokio::fs::remove_file(format!("{}.part", path)).await;
+                }
                 let _ = tokio::fs::remove_dir_all(temp_dir).await;
             });
 
@@ -2702,7 +2946,10 @@ impl DownloadManager {
 
                 let path = task.get_save_path();
                 tokio::spawn(async move {
-                    if delete_file { let _ = tokio::fs::remove_file(path).await; }
+                    if delete_file {
+                        let _ = tokio::fs::remove_file(&path).await;
+                        let _ = tokio::fs::remove_file(format!("{}.part", path)).await;
+                    }
                     let _ = tokio::fs::remove_dir_all(temp_dir).await;
                 });
             }
@@ -2726,7 +2973,10 @@ impl DownloadManager {
 
             let path = task.get_save_path();
             tokio::spawn(async move {
-                if delete_file { let _ = tokio::fs::remove_file(path).await; }
+                if delete_file {
+                    let _ = tokio::fs::remove_file(&path).await;
+                    let _ = tokio::fs::remove_file(format!("{}.part", path)).await;
+                }
                 let _ = tokio::fs::remove_dir_all(temp_dir).await;
             });
             
@@ -2814,7 +3064,8 @@ impl DownloadManager {
             if let Some(ref tx) = task.abort_tx { let _ = tx.send(()); }
 
             let path = task.get_save_path();
-            let _ = tokio::fs::remove_file(path).await;
+            let _ = tokio::fs::remove_file(&path).await;
+            let _ = tokio::fs::remove_file(format!("{}.part", path)).await;
 
             let (abort_tx, _) = broadcast::channel(1);
             let updated_task = Arc::new(DownloadTask {
@@ -3919,6 +4170,558 @@ mod tests {
         assert!(can_safely_resume(&original_etag, &new_etag_match), "Matching strong ETag allows resume");
         assert!(!can_safely_resume(&original_etag, &new_etag_mismatch), "Mismatched ETag must reject resume to prevent byte corruption");
         assert!(!can_safely_resume(&original_etag, &weak_etag), "Weak ETag must reject ranged resume");
+    }
+
+    #[test]
+    fn test_zero_merge_sparse_offset_writing() {
+        use std::io::Read;
+
+        let temp_dir = std::env::temp_dir().join(format!("idm_test_{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&temp_dir).unwrap();
+
+        let final_path = temp_dir.join("zero_merge_test.bin");
+        let part_path = temp_dir.join("zero_merge_test.bin.part");
+
+        let file = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .open(&part_path)
+            .unwrap();
+
+        let total_size = 1024 * 1024u64; // 1MB
+        file.set_len(total_size).unwrap();
+
+        // Worker B writes to offset 500,000 out of order
+        let chunk2_data = b"WORKER_2_OFFSET_PAYLOAD";
+        super::write_at_offset(&file, chunk2_data, 500_000).unwrap();
+
+        // Worker A writes to offset 0
+        let chunk1_data = b"WORKER_1_START_PAYLOAD";
+        super::write_at_offset(&file, chunk1_data, 0).unwrap();
+
+        file.sync_all().unwrap();
+        drop(file);
+
+        // Atomic zero-merge rename
+        std::fs::rename(&part_path, &final_path).unwrap();
+
+        assert!(!part_path.exists(), ".part file must not exist after rename");
+        assert!(final_path.exists(), "Final destination file must exist");
+        assert_eq!(std::fs::metadata(&final_path).unwrap().len(), total_size);
+
+        let mut read_back = vec![0u8; total_size as usize];
+        let mut final_f = std::fs::File::open(&final_path).unwrap();
+        final_f.read_exact(&mut read_back).unwrap();
+
+        assert_eq!(&read_back[0..chunk1_data.len()], chunk1_data);
+        assert_eq!(&read_back[500_000..500_000 + chunk2_data.len()], chunk2_data);
+        // Verify sparse byte in between is 0
+        assert_eq!(read_back[chunk1_data.len()], 0);
+
+        let _ = std::fs::remove_dir_all(&temp_dir);
+    }
+
+    #[test]
+    fn test_dynamic_work_stealing_slow_chunk_splitting() {
+        use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+        use std::sync::Arc;
+        use crate::engine::ActiveChunk;
+
+        // Simulate 2 initial chunks for a 10MB file
+        let chunk0 = ActiveChunk {
+            id: "c0".to_string(),
+            start: 0,
+            end: Arc::new(AtomicU64::new(4_999_999)),
+            downloaded: Arc::new(AtomicU64::new(5_000_000)), // 100% completed!
+            active: Arc::new(AtomicBool::new(false)),
+        };
+
+        // Chunk 1 is active on a slow connection, only 500KB downloaded so far
+        let chunk1 = ActiveChunk {
+            id: "c1".to_string(),
+            start: 5_000_000,
+            end: Arc::new(AtomicU64::new(9_999_999)),
+            downloaded: Arc::new(AtomicU64::new(500_000)), // current_head = 5_500_000
+            active: Arc::new(AtomicBool::new(true)),
+        };
+
+        let mut chunks = vec![chunk0, chunk1];
+        let active_workers = 1; // 1 active worker, 1 slot available
+
+        // Run work-stealing logic
+        let min_split_threshold: u64 = if active_workers <= 2 {
+            256 * 1024
+        } else {
+            1024 * 1024
+        };
+
+        let mut max_rem = 0u64;
+        let mut best_idx = None;
+        for (i, chunk) in chunks.iter().enumerate() {
+            let end = chunk.end.load(Ordering::SeqCst);
+            let downloaded = chunk.downloaded.load(Ordering::SeqCst);
+            let start = chunk.start;
+
+            if end > 0 && start + downloaded <= end {
+                let rem = (end + 1) - (start + downloaded);
+                if rem > max_rem {
+                    max_rem = rem;
+                    best_idx = Some(i);
+                }
+            }
+        }
+
+        assert!(max_rem >= min_split_threshold * 2);
+        assert_eq!(best_idx, Some(1));
+
+        let idx = best_idx.unwrap();
+        let end = chunks[idx].end.load(Ordering::SeqCst);
+        let downloaded = chunks[idx].downloaded.load(Ordering::SeqCst);
+        let start = chunks[idx].start;
+        let current_head = start + downloaded;
+
+        let rem = (end + 1) - current_head;
+        let split_len = rem / 2;
+        let new_start = end + 1 - split_len;
+
+        assert!(new_start > current_head + 64 * 1024);
+
+        // Steal work: shorten chunk 1 and create chunk 2
+        chunks[idx].end.store(new_start - 1, Ordering::SeqCst);
+        let chunk2 = ActiveChunk {
+            id: "c2_stolen".to_string(),
+            start: new_start,
+            end: Arc::new(AtomicU64::new(end)),
+            downloaded: Arc::new(AtomicU64::new(0)),
+            active: Arc::new(AtomicBool::new(true)),
+        };
+        chunks.push(chunk2);
+
+        // Verification of zero overlap and zero gaps
+        let c1_new_end = chunks[1].end.load(Ordering::SeqCst);
+        let c2_start = chunks[2].start;
+        let c2_end = chunks[2].end.load(Ordering::SeqCst);
+
+        assert_eq!(c1_new_end + 1, c2_start, "No gap or overlap between original and stolen chunk");
+        assert_eq!(c2_end, 9_999_999, "Original end preserved");
+        assert!(c1_new_end >= current_head, "Headroom preserved for slow worker");
+        assert_eq!(chunks.len(), 3);
+    }
+
+    #[test]
+    fn test_browser_profile_anti_bot_emulation() {
+        use super::BrowserProfile;
+
+        // 1. Chrome on Windows detection
+        let chrome_win_ua = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36";
+        let profile_chrome = BrowserProfile::detect(chrome_win_ua);
+        assert_eq!(profile_chrome.brand, "Chrome");
+        assert_eq!(profile_chrome.version, "131");
+        assert_eq!(profile_chrome.platform, "\"Windows\"");
+        assert!(profile_chrome.sec_ch_ua.is_some());
+        let sec_ch = profile_chrome.sec_ch_ua.as_ref().unwrap();
+        assert!(sec_ch.contains("Google Chrome"));
+        assert!(sec_ch.contains("131"));
+
+        // 2. Firefox on Linux detection
+        let firefox_linux_ua = "Mozilla/5.0 (X11; Ubuntu; Linux x86_64; rv:132.0) Gecko/20100101 Firefox/132.0";
+        let profile_firefox = BrowserProfile::detect(firefox_linux_ua);
+        assert_eq!(profile_firefox.brand, "Firefox");
+        assert_eq!(profile_firefox.platform, "\"Linux\"");
+        // Crucial for Cloudflare: Firefox must NOT send sec-ch-ua Client Hints
+        assert!(profile_firefox.sec_ch_ua.is_none(), "Firefox must never send sec-ch-ua");
+
+        // 3. Safari on macOS detection
+        let safari_mac_ua = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.4 Safari/605.1.15";
+        let profile_safari = BrowserProfile::detect(safari_mac_ua);
+        assert_eq!(profile_safari.brand, "Safari");
+        assert_eq!(profile_safari.platform, "\"macOS\"");
+        assert!(profile_safari.sec_ch_ua.is_none(), "Safari must never send sec-ch-ua");
+
+        // 4. Edge on Windows detection
+        let edge_ua = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36 Edg/131.0.0.0";
+        let profile_edge = BrowserProfile::detect(edge_ua);
+        assert_eq!(profile_edge.brand, "Edge");
+        assert!(profile_edge.sec_ch_ua.as_ref().unwrap().contains("Microsoft Edge"));
+
+        // 5. Test apply_headers
+        let client = reqwest::Client::new();
+        let target_url = "https://cdn.example.com/files/archive.zip";
+
+        // Normal request
+        let req1 = profile_chrome.apply_headers(
+            client.get(target_url),
+            target_url,
+            "https://example.com/download",
+            "session=abc123xyz",
+            false,
+        ).build().unwrap();
+
+        assert_eq!(req1.headers().get("user-agent").unwrap(), chrome_win_ua);
+        assert_eq!(req1.headers().get("sec-ch-ua-platform").unwrap(), "\"Windows\"");
+        assert_eq!(req1.headers().get("sec-fetch-mode").unwrap(), "navigate");
+        assert_eq!(req1.headers().get("referer").unwrap(), "https://example.com/download");
+        assert_eq!(req1.headers().get("origin").unwrap(), "https://cdn.example.com");
+
+        // Anti-bot 403 bypass retry request
+        let req_retry = profile_chrome.apply_headers(
+            client.get(target_url),
+            target_url,
+            "",
+            "",
+            true, // is_retry_403
+        ).build().unwrap();
+
+        // Must switch to cors / empty mode and auto-populate referer from origin
+        assert_eq!(req_retry.headers().get("sec-fetch-mode").unwrap(), "cors");
+        assert_eq!(req_retry.headers().get("sec-fetch-dest").unwrap(), "empty");
+        assert_eq!(req_retry.headers().get("referer").unwrap(), "https://cdn.example.com/");
+    }
+
+    #[test]
+    fn test_feature_4_anti_bot_browser_matrix_and_client_hints() {
+        use super::BrowserProfile;
+
+        // 1. Chrome on Windows
+        let chrome_win = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36";
+        let p_win = BrowserProfile::detect(chrome_win);
+        assert_eq!(p_win.brand, "Chrome");
+        assert_eq!(p_win.version, "131");
+        assert_eq!(p_win.platform, "\"Windows\"");
+        assert!(!p_win.is_mobile);
+        assert!(p_win.sec_ch_ua.as_ref().unwrap().contains("Google Chrome"));
+
+        // 2. Chrome on Android (Mobile Flag Check)
+        let chrome_android = "Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.6723.102 Mobile Safari/537.36";
+        let p_android = BrowserProfile::detect(chrome_android);
+        assert_eq!(p_android.brand, "Chrome");
+        assert_eq!(p_android.platform, "\"Android\"");
+        assert!(p_android.is_mobile);
+
+        // 3. Firefox on Linux (Strict WAF Rule: No sec-ch-ua)
+        let firefox_linux = "Mozilla/5.0 (X11; Ubuntu; Linux x86_64; rv:132.0) Gecko/20100101 Firefox/132.0";
+        let p_firefox = BrowserProfile::detect(firefox_linux);
+        assert_eq!(p_firefox.brand, "Firefox");
+        assert_eq!(p_firefox.platform, "\"Linux\"");
+        assert!(p_firefox.sec_ch_ua.is_none());
+
+        // 4. Safari on macOS (Strict WAF Rule: No sec-ch-ua)
+        let safari_mac = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.4 Safari/605.1.15";
+        let p_safari = BrowserProfile::detect(safari_mac);
+        assert_eq!(p_safari.brand, "Safari");
+        assert_eq!(p_safari.platform, "\"macOS\"");
+        assert!(p_safari.sec_ch_ua.is_none());
+
+        // 5. Microsoft Edge on Windows
+        let edge_win = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36 Edg/131.0.0.0";
+        let p_edge = BrowserProfile::detect(edge_win);
+        assert_eq!(p_edge.brand, "Edge");
+        assert!(p_edge.sec_ch_ua.as_ref().unwrap().contains("Microsoft Edge"));
+
+        // 6. Empty UA Fallback (Safe Desktop Emulation)
+        let p_empty = BrowserProfile::detect("");
+        assert_eq!(p_empty.brand, "Chrome");
+        assert!(!p_empty.user_agent.is_empty());
+    }
+
+    #[test]
+    fn test_feature_4_anti_bot_waf_403_bypass_transition() {
+        use super::BrowserProfile;
+
+        let client = reqwest::Client::new();
+        let target_url = "https://protected-vault.cdn.com/asset.tar.gz";
+        let profile = BrowserProfile::detect("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/131.0.0.0 Safari/537.36");
+
+        // Request A: Standard Navigation Request
+        let req_nav = profile.apply_headers(
+            client.get(target_url),
+            target_url,
+            "https://origin-site.com/portal",
+            "token=auth999",
+            false,
+        ).build().unwrap();
+
+        assert_eq!(req_nav.headers().get("sec-fetch-mode").unwrap(), "navigate");
+        assert_eq!(req_nav.headers().get("sec-fetch-dest").unwrap(), "document");
+        assert_eq!(req_nav.headers().get("sec-fetch-site").unwrap(), "cross-site");
+        assert_eq!(req_nav.headers().get("sec-fetch-user").unwrap(), "?1");
+        assert_eq!(req_nav.headers().get("referer").unwrap(), "https://origin-site.com/portal");
+        assert_eq!(req_nav.headers().get("cookie").unwrap(), "token=auth999");
+
+        // Request B: WAF 403 Forbidden Retry Request (CORS Same-Origin Bypass)
+        let req_bypass = profile.apply_headers(
+            client.get(target_url),
+            target_url,
+            "",
+            "",
+            true, // is_retry_403 activated
+        ).build().unwrap();
+
+        assert_eq!(req_bypass.headers().get("sec-fetch-mode").unwrap(), "cors");
+        assert_eq!(req_bypass.headers().get("sec-fetch-dest").unwrap(), "empty");
+        assert_eq!(req_bypass.headers().get("sec-fetch-site").unwrap(), "same-origin");
+        // Origin and Referer automatically bound to target CDN origin
+        assert_eq!(req_bypass.headers().get("origin").unwrap(), "https://protected-vault.cdn.com");
+        assert_eq!(req_bypass.headers().get("referer").unwrap(), "https://protected-vault.cdn.com/");
+    }
+
+    #[test]
+    fn test_feature_4_compression_and_encoding_headers() {
+        use super::BrowserProfile;
+
+        let client = reqwest::Client::new();
+        let target_url = "https://cdn.example.com/data.bin";
+        let profile = BrowserProfile::detect("Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/131.0.0.0 Safari/537.36");
+
+        let req = profile.apply_headers(
+            client.get(target_url),
+            target_url,
+            "",
+            "",
+            false,
+        ).build().unwrap();
+
+        // Modern WAFs check for zstd/br/gzip compression acceptance
+        let accept_enc = req.headers().get("accept-encoding").unwrap().to_str().unwrap();
+        assert!(accept_enc.contains("gzip"));
+        assert!(accept_enc.contains("deflate"));
+        assert!(accept_enc.contains("br"));
+        assert!(accept_enc.contains("zstd"));
+
+        assert_eq!(req.headers().get("upgrade-insecure-requests").unwrap(), "1");
+        assert_eq!(req.headers().get("connection").unwrap(), "keep-alive");
+    }
+
+    #[tokio::test]
+    async fn test_feature_4_anti_bot_live_mock_waf_challenge_recovery() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        // Spin up a mock HTTP server simulating Cloudflare / Akamai WAF
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+
+        let server_handle = tokio::spawn(async move {
+            for _ in 0..2 {
+                if let Ok((mut stream, _)) = listener.accept().await {
+                    let mut buf = [0u8; 4096];
+                    let n = stream.read(&mut buf).await.unwrap_or(0);
+                    let req_str = String::from_utf8_lossy(&buf[..n]);
+
+                    if req_str.contains("sec-fetch-mode: cors") {
+                        // Request 2 (WAF bypass retry): permit 206 Partial Content
+                        let body = vec![0x42; 512];
+                        let resp = format!(
+                            "HTTP/1.1 206 Partial Content\r\nContent-Length: 512\r\nContent-Range: bytes 0-511/512\r\nConnection: close\r\n\r\n"
+                        );
+                        let _ = stream.write_all(resp.as_bytes()).await;
+                        let _ = stream.write_all(&body).await;
+                        let _ = stream.flush().await;
+                    } else {
+                        // Request 1: initial attempt blocked by WAF with 403 Forbidden
+                        let resp = "HTTP/1.1 403 Forbidden\r\nContent-Length: 22\r\nConnection: close\r\n\r\nCloudflare WAF Blocked";
+                        let _ = stream.write_all(resp.as_bytes()).await;
+                        let _ = stream.flush().await;
+                    }
+                }
+            }
+        });
+
+        let target_url = format!("http://127.0.0.1:{}/download/secure_file.bin", port);
+        let profile = BrowserProfile::detect("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/131.0.0.0 Safari/537.36");
+        let client = reqwest::Client::new();
+
+        // 1. Initial attempt -> Expect 403 Forbidden
+        let req1 = profile.apply_headers(client.get(&target_url), &target_url, "", "", false).build().unwrap();
+        let resp1 = client.execute(req1).await.unwrap();
+        assert_eq!(resp1.status(), reqwest::StatusCode::FORBIDDEN);
+
+        // 2. Anti-Bot WAF Bypass Retry -> Expect 206 Partial Content and full 512 bytes recovery
+        let req2 = profile.apply_headers(client.get(&target_url), &target_url, "", "", true).build().unwrap();
+        let resp2 = client.execute(req2).await.unwrap();
+        assert_eq!(resp2.status(), reqwest::StatusCode::PARTIAL_CONTENT);
+        let bytes = resp2.bytes().await.unwrap();
+        assert_eq!(bytes.len(), 512);
+        assert_eq!(bytes[0], 0x42);
+
+        let _ = server_handle.await;
+    }
+
+    #[tokio::test]
+    async fn test_edge_case_4_engine_task_integration() {
+        let manager = Arc::new(DownloadManager::new());
+
+        // 1. Reserved device name: aux.pdf
+        let id1 = manager
+            .start_download(
+                "https://example.com/files/aux.pdf".to_string(),
+                "aux.pdf".to_string(),
+                "/downloads/aux.pdf".to_string(),
+                "".to_string(),
+                "".to_string(),
+                "".to_string(),
+                None,
+                None,
+                Some(1000),
+                true,
+                false,
+            )
+            .await
+            .unwrap();
+
+        let task1 = manager.tasks.read().await.get(&id1).cloned().unwrap();
+        assert_eq!(task1.get_filename(), "download_aux.pdf");
+        assert!(task1.get_save_path().ends_with("download_aux.pdf"));
+
+        // 2. Trailing spaces & dots: "project.docx...   "
+        let id2 = manager
+            .start_download(
+                "https://example.com/files/project.docx".to_string(),
+                "project.docx...   ".to_string(),
+                "/downloads/project.docx...   ".to_string(),
+                "".to_string(),
+                "".to_string(),
+                "".to_string(),
+                None,
+                None,
+                Some(1000),
+                true,
+                false,
+            )
+            .await
+            .unwrap();
+
+        let task2 = manager.tasks.read().await.get(&id2).cloned().unwrap();
+        assert_eq!(task2.get_filename(), "project.docx");
+        assert!(task2.get_save_path().ends_with("project.docx"));
+
+        // 3. update_filename_and_path with Windows reserved device name
+        task2.update_filename_and_path("prn.log");
+        assert_eq!(task2.get_filename(), "download_prn.log");
+        assert!(task2.get_save_path().ends_with("download_prn.log"));
+
+        // 4. Multi-byte Urdu long filename clamped without panic
+        let base_urdu = "یہ_ایک_طویل_فائل_نام_ہے_جو_کہ_اردو_میں_ہے_اور_ہم_ٹیسٹ_کر_رہے_ہیں";
+        let long_urdu = format!("{}_{}_{}.pdf", base_urdu, base_urdu, base_urdu);
+        task2.update_filename_and_path(&long_urdu);
+        assert!(task2.get_filename().len() <= 180);
+        assert!(task2.get_filename().ends_with(".pdf"));
+    }
+
+    #[tokio::test]
+    async fn test_edge_case_5_youtube_cookie_and_diagnostic_flow() {
+        let manager = Arc::new(DownloadManager::new());
+
+        // Verify task stores and retains YouTube session cookies and user agent
+        let session_cookies = "LOGIN_INFO=AFmmF2swRQIhA:123; SID=g.a000test_sid; HSID=Ah789";
+        let user_agent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/131.0.0.0";
+
+        let id = manager
+            .start_download(
+                "https://www.youtube.com/watch?v=dQw4w9WgXcQ".to_string(),
+                "Rick_Astley_Never_Gonna_Give_You_Up.mp4".to_string(),
+                "/downloads/rick.mp4".to_string(),
+                session_cookies.to_string(),
+                "https://www.youtube.com/".to_string(),
+                user_agent.to_string(),
+                None,
+                Some("Video".to_string()),
+                Some(50000000),
+                true,
+                false,
+            )
+            .await
+            .unwrap();
+
+        let task = manager.tasks.read().await.get(&id).cloned().unwrap();
+        assert_eq!(task.cookie, session_cookies);
+        assert_eq!(task.user_agent, user_agent);
+        assert_eq!(task.referrer, "https://www.youtube.com/");
+
+        // Verify Netscape cookie file generation from task cookies
+        let temp_dir = std::env::temp_dir().join(format!("idm_task_cookie_{}", task.id));
+        std::fs::create_dir_all(&temp_dir).unwrap();
+        let cookie_file = temp_dir.join("cookies.txt");
+        let write_ok = crate::mux::write_netscape_cookies(&task.cookie, &[".youtube.com", ".google.com"], &cookie_file);
+        assert!(write_ok.is_ok());
+        let content = std::fs::read_to_string(&cookie_file).unwrap();
+        assert!(content.contains("LOGIN_INFO\tAFmmF2swRQIhA:123"));
+        assert!(content.contains(".youtube.com"));
+        assert!(content.contains(".google.com"));
+        let _ = std::fs::remove_dir_all(&temp_dir);
+
+        // Verify actionable YouTube error diagnostic translation
+        let raw_yt_err = "ERROR: [youtube] dQw4w9WgXcQ: Sign in to confirm you're not a bot. Use --cookies-from-browser or export cookies.";
+        let parsed = crate::mux::parse_youtube_error(raw_yt_err);
+        assert!(parsed.contains("YouTube Bot Verification"));
+    }
+
+    #[tokio::test]
+    async fn test_feature_3_engine_magnet_webseed_integration() {
+        let manager = Arc::new(DownloadManager::new());
+
+        // 1. Magnet link with BEP 19 WebSeed acceleration
+        let magnet_with_webseed = "magnet:?xt=urn:btih:3b8c6a1e5d9f0c2a4b7e8d1c3a6f9b2e4d7a0c3f&dn=Fedora-Workstation-40.iso&xl=2147483648&ws=https%3A%2F%2Fdownload.fedoraproject.org%2Fpub%2Ffedora%2Flinux%2Freleases%2F40%2FFedora-Workstation-40.iso";
+
+        let id = manager
+            .start_download(
+                magnet_with_webseed.to_string(),
+                "".to_string(), // Let engine infer name from magnet 'dn'
+                "/downloads/Fedora-Workstation-40.iso".to_string(),
+                "".to_string(),
+                "".to_string(),
+                "".to_string(),
+                None,
+                None, // Auto-detect category
+                None, // Auto-detect size from magnet 'xl'
+                true, // Queue only for testing
+                false,
+            )
+            .await
+            .expect("Engine should successfully register Magnet link with WebSeed");
+
+        let task = manager.tasks.read().await.get(&id).cloned().unwrap();
+
+        // Verify task retains original magnet URI
+        assert_eq!(task.original_url, magnet_with_webseed);
+        // Verify final_url is routed to WebSeed mirror for multi-threaded downloading
+        assert_eq!(
+            *task.final_url.lock().await,
+            "https://download.fedoraproject.org/pub/fedora/linux/releases/40/Fedora-Workstation-40.iso"
+        );
+        // Verify filename from 'dn'
+        assert_eq!(task.get_filename(), "Fedora-Workstation-40.iso");
+        // Verify category auto-detected as Compressed
+        assert_eq!(task.get_category(), "Compressed");
+        // Verify exact length from 'xl'
+        assert_eq!(task.total_size.load(std::sync::atomic::Ordering::Relaxed), 2147483648);
+
+        // 2. Magnet link without WebSeed returns clear diagnostic message
+        let magnet_no_webseed = "magnet:?xt=urn:btih:3b8c6a1e5d9f0c2a4b7e8d1c3a6f9b2e4d7a0c3f&dn=Ubuntu-24.04.iso";
+        let err_res = manager
+            .start_download(
+                magnet_no_webseed.to_string(),
+                "Ubuntu-24.04.iso".to_string(),
+                "/downloads/Ubuntu-24.04.iso".to_string(),
+                "".to_string(),
+                "".to_string(),
+                "".to_string(),
+                None,
+                None,
+                None,
+                true,
+                false,
+            )
+            .await;
+
+        assert!(err_res.is_err());
+        let err_msg = err_res.err().unwrap();
+        assert!(err_msg.contains("WebSeeds (ws=)"));
+        assert!(err_msg.contains("Ubuntu-24.04.iso"));
+
+        // 3. Category detection test for torrent & magnet URLs
+        assert_eq!(crate::preflight::detect_category("debian-12.torrent", None), "Compressed");
+        assert_eq!(crate::preflight::detect_category(magnet_with_webseed, None), "Compressed");
     }
 }
 

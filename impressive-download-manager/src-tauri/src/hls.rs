@@ -588,4 +588,154 @@ chunk_1.m4s
         let _ = std::fs::remove_dir_all(&out_dir);
         let _ = std::fs::remove_file(&final_path);
     }
+
+    #[test]
+    fn test_feature_2_hls_relative_uri_resolution_with_query_params() {
+        let manifest = r#"#EXTM3U
+#EXT-X-VERSION:3
+#EXT-X-TARGETDURATION:5
+#EXTINF:5.000,
+../chunks/seg1.ts
+#EXTINF:5.000,
+./seg2.ts
+#EXTINF:5.000,
+seg3.ts?auth=123
+#EXT-X-ENDLIST"#;
+
+        let base_with_query = "https://media.cdn.net/hls/video/master/playlist.m3u8?token=xyz789&expire=123456";
+        let res = parse_hls(manifest, base_with_query).expect("HLS with query params parse failed");
+
+        if let HlsParseResult::Media(media) = res {
+            assert_eq!(media.urls.len(), 3);
+            assert_eq!(media.extension, ".ts");
+            assert_eq!(media.urls[0], "https://media.cdn.net/hls/video/chunks/seg1.ts");
+            assert_eq!(media.urls[1], "https://media.cdn.net/hls/video/master/seg2.ts");
+            assert_eq!(media.urls[2], "https://media.cdn.net/hls/video/master/seg3.ts?auth=123");
+            assert!((media.duration - 15.0).abs() < 0.001);
+        } else {
+            panic!("Expected HlsParseResult::Media");
+        }
+    }
+
+    #[test]
+    fn test_feature_2_hls_dual_stream_audio_and_video_variant_binding() {
+        let master = r#"#EXTM3U
+#EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID="audio-aac",NAME="English",DEFAULT=YES,URI="audio/en.m3u8"
+#EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID="audio-aac",NAME="Spanish",DEFAULT=NO,URI="audio/es.m3u8"
+#EXT-X-STREAM-INF:BANDWIDTH=8000000,RESOLUTION=3840x2160,AUDIO="audio-aac"
+4k/prog.m3u8
+#EXT-X-STREAM-INF:BANDWIDTH=4000000,RESOLUTION=1920x1080,AUDIO="audio-aac"
+1080p/prog.m3u8
+#EXT-X-STREAM-INF:BANDWIDTH=1500000,RESOLUTION=1280x720,AUDIO="audio-aac"
+720p/prog.m3u8"#;
+
+        let base = "https://vod.provider.com/stream/index.m3u8";
+        let res = parse_hls(master, base).expect("Dual-stream master playlist parse failed");
+
+        if let HlsParseResult::Master(variants) = res {
+            assert_eq!(variants.len(), 3);
+            // 4K should be sorted first (highest bandwidth)
+            assert_eq!(variants[0].bandwidth, 8000000);
+            assert_eq!(variants[0].resolution, Some("3840x2160".to_string()));
+            assert_eq!(variants[0].url, "https://vod.provider.com/stream/4k/prog.m3u8");
+            assert_eq!(variants[0].audio_url, Some("https://vod.provider.com/stream/audio/en.m3u8".to_string()));
+
+            // 1080p
+            assert_eq!(variants[1].bandwidth, 4000000);
+            assert_eq!(variants[1].resolution, Some("1920x1080".to_string()));
+            assert_eq!(variants[1].audio_url, Some("https://vod.provider.com/stream/audio/en.m3u8".to_string()));
+        } else {
+            panic!("Expected HlsParseResult::Master");
+        }
+    }
+
+    #[tokio::test]
+    async fn test_feature_2_hls_multi_segment_ordered_assembly_integrity() {
+        use tokio::io::AsyncReadExt;
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.expect("Failed to bind listener");
+        let local_addr = listener.local_addr().expect("Failed to get local address");
+
+        // 4 distinct segment byte chunks
+        let s0 = b"CHUNK_0_INIT_HEADER_DATA_1234";
+        let s1 = b"CHUNK_1_FRAME_STREAM_A_5678";
+        let s2 = b"CHUNK_2_FRAME_STREAM_B_9012";
+        let s3 = b"CHUNK_3_FINAL_INDEX_C_3456";
+
+        let server_handle = tokio::spawn(async move {
+            while let Ok((mut stream, _)) = listener.accept().await {
+                tokio::spawn(async move {
+                    let mut req_buf = vec![0u8; 4096];
+                    if let Ok(n) = stream.read(&mut req_buf).await {
+                        let req_text = String::from_utf8_lossy(&req_buf[..n]);
+                        let (body, status): (&[u8], &str) = if req_text.contains("GET /s0.ts") {
+                            (s0, "200 OK")
+                        } else if req_text.contains("GET /s1.ts") {
+                            (s1, "200 OK")
+                        } else if req_text.contains("GET /s2.ts") {
+                            (s2, "200 OK")
+                        } else if req_text.contains("GET /s3.ts") {
+                            (s3, "200 OK")
+                        } else {
+                            (b"", "404 Not Found")
+                        };
+
+                        let resp = format!("HTTP/1.1 {}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n", status, body.len());
+                        let _ = stream.write_all(resp.as_bytes()).await;
+                        let _ = stream.write_all(body).await;
+                    }
+                });
+            }
+        });
+
+        let plan = HlsPlan {
+            urls: vec![
+                format!("http://{}/s0.ts", local_addr),
+                format!("http://{}/s1.ts", local_addr),
+                format!("http://{}/s2.ts", local_addr),
+                format!("http://{}/s3.ts", local_addr),
+            ],
+            duration: 40.0,
+            extension: ".ts".to_string(),
+            source: format!("http://{}/playlist.m3u8", local_addr),
+            audio_plan: None,
+        };
+
+        let temp_dir = std::env::temp_dir().join(format!("idm_hls_f2_{}", uuid::Uuid::new_v4()));
+        let out_dir = std::env::temp_dir().join(format!("idm_hls_f2_out_{}", uuid::Uuid::new_v4()));
+        let _ = std::fs::create_dir_all(&out_dir);
+        let target_save_file = out_dir.join("assembled_stream.ts").to_string_lossy().to_string();
+
+        let client = reqwest::Client::new();
+        let downloaded = Arc::new(AtomicU64::new(0));
+        let total = Arc::new(AtomicU64::new(0));
+
+        let res = run_hls_stream_download(
+            client,
+            plan,
+            temp_dir.clone(),
+            target_save_file.clone(),
+            String::new(),
+            String::new(),
+            downloaded.clone(),
+            total.clone(),
+            None,
+        ).await;
+
+        assert!(res.is_ok(), "Multi-segment HLS download must succeed: {:?}", res.err());
+        let final_path = res.unwrap();
+
+        let content = std::fs::read(&final_path).expect("Failed to read assembled stream");
+        let mut expected = Vec::new();
+        expected.extend_from_slice(s0);
+        expected.extend_from_slice(s1);
+        expected.extend_from_slice(s2);
+        expected.extend_from_slice(s3);
+
+        assert_eq!(content, expected, "Assembled HLS file must exactly match ordered segments byte-for-byte");
+        assert!(!temp_dir.exists() || std::fs::read_dir(&temp_dir).map(|mut d| d.next().is_none()).unwrap_or(true), "Part files must be cleaned up");
+
+        server_handle.abort();
+        let _ = std::fs::remove_dir_all(&out_dir);
+        let _ = std::fs::remove_dir_all(&temp_dir);
+    }
 }

@@ -1,5 +1,16 @@
 # CHANGELOG
- 
+
+## [0.9.0] – 2026-10-31
+
+### Added
+- **Zero-Merge Sparse Direct Offset Writing**: Replaced separate chunk files and disk-heavy assembly copy phase with direct sparse `write_at_offset` (`.part`), eliminating double disk space requirements and assembling delays.
+- **Dynamic Work-Stealing Supervisor**: Automatically splits slow tail chunks down to 256KB across free workers, completely solving the 99% download freeze bottleneck.
+- **Aria2 JSON-RPC 2.0 Compatibility Server**: Built-in JSON-RPC server listening on `127.0.0.1:6800` (`aria2.addUri`, `aria2.tellStatus`, `aria2.pause`, `aria2.remove`, etc.) with full CORS support for universal browser extension compatibility (AriaNg, BaiduExporter, Camtd).
+- **BitTorrent & Magnet Protocol Engine**: Implemented pure-Rust RFC 3174 SHA-1 info-hash calculation, BEP 9 / BEP 53 Magnet parsing and serialization, Bencoding parser/encoder, and BEP 19 WebSeed acceleration routing.
+- **Anti-Bot TLS Fingerprinting & WAF 403 Bypass**: Browser profile detection (Chrome, Firefox, Safari, Edge), accurate Client Hints (`sec-ch-ua`, `sec-ch-ua-platform`, `sec-ch-ua-mobile`), Sec-Fetch metadata, and automated CORS same-origin retry on HTTP 403.
+- **Extended Windows Reserved Names Protection**: Hardened against `CON`, `PRN`, `AUX`, `NUL`, `COM1-9`, `LPT1-9`, `CONIN$`, `CONOUT$`, `CLOCK$`, `$MFT`, and unicode superscripts (`COM¹`) with UTF-8 character-boundary safe 180-byte clamping.
+- **YouTube Session Cookies & Actionable Error Diagnostics**: Integrated Netscape cookie passing (`--cookies`) for private and age-restricted videos with human-readable diagnostic error guidance.
+
 ## [0.8.0] – 2026-10-26
  
 ### Added

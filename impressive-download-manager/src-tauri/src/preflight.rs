@@ -61,8 +61,12 @@ pub fn detect_category(filename: &str, mime_type: Option<&str>) -> &'static str 
         }
     }
 
-    // 2. Check extension from filename
+    // 2. Check for magnet link or extension from filename
     let lower = filename.to_lowercase();
+    if lower.starts_with("magnet:?") {
+        return "Compressed";
+    }
+
     let ext = match lower.rfind('.') {
         Some(idx) => &lower[idx + 1..],
         None => return "Other",
@@ -71,7 +75,7 @@ pub fn detect_category(filename: &str, mime_type: Option<&str>) -> &'static str 
     match ext {
         "mp4" | "webm" | "mkv" | "mov" | "avi" | "m4v" | "flv" | "3gp" | "ts" | "m3u8" | "wmv" => "Video",
         "mp3" | "m4a" | "aac" | "flac" | "ogg" | "wav" | "wma" | "opus" | "m4b" => "Audio",
-        "zip" | "7z" | "rar" | "tar" | "gz" | "bz2" | "xz" | "iso" | "dmg" | "tgz" => "Compressed",
+        "zip" | "7z" | "rar" | "tar" | "gz" | "bz2" | "xz" | "iso" | "dmg" | "tgz" | "torrent" => "Compressed",
         "pdf" | "doc" | "docx" | "xls" | "xlsx" | "ppt" | "pptx" | "txt" | "csv" | "epub" | "rtf" | "md" | "odt" | "ods" => "Documents",
         "exe" | "msi" | "msix" | "deb" | "rpm" | "apk" | "appimage" | "bin" | "sh" | "bat" | "cmd" => "Programs",
         _ => "Other",
@@ -200,32 +204,13 @@ pub async fn probe_download_url(
     let client = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(8))
         .redirect(reqwest::redirect::Policy::limited(10))
+        .tcp_nodelay(true)
         .build()
         .map_err(|e| format!("Client build error: {}", e))?;
 
+    let profile = crate::engine::BrowserProfile::detect(user_agent.unwrap_or(""));
     let build_request = |req: reqwest::RequestBuilder| {
-        let mut r = req;
-        if let Some(ua) = user_agent {
-            if !ua.is_empty() {
-                r = r.header(reqwest::header::USER_AGENT, ua);
-            }
-        } else {
-            r = r.header(
-                reqwest::header::USER_AGENT,
-                "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
-            );
-        }
-        if let Some(ck) = cookie {
-            if !ck.is_empty() {
-                r = r.header(reqwest::header::COOKIE, ck);
-            }
-        }
-        if let Some(rf) = referrer {
-            if !rf.is_empty() {
-                r = r.header(reqwest::header::REFERER, rf);
-            }
-        }
-        r
+        profile.apply_headers(req, url, referrer.unwrap_or(""), cookie.unwrap_or(""), false)
     };
 
     let mut final_url = url.to_string();
