@@ -3,16 +3,33 @@
 ## [0.9.0] – 2026-10-31
 
 ### Added
-- **Zero-Merge Sparse Direct Offset Writing**: Replaced separate chunk files and disk-heavy assembly copy phase with direct sparse `write_at_offset` (`.part`), eliminating double disk space requirements and assembling delays.
-- **Dynamic Work-Stealing Supervisor**: Automatically splits slow tail chunks down to 256KB across free workers, completely solving the 99% download freeze bottleneck.
-- **Aria2 JSON-RPC 2.0 Compatibility Server**: Built-in JSON-RPC server listening on `127.0.0.1:6800` (`aria2.addUri`, `aria2.tellStatus`, `aria2.pause`, `aria2.remove`, etc.) with full CORS support for universal browser extension compatibility (AriaNg, BaiduExporter, Camtd).
+- **Zero-Merge Sparse Direct Offset Writing**: Replaced separate chunk files and disk-heavy assembly copy phase with direct sparse `write_at_offset` (`.part`), eliminating double disk space requirements and assembling delays. Downloads are ready instantly upon reaching 100%.
+- **Dynamic Work-Stealing Supervisor**: Automatically splits slow tail chunks down to 256KB across free workers, completely solving the notorious 99% download freeze bottleneck on throttled connections.
+- **Aria2 JSON-RPC 2.0 Compatibility Server**: Built-in JSON-RPC server listening on `127.0.0.1:6800` (`aria2.addUri`, `aria2.tellStatus`, `aria2.tellActive`, `aria2.tellWaiting`, `aria2.tellStopped`, `aria2.pause`, `aria2.unpause`, `aria2.remove`, `aria2.getVersion`, `aria2.getGlobalStat`, `system.multicall`) with full CORS support for universal browser extension compatibility (AriaNg, BaiduExporter, Camtd, Aria2 Explorer).
 - **BitTorrent & Magnet Protocol Engine**: Implemented pure-Rust RFC 3174 SHA-1 info-hash calculation, BEP 9 / BEP 53 Magnet parsing and serialization, Bencoding parser/encoder, and BEP 19 WebSeed acceleration routing.
-- **Anti-Bot TLS Fingerprinting & WAF 403 Bypass**: Browser profile detection (Chrome, Firefox, Safari, Edge), accurate Client Hints (`sec-ch-ua`, `sec-ch-ua-platform`, `sec-ch-ua-mobile`), Sec-Fetch metadata, and automated CORS same-origin retry on HTTP 403.
+- **Anti-Bot TLS Fingerprinting & WAF 403 Bypass**: Browser profile detection (Chrome, Firefox, Safari, Edge), accurate Client Hints (`sec-ch-ua`, `sec-ch-ua-platform`, `sec-ch-ua-mobile`), Sec-Fetch metadata, and automated CORS same-origin retry on HTTP 403 Forbidden.
 - **Extended Windows Reserved Names Protection**: Hardened against `CON`, `PRN`, `AUX`, `NUL`, `COM1-9`, `LPT1-9`, `CONIN$`, `CONOUT$`, `CLOCK$`, `$MFT`, and unicode superscripts (`COM¹`) with UTF-8 character-boundary safe 180-byte clamping.
+- **Native Pure-Rust BitTorrent P2P Swarming Engine**: Full BEP 3 peer wire protocol implementation (handshake, bitfield, unchoke, interested, have, request, piece), BEP 15 UDP tracker client, BEP 23 compact peer parsing, and direct sparse block writing. Enables direct P2P swarm downloading for magnet links and torrents without external tools or dependencies.
+- **GitHub Releases & Fast Mirror Accelerator**: Built-in accelerator for GitHub releases, raw repository files, and release assets. Concurrently races fast global and regional CDN mirrors (`ghproxy.net`, `gh-proxy.com`, `mirror.ghproxy.com`, `ghps.cc`) with an adaptive timeout probe to automatically route downloads through the fastest responsive mirror.
+- **Hugging Face AI Models & Datasets Downloader**: Native support for Hugging Face model checkpoints (`.gguf`, `.safetensors`, `.onnx`, `.pt`, `.pth`, `.bin`) and datasets (`.parquet`, `.arrow`). Automatically normalizes web `/blob/` URLs to `/resolve/?download=true`, injects Hugging Face API tokens (`HF_TOKEN` / `HUGGING_FACE_HUB_TOKEN`) with Amazon S3 cross-domain redirect safety, and parses Git LFS SHA-256 hashes (`X-Linked-ETag`) for automated post-download integrity verification.
+- **FTP & FTPS Protocol Engine (RFC 959, RFC 2228, RFC 3659)**: Pure-Rust native async FTP/FTPS engine with binary mode (`TYPE I`), user/password authentication, passive data mode (`PASV`), file size probing (`SIZE`), and restart offset (`REST <offset>`) support for parallel multi-chunk streaming and resumable transfers without external tools.
+- **Interactive Duplicate Name Conflict Dialog**: Real-time pre-flight detection of existing files on disk with user-selectable resolution choices (`Auto-Rename / Keep Both`, `Overwrite File`, or `Resume Download`) in both the standalone pre-flight popup and the main dashboard Add modal.
+- **Auto Hash & Checksum Verification Suite**: Pure-Rust RFC 1321 MD5, RFC 3174 SHA-1, and FIPS 180-4 SHA-256 computation with automatic length-based algorithm detection, one-click hash copying, and an interactive verification card in the File Details Drawer displaying instant match or mismatch badges.
 - **YouTube Session Cookies & Actionable Error Diagnostics**: Integrated Netscape cookie passing (`--cookies`) for private and age-restricted videos with human-readable diagnostic error guidance.
+- **Per-Item Restore Action in Trash**: Added direct restore button on hover cards for quick restoration of accidentally deleted downloads.
+
+### Changed & UI Improvements
+- **Liquid Progress Wave Animation Overhaul**: Upgraded download progress visualization with 6-7 harmonic wave layers and rising effervescent bubbles for a dynamic, liquid feel.
+- **Progress Window Error Relocation**: Moved diagnostic and download failure error messages outside the liquid container to prevent text clipping.
+- **Trash View De-cluttering**: Removed conflicting top-left red label and top-right "Empty Trash" button to prevent search bar overlap and keep the view sleek and minimal.
+- **Bundler Settings Optimization**: Aligned Tauri v2 `bundle.category` to `"Utility"`, enabling clean native package bundling for Linux (`.deb`, `.rpm`) and Windows.
+
+### Fixed
+- **Download Progress Button Border Flickering**: Resolved CSS border jump and flicker on Pause/Cancel buttons in the download progress popup.
+- **Multi-Byte Filename Truncation Panics**: Fixed potential UTF-8 char boundary slicing panic on long Urdu, Arabic, and CJK filenames.
 
 ## [0.8.0] – 2026-10-26
- 
+
 ### Added
 - **Native Messaging Host Protocol Across All Browsers**: Implemented 32-bit length-prefixed binary IPC host (`com.impressive.idm`) supporting Chrome, Edge, Brave, Chromium, Vivaldi, Opera, and Firefox. Allows browser extensions to wake up IDM in the background without opening dummy tabs.
 - **Pre-Flight URL Probe & "Download File Info" Modal**: Authentic IDM-style pre-flight modal with category selector, dynamic filename resolution, real-time disk space check with low-space guard, "Download Later" queueing, and duplicate transfer prevention.
@@ -20,11 +37,15 @@
 - **HLS Dynamic Playlist Engine**: Multi-variant HLS parsing, AES-128 decryption stream handling, and fast fMP4/TS segment assembly.
 - **YouTube SABR & Dual-Stream Fast Muxing**: Fast adaptive stream pairing (1080p+ video with 140 AAC audio) and background FFmpeg stream-copy muxing.
 - **32-Chunk Dynamic Speed Limiter & Throttle Buffer**: Dynamic segment splitting up to 32 parallel connections with token-bucket rate limiting and zero-lock race guards.
+- **Desktop Window Bar App Branding**: Added IDM application icon branding to the top window bar of download captured and progress dialogs.
+- **Chronological Download Sorting**: Configured all category and dashboard download lists to automatically sort by most recent downloads on top.
 - **System Theme & Design Matching**: Comprehensive Dark, Light, and System theme harmony across all dialogs, badges, and settings cards.
 
 ### Fixed
 - **Safe Browser Interception**: Non-destructive download cancellation ensuring browser downloads are only cancelled after IDM confirms receipt.
 - **Validator & Weak ETag Guard**: RFC 7232 strict validation filtering out weak ETags (`W/"..."`) and preventing corrupted range appends.
+- **Light Mode Download Later Contrast**: Fixed background and text color contrast for the "Download Later" button in Light Theme.
+- **Speed Jumps Smoothing**: Implemented Exponential Moving Average (EMA) speed smoothing to eliminate unrealistic speed jumps during video and segmented downloads.
 
 ## [0.7.7] – 2026-09-02
  

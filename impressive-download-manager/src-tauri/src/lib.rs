@@ -6,6 +6,10 @@ pub mod preflight;
 pub mod native_host;
 pub mod aria2_rpc;
 pub mod torrent;
+pub mod checksum;
+pub mod github_accelerator;
+pub mod huggingface;
+pub mod ftp;
 
 use std::sync::Arc;
 use tauri::{State, Manager};
@@ -38,9 +42,10 @@ async fn start_download(
     size: Option<u64>,
     queue_only: Option<bool>,
     reuse_active: Option<bool>,
+    conflict_action: Option<String>,
     manager: State<'_, Arc<DownloadManager>>,
 ) -> Result<String, String> {
-    println!("[Tauri IPC] start_download called: {}, size: {:?}", url, size);
+    println!("[Tauri IPC] start_download called: {}, size: {:?}, conflict_action: {:?}", url, size, conflict_action);
     manager
         .start_download(
             url,
@@ -54,6 +59,7 @@ async fn start_download(
             size,
             queue_only.unwrap_or(false),
             reuse_active.unwrap_or(true),
+            conflict_action,
         )
         .await
 }
@@ -88,6 +94,30 @@ async fn register_native_messaging(custom_id: Option<String>) -> Result<native_h
 #[tauri::command]
 async fn get_browser_integration_status() -> Result<native_host::IntegrationStatus, String> {
     Ok(native_host::get_integration_status())
+}
+
+#[tauri::command]
+async fn calculate_file_checksum(
+    path: String,
+    algorithm: Option<String>,
+) -> Result<String, String> {
+    checksum::compute_file_checksum(
+        std::path::Path::new(&path),
+        &algorithm.unwrap_or_else(|| "sha256".to_string()),
+    )
+}
+
+#[tauri::command]
+async fn verify_file_checksum(
+    path: String,
+    expected_hash: String,
+    algorithm: Option<String>,
+) -> Result<checksum::ChecksumResult, String> {
+    checksum::verify_file_checksum(
+        std::path::Path::new(&path),
+        &expected_hash,
+        algorithm.as_deref(),
+    )
 }
 
 #[tauri::command]
@@ -1295,7 +1325,9 @@ pub fn run() {
             probe_download_url,
             get_disk_space,
             register_native_messaging,
-            get_browser_integration_status
+            get_browser_integration_status,
+            calculate_file_checksum,
+            verify_file_checksum
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

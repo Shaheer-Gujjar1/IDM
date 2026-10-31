@@ -222,6 +222,11 @@ impl BrowserProfile {
             req = req.header(COOKIE, user_cookie);
         }
 
+        // Hugging Face AI Model & Dataset Auth Header Injection (Bearer token for gated repos)
+        if crate::huggingface::is_huggingface_url(target_url) {
+            req = crate::huggingface::apply_huggingface_auth(req, None);
+        }
+
         req
     }
 }
@@ -644,6 +649,7 @@ impl DownloadManager {
         size: Option<u64>,
         queue_only: bool,
         reuse_active: bool,
+        conflict_action: Option<String>,
     ) -> Result<String, String> {
         let (clean_url, final_audio_url) = if let Some(idx) = url.find("|AUDIO_URL|") {
             (url[..idx].to_string(), Some(url[idx + 11..].to_string()))
@@ -679,7 +685,7 @@ impl DownloadManager {
         let mut download_url = clean_url.clone();
         let mut download_size = size;
 
-        // Feature 3: BitTorrent Magnet Protocol Handler (BEP 9 / BEP 19 / BEP 53)
+        // Feature 3: BitTorrent Magnet Protocol Handler (BEP 9 / BEP 19 / BEP 53 / P2P Swarm)
         if clean_url.starts_with("magnet:?") {
             let magnet = crate::torrent::parse_magnet(&clean_url)?;
             if crate::proxy::is_generic_filename(&filename) || filename.is_empty() {
@@ -693,15 +699,54 @@ impl DownloadManager {
             if let Some(ws) = magnet.web_seeds.first() {
                 download_url = ws.clone();
             } else {
-                return Err(format!(
-                    "Magnet link for '{}' (Info-Hash: {}) parsed successfully, but contains no HTTP/HTTPS WebSeeds (ws=). Standalone P2P swarming requires a full BitTorrent client.",
-                    magnet.name, magnet.info_hash
-                ));
+                // Native Pure-Rust P2P Swarming handles this directly via BitTorrent trackers and peers!
+                download_url = clean_url.clone();
             }
         }
 
-        if !download_url.starts_with("http://") && !download_url.starts_with("https://") {
-            return Err("Unsupported URL protocol. Only http:// and https:// URLs can be downloaded over the network. In-memory URLs (e.g. blob:) are generated locally in your browser and saved directly by the browser.".to_string());
+        // Feature: FTP & FTPS Native Engine
+        if crate::ftp::is_ftp_url(&clean_url) {
+            if let Ok(ftp_info) = crate::ftp::parse_ftp_url(&clean_url) {
+                if crate::proxy::is_generic_filename(&filename) || filename.is_empty() {
+                    filename = ftp_info.filename.clone();
+                }
+            }
+        }
+
+        // Feature: Hugging Face AI Models & Datasets Normalizer
+        if crate::huggingface::is_huggingface_url(&download_url) {
+            if let Some(norm) = crate::huggingface::normalize_huggingface_url(&download_url) {
+                download_url = norm;
+            }
+            if let Some(hf_info) = crate::huggingface::parse_huggingface_url(&download_url) {
+                if crate::proxy::is_generic_filename(&filename) || filename.is_empty() {
+                    filename = hf_info.filename.clone();
+                }
+            }
+        }
+
+        // Feature: GitHub Releases & Fast Mirror Accelerator
+        if crate::github_accelerator::is_github_url(&download_url) {
+            if let Some(gh_info) = crate::github_accelerator::parse_github_url(&download_url) {
+                if crate::proxy::is_generic_filename(&filename) || filename.is_empty() {
+                    filename = gh_info.filename.clone();
+                }
+                // Concurrently race probe mirrors with short timeout
+                let fastest_url = crate::github_accelerator::probe_fastest_github_mirror(&download_url, &self.client).await;
+                if fastest_url != download_url {
+                    println!("[GitHub Accelerator] Accelerated via fast mirror: {}", fastest_url);
+                    download_url = fastest_url;
+                }
+            }
+        }
+
+        if !download_url.starts_with("http://")
+            && !download_url.starts_with("https://")
+            && !download_url.starts_with("magnet:?")
+            && !download_url.starts_with("ftp://")
+            && !download_url.starts_with("ftps://")
+        {
+            return Err("Unsupported URL protocol. Only http://, https://, ftp://, ftps://, and magnet:? URLs can be downloaded over the network. In-memory URLs (e.g. blob:) are generated locally in your browser and saved directly by the browser.".to_string());
         }
 
         if crate::proxy::is_generic_filename(&filename) || filename.is_empty() {
@@ -763,6 +808,27 @@ impl DownloadManager {
             }
         } else {
             save_path = filename.clone();
+        }
+
+        // Feature 2: Interactive Duplicate Name Conflict handling
+        match conflict_action.as_deref() {
+            Some("rename") => {
+                if std::path::Path::new(&save_path).exists() {
+                    let (new_path, placeholder) = Self::allocate_collision_free_path(&save_path);
+                    drop(placeholder);
+                    save_path = new_path;
+                    if let Some(new_name) = std::path::Path::new(&save_path).file_name().and_then(|f| f.to_str()) {
+                        filename = new_name.to_string();
+                    }
+                }
+            }
+            Some("overwrite") => {
+                // User explicitly chose to overwrite: retain chosen destination and replace
+            }
+            Some("resume") | None => {
+                // Resume / keep default behavior
+            }
+            _ => {}
         }
 
         let final_category = match category {
@@ -1554,6 +1620,141 @@ impl DownloadManager {
                 }
             }
         });
+
+        // Feature 3: BitTorrent Native P2P Swarming Interception
+        if task.original_url.starts_with("magnet:?") {
+            if let Ok(magnet) = crate::torrent::parse_magnet(&task.original_url) {
+                if magnet.web_seeds.is_empty() {
+                    println!("[P2P Swarm] Starting BitTorrent Swarm download for: {}", magnet.name);
+                    *task.status.lock().unwrap() = DownloadStatus::Downloading;
+                    let info_hash = crate::torrent::hex_to_bytes20(&magnet.info_hash).map_err(|e| e.to_string())?;
+                    let peer_id = crate::torrent::generate_peer_id();
+                    let dest_path = std::path::PathBuf::from(task.get_save_path());
+                    let total_len = magnet.exact_length.unwrap_or(0);
+                    let abort_rx = task.abort_tx.as_ref().map(|tx| tx.subscribe());
+
+                    match crate::torrent::run_p2p_swarm_download(
+                        info_hash,
+                        peer_id,
+                        262144, // 256 KiB piece default
+                        total_len,
+                        vec![],
+                        magnet.trackers,
+                        vec![],
+                        dest_path.clone(),
+                        task.network_downloaded.clone(),
+                        abort_rx,
+                    ).await {
+                        Ok(final_path) => {
+                            task.total_size.store(task.network_downloaded.load(Ordering::Relaxed), Ordering::Relaxed);
+                            *task.status.lock().unwrap() = DownloadStatus::Completed;
+                            let cur_filename = task.get_filename();
+                            let progress = DownloadProgress {
+                                id: task.id.clone(),
+                                url: task.original_url.clone(),
+                                filename: cur_filename,
+                                save_path: final_path,
+                                total_size: task.total_size.load(Ordering::Relaxed),
+                                downloaded: task.network_downloaded.load(Ordering::Relaxed),
+                                speed: 0.0,
+                                eta: "0s".to_string(),
+                                status: DownloadStatus::Completed,
+                                file_exists: std::path::Path::new(&task.get_save_path()).exists(),
+                                speed_limited: false,
+                                category: task.get_category(),
+                            };
+                            if let Some(ref handle) = self.app_handle.lock().await.clone() {
+                                use tauri::Emitter;
+                                let _ = handle.emit("download-progress", progress);
+                            }
+                            let _ = self.save_history().await;
+                            return Ok(());
+                        }
+                        Err(e) => {
+                            *task.status.lock().unwrap() = DownloadStatus::Failed(e.clone());
+                            return Err(e);
+                        }
+                    }
+                }
+            }
+        }
+
+        // Phase 3.5: FTP & FTPS Engine Interception (RFC 959, RFC 2228, RFC 3659)
+        if crate::ftp::is_ftp_url(&task.original_url) {
+            let ftp_info = match crate::ftp::parse_ftp_url(&task.original_url) {
+                Ok(info) => info,
+                Err(e) => {
+                    *task.status.lock().unwrap() = DownloadStatus::Failed(e.clone());
+                    return Err(e);
+                }
+            };
+
+            println!("[FTP Engine] Starting FTP/FTPS download for: {}", task.original_url);
+            *task.status.lock().unwrap() = DownloadStatus::Downloading;
+            let dest_path = std::path::PathBuf::from(task.get_save_path());
+            let abort_rx = task.abort_tx.as_ref().map(|tx| tx.subscribe());
+
+            match crate::ftp::download_ftp_stream(
+                &ftp_info,
+                0,
+                None,
+                &dest_path,
+                task.network_downloaded.clone(),
+                abort_rx,
+            ).await {
+                Ok(total_bytes) => {
+                    task.total_size.store(total_bytes, Ordering::Relaxed);
+                    *task.status.lock().unwrap() = DownloadStatus::Completed;
+                    let cur_filename = task.get_filename();
+                    let cur_save_path = task.get_save_path();
+                    let progress = DownloadProgress {
+                        id: task.id.clone(),
+                        url: task.original_url.clone(),
+                        filename: cur_filename,
+                        save_path: cur_save_path.clone(),
+                        total_size: total_bytes,
+                        downloaded: total_bytes,
+                        speed: 0.0,
+                        eta: "0s".to_string(),
+                        status: DownloadStatus::Completed,
+                        file_exists: std::path::Path::new(&cur_save_path).exists(),
+                        speed_limited: false,
+                        category: task.get_category(),
+                    };
+                    if let Some(ref handle) = self.app_handle.lock().await.clone() {
+                        use tauri::Emitter;
+                        let _ = handle.emit("download-progress", progress);
+                    }
+                    let _ = self.save_history().await;
+                    return Ok(());
+                }
+                Err(e) => {
+                    let err_msg = format!("FTP transfer failed: {}", e);
+                    *task.status.lock().unwrap() = DownloadStatus::Failed(err_msg.clone());
+                    let cur_filename = task.get_filename();
+                    let cur_save_path = task.get_save_path();
+                    let progress = DownloadProgress {
+                        id: task.id.clone(),
+                        url: task.original_url.clone(),
+                        filename: cur_filename,
+                        save_path: cur_save_path.clone(),
+                        total_size: task.total_size.load(Ordering::Relaxed),
+                        downloaded: task.network_downloaded.load(Ordering::Relaxed),
+                        speed: 0.0,
+                        eta: "---".to_string(),
+                        status: DownloadStatus::Failed(err_msg.clone()),
+                        file_exists: std::path::Path::new(&cur_save_path).exists(),
+                        speed_limited: false,
+                        category: task.get_category(),
+                    };
+                    if let Some(ref handle) = self.app_handle.lock().await.clone() {
+                        use tauri::Emitter;
+                        let _ = handle.emit("download-progress", progress);
+                    }
+                    return Err(e);
+                }
+            }
+        }
 
         // Phase 4: HLS Stream (.m3u8) Engine Interception
         if task.original_url.contains(".m3u8") {
@@ -3431,6 +3632,7 @@ mod tests {
             None,
             false,
             false,
+            None,
         ).await.expect("start_download failed");
 
         // Wait up to 10 seconds for real download completion
@@ -3532,6 +3734,7 @@ mod tests {
             None,
             false,
             false,
+            None,
         ).await.expect("start_download failed");
 
         // Wait up to 10 seconds for backoff and recovery
@@ -3820,6 +4023,7 @@ mod tests {
             None,
             false,
             false,
+            None,
         ).await.expect("Dual stream start_download failed");
 
         // Wait up to 10 seconds for dual-stream download & muxing completion
@@ -3939,6 +4143,7 @@ mod tests {
             None,
             true, // queue_only to keep it queued/paused
             true,
+            None,
         ).await.expect("First download start failed");
 
         // Calling start_download again with reuse_active=true
@@ -3954,6 +4159,7 @@ mod tests {
             None,
             false,
             true,
+            None,
         ).await.expect("Second download start failed");
 
         assert_eq!(id2, format!("EXISTS:{}", id1), "Must return EXISTS:id for duplicate active download");
@@ -3976,6 +4182,7 @@ mod tests {
             None,
             true, // queue_only
             false,
+            None,
         ).await.expect("Queue only download start failed");
 
         let prog = mgr.get_progress(&id).await.expect("Task must be registered");
@@ -4075,6 +4282,7 @@ mod tests {
             None,
             false,
             false,
+            None,
         ).await.expect("Download start failed");
 
         // Wait for download to finish
@@ -4565,6 +4773,7 @@ mod tests {
                 Some(1000),
                 true,
                 false,
+                None,
             )
             .await
             .unwrap();
@@ -4587,6 +4796,7 @@ mod tests {
                 Some(1000),
                 true,
                 false,
+                None,
             )
             .await
             .unwrap();
@@ -4629,6 +4839,7 @@ mod tests {
                 Some(50000000),
                 true,
                 false,
+                None,
             )
             .await
             .unwrap();
@@ -4657,7 +4868,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_feature_3_engine_magnet_webseed_integration() {
+    async fn test_feature_3_engine_magnet_webseed_and_p2p_integration() {
         let manager = Arc::new(DownloadManager::new());
 
         // 1. Magnet link with BEP 19 WebSeed acceleration
@@ -4676,6 +4887,7 @@ mod tests {
                 None, // Auto-detect size from magnet 'xl'
                 true, // Queue only for testing
                 false,
+                None,
             )
             .await
             .expect("Engine should successfully register Magnet link with WebSeed");
@@ -4696,9 +4908,9 @@ mod tests {
         // Verify exact length from 'xl'
         assert_eq!(task.total_size.load(std::sync::atomic::Ordering::Relaxed), 2147483648);
 
-        // 2. Magnet link without WebSeed returns clear diagnostic message
+        // 2. Standalone Magnet link without WebSeed starts seamlessly through Pure-Rust P2P Swarm
         let magnet_no_webseed = "magnet:?xt=urn:btih:3b8c6a1e5d9f0c2a4b7e8d1c3a6f9b2e4d7a0c3f&dn=Ubuntu-24.04.iso";
-        let err_res = manager
+        let p2p_res = manager
             .start_download(
                 magnet_no_webseed.to_string(),
                 "Ubuntu-24.04.iso".to_string(),
@@ -4711,17 +4923,68 @@ mod tests {
                 None,
                 true,
                 false,
+                None,
             )
             .await;
 
-        assert!(err_res.is_err());
-        let err_msg = err_res.err().unwrap();
-        assert!(err_msg.contains("WebSeeds (ws=)"));
-        assert!(err_msg.contains("Ubuntu-24.04.iso"));
+        assert!(p2p_res.is_ok(), "Engine must accept standalone magnet link without webseed into P2P swarm");
 
         // 3. Category detection test for torrent & magnet URLs
         assert_eq!(crate::preflight::detect_category("debian-12.torrent", None), "Compressed");
         assert_eq!(crate::preflight::detect_category(magnet_with_webseed, None), "Compressed");
+    }
+
+    #[tokio::test]
+    async fn test_feature_2_duplicate_name_conflict_resolution() {
+        let temp_dir = std::env::temp_dir().join(format!("idm_conflict_test_{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&temp_dir).unwrap();
+        let existing_file = temp_dir.join("sample_report.pdf");
+        std::fs::write(&existing_file, b"Original file content on disk").unwrap();
+
+        let manager = Arc::new(DownloadManager::new());
+        let url = "https://example.com/sample_report.pdf".to_string();
+
+        // 1. Conflict Action: "rename" -> auto appends (1)
+        let id_rename = manager.start_download(
+            url.clone(),
+            "sample_report.pdf".to_string(),
+            existing_file.to_string_lossy().to_string(),
+            "".to_string(),
+            "".to_string(),
+            "".to_string(),
+            None,
+            None,
+            None,
+            true,
+            false,
+            Some("rename".to_string()),
+        ).await.unwrap();
+
+        let task_rename = manager.tasks.read().await.get(&id_rename).cloned().unwrap();
+        assert_eq!(task_rename.get_filename(), "sample_report (1).pdf");
+        assert!(task_rename.get_save_path().ends_with("sample_report (1).pdf"));
+
+        // 2. Conflict Action: "overwrite" -> keeps original filename & path
+        let id_overwrite = manager.start_download(
+            url.clone(),
+            "sample_report.pdf".to_string(),
+            existing_file.to_string_lossy().to_string(),
+            "".to_string(),
+            "".to_string(),
+            "".to_string(),
+            None,
+            None,
+            None,
+            true,
+            false,
+            Some("overwrite".to_string()),
+        ).await.unwrap();
+
+        let task_overwrite = manager.tasks.read().await.get(&id_overwrite).cloned().unwrap();
+        assert_eq!(task_overwrite.get_filename(), "sample_report.pdf");
+        assert_eq!(task_overwrite.get_save_path(), existing_file.to_string_lossy().to_string());
+
+        let _ = std::fs::remove_dir_all(&temp_dir);
     }
 }
 

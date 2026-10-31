@@ -21,6 +21,8 @@ pub struct PreflightProbeResult {
     pub available_disk_space: Option<u64>,
     pub formatted_disk_space: Option<String>,
     pub has_enough_space: bool,
+    pub file_already_exists: bool,
+    pub existing_file_size: Option<u64>,
 }
 
 /// Automatically classifies a download into authentic IDM categories based on MIME type and file extension.
@@ -77,7 +79,7 @@ pub fn detect_category(filename: &str, mime_type: Option<&str>) -> &'static str 
         "mp3" | "m4a" | "aac" | "flac" | "ogg" | "wav" | "wma" | "opus" | "m4b" => "Audio",
         "zip" | "7z" | "rar" | "tar" | "gz" | "bz2" | "xz" | "iso" | "dmg" | "tgz" | "torrent" => "Compressed",
         "pdf" | "doc" | "docx" | "xls" | "xlsx" | "ppt" | "pptx" | "txt" | "csv" | "epub" | "rtf" | "md" | "odt" | "ods" => "Documents",
-        "exe" | "msi" | "msix" | "deb" | "rpm" | "apk" | "appimage" | "bin" | "sh" | "bat" | "cmd" => "Programs",
+        "exe" | "msi" | "msix" | "deb" | "rpm" | "apk" | "appimage" | "bin" | "sh" | "bat" | "cmd" | "gguf" | "safetensors" | "onnx" | "pt" | "pth" | "tflite" | "parquet" | "arrow" => "Programs",
         _ => "Other",
     }
 }
@@ -197,9 +199,59 @@ pub async fn probe_download_url(
     user_agent: Option<&str>,
     save_folder: Option<&str>,
 ) -> Result<PreflightProbeResult, String> {
-    if !url.starts_with("http://") && !url.starts_with("https://") {
-        return Err("Unsupported protocol. Only http:// and https:// URLs are supported.".to_string());
+    // FTP / FTPS Protocol Probe Handling
+    if url.starts_with("ftp://") || url.starts_with("ftps://") {
+        let ftp_info = crate::ftp::parse_ftp_url(url)?;
+        let filename_candidate = crate::proxy::sanitize_filename(&ftp_info.filename);
+        let category = detect_category(&filename_candidate, None).to_string();
+
+        let (total_size, supports_range) = crate::ftp::probe_ftp_file(&ftp_info).await.unwrap_or((0, false));
+
+        let target_folder = save_folder.unwrap_or(".");
+        let target_file_path = std::path::Path::new(target_folder).join(&filename_candidate);
+        let file_already_exists = target_file_path.exists();
+        let existing_file_size = if file_already_exists {
+            std::fs::metadata(&target_file_path).map(|m| m.len()).ok()
+        } else {
+            None
+        };
+
+        let disk_info = get_disk_space(target_folder).ok();
+        let (available_disk_space, formatted_disk_space, has_enough_space) = match disk_info {
+            Some(info) => {
+                let enough = if total_size > 0 { info.available_bytes >= total_size } else { true };
+                (Some(info.available_bytes), Some(info.formatted_available), enough)
+            }
+            None => (None, None, true),
+        };
+
+        return Ok(PreflightProbeResult {
+            url: url.to_string(),
+            final_url: url.to_string(),
+            filename: filename_candidate,
+            total_size,
+            formatted_size: format_bytes(total_size),
+            supports_range,
+            category,
+            mime_type: None,
+            available_disk_space,
+            formatted_disk_space,
+            has_enough_space,
+            file_already_exists,
+            existing_file_size,
+        });
     }
+
+    if !url.starts_with("http://") && !url.starts_with("https://") {
+        return Err("Unsupported protocol. Only http://, https://, ftp://, and ftps:// URLs are supported.".to_string());
+    }
+
+    // Hugging Face AI URL normalization (/blob/ -> /resolve/)
+    let probe_url_target = if crate::huggingface::is_huggingface_url(url) {
+        crate::huggingface::normalize_huggingface_url(url).unwrap_or_else(|| url.to_string())
+    } else {
+        url.to_string()
+    };
 
     let client = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(8))
@@ -209,18 +261,22 @@ pub async fn probe_download_url(
         .map_err(|e| format!("Client build error: {}", e))?;
 
     let profile = crate::engine::BrowserProfile::detect(user_agent.unwrap_or(""));
-    let build_request = |req: reqwest::RequestBuilder| {
-        profile.apply_headers(req, url, referrer.unwrap_or(""), cookie.unwrap_or(""), false)
+    let target_ref = probe_url_target.clone();
+    let build_request = move |mut req: reqwest::RequestBuilder| {
+        if crate::huggingface::is_huggingface_url(&target_ref) {
+            req = crate::huggingface::apply_huggingface_auth(req, None);
+        }
+        profile.apply_headers(req, &target_ref, referrer.unwrap_or(""), cookie.unwrap_or(""), false)
     };
 
-    let mut final_url = url.to_string();
+    let mut final_url = probe_url_target.clone();
     let mut filename_candidate = String::new();
     let mut total_size = 0u64;
     let mut supports_range = false;
     let mut mime_type = None;
 
     // 1. Try HEAD request first
-    if let Ok(res) = build_request(client.head(url)).send().await {
+    if let Ok(res) = build_request(client.head(&probe_url_target)).send().await {
         final_url = res.url().to_string();
         if let Some(cd) = res.headers().get(reqwest::header::CONTENT_DISPOSITION) {
             if let Ok(cd_str) = cd.to_str() {
@@ -250,7 +306,7 @@ pub async fn probe_download_url(
 
     // 2. If HEAD returned 0 size, try GET with Range 0-0
     if total_size == 0 {
-        if let Ok(res) = build_request(client.get(url).header(reqwest::header::RANGE, "bytes=0-0")).send().await {
+        if let Ok(res) = build_request(client.get(&probe_url_target).header(reqwest::header::RANGE, "bytes=0-0")).send().await {
             final_url = res.url().to_string();
             if res.status() == reqwest::StatusCode::PARTIAL_CONTENT {
                 supports_range = true;
@@ -291,7 +347,11 @@ pub async fn probe_download_url(
 
     // 3. Fallback filename from URL if Content-Disposition was not present
     if filename_candidate.is_empty() || crate::proxy::is_generic_filename(&filename_candidate) {
-        if let Ok(parsed) = reqwest::Url::parse(&final_url) {
+        if let Some(hf) = crate::huggingface::parse_huggingface_url(url) {
+            filename_candidate = hf.filename;
+        } else if let Some(gh) = crate::github_accelerator::parse_github_url(url) {
+            filename_candidate = gh.filename;
+        } else if let Ok(parsed) = reqwest::Url::parse(&final_url) {
             for (k, v) in parsed.query_pairs() {
                 let k_lower = k.to_lowercase();
                 if (k_lower.contains("file") || k_lower.contains("name") || k_lower.contains("title")) && v.contains('.') {
@@ -326,8 +386,16 @@ pub async fn probe_download_url(
 
     let category = detect_category(&filename_candidate, mime_type.as_deref()).to_string();
 
-    // 4. Disk space probe
+    // 4. Disk space and existing duplicate file probe
     let target_folder = save_folder.unwrap_or(".");
+    let target_file_path = std::path::Path::new(target_folder).join(&filename_candidate);
+    let file_already_exists = target_file_path.exists();
+    let existing_file_size = if file_already_exists {
+        std::fs::metadata(&target_file_path).map(|m| m.len()).ok()
+    } else {
+        None
+    };
+
     let disk_info = get_disk_space(target_folder).ok();
     let (available_disk_space, formatted_disk_space, has_enough_space) = match disk_info {
         Some(info) => {
@@ -353,6 +421,8 @@ pub async fn probe_download_url(
         available_disk_space,
         formatted_disk_space,
         has_enough_space,
+        file_already_exists,
+        existing_file_size,
     })
 }
 

@@ -35,7 +35,10 @@ import {
   AlertTriangle,
   AlertCircle,
   Link2,
-  RotateCcw
+  RotateCcw,
+  ShieldCheck,
+  Copy,
+  Check
 } from "lucide-react";
 import { listen } from "@tauri-apps/api/event";
 import { invoke } from "@tauri-apps/api/core";
@@ -74,6 +77,16 @@ interface PreflightProbeResult {
   available_disk_space: number | null;
   formatted_disk_space: string | null;
   has_enough_space: boolean;
+  file_already_exists: boolean;
+  existing_file_size: number | null;
+}
+
+interface ChecksumResult {
+  algorithm: string;
+  calculated: string;
+  expected: string | null;
+  matched: boolean;
+  file_size_bytes: number;
 }
 
 interface DiskSpaceInfo {
@@ -271,6 +284,23 @@ function App() {
 
   // Drawer State
   const [selectedTask, setSelectedTask] = useState<DownloadProgress | null>(null);
+
+  // Interactive Duplicate Name Conflict State
+  const [popupConflictDetected, setPopupConflictDetected] = useState(false);
+  const [popupConflictSize, setPopupConflictSize] = useState<number | null>(null);
+  const [popupConflictAction, setPopupConflictAction] = useState<"rename" | "overwrite" | "resume">("rename");
+  const [addModalConflictDetected, setAddModalConflictDetected] = useState(false);
+  const [addModalConflictSize, setAddModalConflictSize] = useState<number | null>(null);
+  const [addModalConflictAction, setAddModalConflictAction] = useState<"rename" | "overwrite" | "resume">("rename");
+
+  // Checksum Verification State
+  const [checksumAlgo, setChecksumAlgo] = useState<"sha256" | "md5" | "sha1">("sha256");
+  const [expectedHashInput, setExpectedHashInput] = useState("");
+  const [computedHash, setComputedHash] = useState<string | null>(null);
+  const [isComputingHash, setIsComputingHash] = useState(false);
+  const [checksumResult, setChecksumResult] = useState<ChecksumResult | null>(null);
+  const [checksumError, setChecksumError] = useState<string | null>(null);
+  const [copiedHash, setCopiedHash] = useState(false);
 
   // Speed Limiter Helper
   const calculateLimitBps = (valStr: string, unitStr: string): number => {
@@ -785,6 +815,13 @@ function App() {
                 setAddModalDiskSafe(res.has_enough_space);
               }
             }
+            if (res.file_already_exists) {
+              setAddModalConflictDetected(true);
+              setAddModalConflictSize(res.existing_file_size || null);
+            } else {
+              setAddModalConflictDetected(false);
+              setAddModalConflictSize(null);
+            }
             if (res.formatted_size && res.formatted_size !== "Unknown") {
               setAddModalFileSize(res.formatted_size);
               if (res.total_size && res.total_size > 0) {
@@ -908,6 +945,18 @@ function App() {
       setPopupTaskId(taskId);
       setPopupSize(size);
       setPopupAudioUrl(audioUrl);
+
+      if (mode === "add" && url) {
+        invoke<PreflightProbeResult>("probe_download_url", {
+          url,
+          saveFolder: targetFolder,
+        }).then((res) => {
+          if (res && res.file_already_exists) {
+            setPopupConflictDetected(true);
+            setPopupConflictSize(res.existing_file_size || null);
+          }
+        }).catch(() => {});
+      }
 
       // Fetch progress state immediately from Rust backend to prevent Connecting... freeze
       if (mode === "progress" && taskId) {
@@ -1132,6 +1181,7 @@ function App() {
         size: addModalSizeRaw,
         queueOnly,
         reuseActive: true,
+        conflictAction: addModalConflictDetected ? addModalConflictAction : undefined,
       });
 
       if (id.startsWith("EXISTS:")) {
@@ -1208,6 +1258,7 @@ function App() {
         size: validSize,
         queueOnly,
         reuseActive: true,
+        conflictAction: popupConflictDetected ? popupConflictAction : undefined,
       });
 
       const actualId = id.startsWith("EXISTS:") ? id.slice(7) : id;
@@ -1647,6 +1698,54 @@ function App() {
               </button>
             </div>
           </div>
+
+          {/* Interactive Duplicate Name Conflict Dialog */}
+          {popupConflictDetected && (
+            <div style={{
+              background: "rgba(245, 158, 11, 0.09)",
+              border: "1px solid rgba(245, 158, 11, 0.35)",
+              borderRadius: "8px",
+              padding: "10px 12px",
+              display: "flex",
+              flexDirection: "column",
+              gap: "8px",
+              marginTop: "2px"
+            }}>
+              <div style={{ display: "flex", alignItems: "center", gap: "8px", color: "#f59e0b", fontSize: "0.82rem", fontWeight: 600 }}>
+                <AlertTriangle size={15} />
+                <span>Duplicate File Conflict Detected {popupConflictSize ? `(${formatBytes(popupConflictSize)})` : ""}</span>
+              </div>
+              <div style={{ fontSize: "0.75rem", color: "var(--text-secondary)" }}>
+                A file with the same name already exists in this folder. Choose resolution:
+              </div>
+              <div style={{ display: "flex", gap: "6px", flexWrap: "wrap" }}>
+                {[
+                  { key: "rename", label: "Auto-Rename (Keep Both)" },
+                  { key: "overwrite", label: "Overwrite File" },
+                  { key: "resume", label: "Resume Existing" },
+                ].map((opt) => (
+                  <button
+                    key={opt.key}
+                    type="button"
+                    onClick={() => setPopupConflictAction(opt.key as any)}
+                    style={{
+                      padding: "4px 10px",
+                      fontSize: "0.75rem",
+                      borderRadius: "6px",
+                      cursor: "pointer",
+                      fontWeight: popupConflictAction === opt.key ? 700 : 500,
+                      background: popupConflictAction === opt.key ? "rgba(245, 158, 11, 0.25)" : "rgba(255, 255, 255, 0.05)",
+                      border: popupConflictAction === opt.key ? "1px solid #f59e0b" : "1px solid rgba(255, 255, 255, 0.1)",
+                      color: popupConflictAction === opt.key ? "#fbbf24" : "var(--text-secondary)",
+                      transition: "all 0.15s ease",
+                    }}
+                  >
+                    {opt.label}
+                  </button>
+                ))}
+              </div>
+            </div>
+          )}
 
           {/* Pre-flight Info & Disk Space Bar */}
           <div className="preflight-pill-bar" style={{ marginTop: "2px" }}>
@@ -3174,6 +3273,53 @@ function App() {
                 </div>
               </div>
 
+              {/* Interactive Duplicate Name Conflict Dialog */}
+              {addModalConflictDetected && (
+                <div style={{
+                  background: "rgba(245, 158, 11, 0.09)",
+                  border: "1px solid rgba(245, 158, 11, 0.35)",
+                  borderRadius: "10px",
+                  padding: "12px 14px",
+                  display: "flex",
+                  flexDirection: "column",
+                  gap: "10px",
+                }}>
+                  <div style={{ display: "flex", alignItems: "center", gap: "8px", color: "#f59e0b", fontSize: "0.85rem", fontWeight: 600 }}>
+                    <AlertTriangle size={16} />
+                    <span>Duplicate File Conflict Detected {addModalConflictSize ? `(${formatBytes(addModalConflictSize)})` : ""}</span>
+                  </div>
+                  <div style={{ fontSize: "0.78rem", color: "var(--text-secondary)" }}>
+                    A file with the same name already exists in destination. Choose how to handle this conflict:
+                  </div>
+                  <div style={{ display: "flex", gap: "8px", flexWrap: "wrap" }}>
+                    {[
+                      { key: "rename", label: "Auto-Rename (Keep Both)" },
+                      { key: "overwrite", label: "Overwrite Existing" },
+                      { key: "resume", label: "Resume Download" },
+                    ].map((opt) => (
+                      <button
+                        key={opt.key}
+                        type="button"
+                        onClick={() => setAddModalConflictAction(opt.key as any)}
+                        style={{
+                          padding: "6px 12px",
+                          fontSize: "0.78rem",
+                          borderRadius: "8px",
+                          cursor: "pointer",
+                          fontWeight: addModalConflictAction === opt.key ? 700 : 500,
+                          background: addModalConflictAction === opt.key ? "rgba(245, 158, 11, 0.25)" : "rgba(255, 255, 255, 0.05)",
+                          border: addModalConflictAction === opt.key ? "1px solid #f59e0b" : "1px solid rgba(255, 255, 255, 0.1)",
+                          color: addModalConflictAction === opt.key ? "#fbbf24" : "var(--text-secondary)",
+                          transition: "all 0.15s ease",
+                        }}
+                      >
+                        {opt.label}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              )}
+
               {/* Pre-flight Info & Disk Space Bar */}
               <div className="preflight-pill-bar">
                 <div className="preflight-pill-badge" style={{ color: "var(--text-secondary)" }}>
@@ -3320,15 +3466,194 @@ function App() {
             </div>
 
             <div className="drawer-section">
-              <span className="drawer-section-title">Checksum Hash</span>
-              <div className="info-grid">
-                <span className="info-label">MD5:</span>
-                <span className="info-value" style={{ fontFamily: "monospace", fontSize: "0.8rem" }}>
-                  {getStatusText(selectedTask.status) === "Completed"
-                    ? "2f9a74c2e64627a6c98ee403bf6506d2"
-                    : "Calculating upon completion..."}
-                </span>
+              <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: "8px" }}>
+                <span className="drawer-section-title" style={{ marginBottom: 0 }}>Auto Checksum Verification</span>
+                <div style={{ display: "flex", gap: "4px" }}>
+                  {(["sha256", "md5", "sha1"] as const).map((algo) => (
+                    <button
+                      key={algo}
+                      type="button"
+                      onClick={() => {
+                        setChecksumAlgo(algo);
+                        setChecksumResult(null);
+                        setComputedHash(null);
+                        setChecksumError(null);
+                      }}
+                      style={{
+                        padding: "2px 8px",
+                        fontSize: "0.7rem",
+                        borderRadius: "4px",
+                        fontWeight: checksumAlgo === algo ? 700 : 500,
+                        background: checksumAlgo === algo ? "rgba(6, 182, 212, 0.2)" : "rgba(255, 255, 255, 0.05)",
+                        border: checksumAlgo === algo ? "1px solid var(--accent-cyan)" : "1px solid rgba(255, 255, 255, 0.1)",
+                        color: checksumAlgo === algo ? "var(--accent-cyan)" : "var(--text-secondary)",
+                        cursor: "pointer",
+                      }}
+                    >
+                      {algo.toUpperCase()}
+                    </button>
+                  ))}
+                </div>
               </div>
+
+              {getStatusText(selectedTask.status) !== "Completed" ? (
+                <p style={{ fontSize: "0.78rem", color: "var(--text-secondary)", margin: 0 }}>
+                  Checksum verification will be available once download completes.
+                </p>
+              ) : (
+                <div style={{ display: "flex", flexDirection: "column", gap: "10px" }}>
+                  {/* Calculated Hash with Copy Button */}
+                  <div style={{ display: "flex", flexDirection: "column", gap: "4px" }}>
+                    <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", fontSize: "0.74rem", color: "var(--text-secondary)" }}>
+                      <span>Calculated {checksumAlgo.toUpperCase()}:</span>
+                      {computedHash && (
+                        <button
+                          type="button"
+                          onClick={() => {
+                            navigator.clipboard.writeText(computedHash);
+                            setCopiedHash(true);
+                            setTimeout(() => setCopiedHash(false), 2000);
+                          }}
+                          style={{
+                            background: "transparent",
+                            border: "none",
+                            color: copiedHash ? "var(--accent-green)" : "var(--accent-cyan)",
+                            cursor: "pointer",
+                            fontSize: "0.72rem",
+                            display: "flex",
+                            alignItems: "center",
+                            gap: "4px"
+                          }}
+                        >
+                          {copiedHash ? <Check size={12} /> : <Copy size={12} />}
+                          <span>{copiedHash ? "Copied" : "Copy"}</span>
+                        </button>
+                      )}
+                    </div>
+                    <div style={{
+                      padding: "8px 10px",
+                      background: "rgba(0, 0, 0, 0.25)",
+                      borderRadius: "6px",
+                      fontFamily: "monospace",
+                      fontSize: "0.75rem",
+                      color: "var(--text-primary)",
+                      wordBreak: "break-all",
+                      display: "flex",
+                      alignItems: "center",
+                      justifyContent: "space-between",
+                      minHeight: "36px"
+                    }}>
+                      {isComputingHash ? (
+                        <span style={{ color: "var(--text-secondary)", fontStyle: "italic" }}>Calculating hash...</span>
+                      ) : computedHash ? (
+                        <span>{computedHash}</span>
+                      ) : (
+                        <button
+                          type="button"
+                          className="hover-action-btn"
+                          style={{ height: "24px", fontSize: "0.72rem", padding: "0 10px" }}
+                          onClick={async () => {
+                            if (!selectedTask.save_path) return;
+                            setIsComputingHash(true);
+                            setChecksumError(null);
+                            try {
+                              const hash = await invoke<string>("calculate_file_checksum", {
+                                path: selectedTask.save_path,
+                                algorithm: checksumAlgo,
+                              });
+                              setComputedHash(hash);
+                            } catch (e: any) {
+                              setChecksumError(e?.message || String(e));
+                            } finally {
+                              setIsComputingHash(false);
+                            }
+                          }}
+                        >
+                          Compute {checksumAlgo.toUpperCase()} Hash
+                        </button>
+                      )}
+                    </div>
+                  </div>
+
+                  {/* Verification Input & Action */}
+                  <div style={{ display: "flex", gap: "6px" }}>
+                    <input
+                      type="text"
+                      className="spotlight-input"
+                      style={{ padding: "6px 10px", fontSize: "0.75rem", flex: 1, fontFamily: "monospace" }}
+                      placeholder={`Paste expected ${checksumAlgo.toUpperCase()} hash...`}
+                      value={expectedHashInput}
+                      onChange={(e) => {
+                        setExpectedHashInput(e.target.value);
+                        setChecksumResult(null);
+                        setChecksumError(null);
+                      }}
+                    />
+                    <button
+                      type="button"
+                      className="hover-action-btn"
+                      style={{ height: "34px", padding: "0 12px", fontSize: "0.75rem", gap: "4px" }}
+                      disabled={!expectedHashInput.trim() || isComputingHash}
+                      onClick={async () => {
+                        if (!selectedTask.save_path || !expectedHashInput.trim()) return;
+                        setIsComputingHash(true);
+                        setChecksumError(null);
+                        try {
+                          const res = await invoke<ChecksumResult>("verify_file_checksum", {
+                            path: selectedTask.save_path,
+                            expectedHash: expectedHashInput.trim(),
+                            algorithm: checksumAlgo,
+                          });
+                          setChecksumResult(res);
+                          setComputedHash(res.calculated);
+                        } catch (e: any) {
+                          setChecksumError(e?.message || String(e));
+                        } finally {
+                          setIsComputingHash(false);
+                        }
+                      }}
+                    >
+                      <ShieldCheck size={14} />
+                      <span>Verify</span>
+                    </button>
+                  </div>
+
+                  {/* Match / Mismatch Result Badge */}
+                  {checksumResult && (
+                    <div style={{
+                      padding: "8px 10px",
+                      borderRadius: "6px",
+                      fontSize: "0.76rem",
+                      fontWeight: 600,
+                      display: "flex",
+                      alignItems: "center",
+                      gap: "6px",
+                      background: checksumResult.matched ? "rgba(16, 185, 129, 0.12)" : "rgba(239, 68, 68, 0.12)",
+                      border: checksumResult.matched ? "1px solid rgba(16, 185, 129, 0.35)" : "1px solid rgba(239, 68, 68, 0.35)",
+                      color: checksumResult.matched ? "var(--accent-green)" : "#ef4444",
+                    }}>
+                      {checksumResult.matched ? <CheckCircle size={15} /> : <AlertTriangle size={15} />}
+                      <span>
+                        {checksumResult.matched
+                          ? `✅ Hash Match Verified: File integrity is 100% authentic!`
+                          : `❌ Hash Mismatch: Expected and computed hashes do not match!`}
+                      </span>
+                    </div>
+                  )}
+
+                  {checksumError && (
+                    <div style={{
+                      padding: "6px 8px",
+                      borderRadius: "6px",
+                      fontSize: "0.72rem",
+                      color: "#ef4444",
+                      background: "rgba(239, 68, 68, 0.1)",
+                    }}>
+                      {checksumError}
+                    </div>
+                  )}
+                </div>
+              )}
             </div>
 
             <div className="drawer-section" style={{ marginTop: "auto", borderTop: "1px solid rgba(255, 255, 255, 0.06)", paddingTop: "16px", display: "flex", gap: "10px", flexWrap: "wrap" }}>

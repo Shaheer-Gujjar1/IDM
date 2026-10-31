@@ -151,6 +151,7 @@ pub async fn dispatch_rpc(req: JsonRpcRequest, manager: &Arc<DownloadManager>) -
                     None,
                     false,
                     true,
+                    None,
                 )
                 .await
             {
