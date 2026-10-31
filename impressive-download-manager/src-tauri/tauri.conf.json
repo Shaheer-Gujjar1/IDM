@@ -5,7 +5,7 @@
   "identifier": "com.shaheer.impressive-download-manager",
   "build": {
     "beforeDevCommand": "npm run dev",
-    "devUrl": "http://localhost:1420",
+    "devUrl": "http://127.0.0.1:1420",
     "beforeBuildCommand": "npm run build",
     "frontendDist": "../dist"
   },
@@ -30,6 +30,10 @@
   },
   "bundle": {
     "active": true,
+    "shortDescription": "High-performance multi-threaded download manager",
+    "longDescription": "Impressive Download Manager (IDM) is an advanced, high-performance download manager featuring multi-segmented downloads, liquid progress UI, and seamless browser integration.",
+    "category": "Network",
+    "copyright": "Copyright © 2026 Impressive Download Manager",
     "createUpdaterArtifacts": true,
     "targets": ["deb", "rpm", "nsis"],
     "icon": [
@@ -42,6 +46,7 @@
     "linux": {
       "deb": {
         "depends": [],
+        "section": "net",
         "postRemoveScript": "../scripts/postrm.sh"
       },
       "rpm": {

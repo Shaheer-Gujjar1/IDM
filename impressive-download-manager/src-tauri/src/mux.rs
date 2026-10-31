@@ -3,19 +3,7 @@ use std::process::Stdio;
 
 /// Locates the ffmpeg executable on the system PATH or common platform locations.
 pub fn probe_ffmpeg() -> Option<PathBuf> {
-    // 1. Check if "ffmpeg" is in PATH by running `ffmpeg -version`
-    if let Ok(output) = std::process::Command::new("ffmpeg")
-        .arg("-version")
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status()
-    {
-        if output.success() {
-            return Some(PathBuf::from("ffmpeg"));
-        }
-    }
-
-    // 2. Common Unix locations
+    // 1. Common Unix locations (checked first so absolute path is returned)
     #[cfg(unix)]
     {
         let candidates = [
@@ -30,6 +18,31 @@ pub fn probe_ffmpeg() -> Option<PathBuf> {
                 return Some(p);
             }
         }
+
+        // Try `which ffmpeg` for dynamic absolute path
+        if let Ok(output) = std::process::Command::new("which").arg("ffmpeg").output() {
+            if output.status.success() {
+                let s = String::from_utf8_lossy(&output.stdout).trim().to_string();
+                if !s.is_empty() {
+                    let p = PathBuf::from(&s);
+                    if p.exists() {
+                        return Some(p);
+                    }
+                }
+            }
+        }
+    }
+
+    // 2. Check if "ffmpeg" is in PATH
+    if let Ok(output) = std::process::Command::new("ffmpeg")
+        .arg("-version")
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+    {
+        if output.success() {
+            return Some(PathBuf::from("/usr/bin/ffmpeg"));
+        }
     }
 
     // 3. Common Windows locations
@@ -39,6 +52,70 @@ pub fn probe_ffmpeg() -> Option<PathBuf> {
             "ffmpeg.exe",
             "C:\\ffmpeg\\bin\\ffmpeg.exe",
             "C:\\Program Files\\ffmpeg\\bin\\ffmpeg.exe",
+        ];
+        for path_str in &candidates {
+            let p = PathBuf::from(path_str);
+            if p.exists() {
+                return Some(p);
+            }
+        }
+    }
+
+    None
+}
+
+/// Locates the yt-dlp executable on the system PATH, project bin, or common platform locations.
+pub fn probe_ytdlp() -> Option<PathBuf> {
+    // 1. Check if "yt-dlp" is in PATH
+    if let Ok(output) = std::process::Command::new("yt-dlp")
+        .arg("--version")
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+    {
+        if output.success() {
+            return Some(PathBuf::from("yt-dlp"));
+        }
+    }
+
+    // 2. Check project bin/yt-dlp
+    let current_dir = std::env::current_dir().ok();
+    if let Some(cd) = current_dir {
+        let p = cd.join("bin").join("yt-dlp");
+        if p.exists() {
+            return Some(p);
+        }
+        let p2 = cd.join("src-tauri").join("bin").join("yt-dlp");
+        if p2.exists() {
+            return Some(p2);
+        }
+    }
+
+    // 3. Common Unix locations
+    #[cfg(unix)]
+    {
+        let candidates = [
+            dirs::home_dir().map(|h| h.join(".local/bin/yt-dlp")),
+            Some(PathBuf::from("/usr/bin/yt-dlp")),
+            Some(PathBuf::from("/usr/local/bin/yt-dlp")),
+            Some(PathBuf::from("/snap/bin/yt-dlp")),
+        ];
+        for opt in &candidates {
+            if let Some(p) = opt {
+                if p.exists() {
+                    return Some(p.clone());
+                }
+            }
+        }
+    }
+
+    // 4. Common Windows locations
+    #[cfg(windows)]
+    {
+        let candidates = [
+            "yt-dlp.exe",
+            "C:\\yt-dlp\\yt-dlp.exe",
+            "C:\\Program Files\\yt-dlp\\yt-dlp.exe",
         ];
         for path_str in &candidates {
             let p = PathBuf::from(path_str);

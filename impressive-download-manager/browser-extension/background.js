@@ -11,6 +11,14 @@ function isFragment(url) {
   return /\.(m4s|ts|aac|vtt|webvtt)(?:[?#]|$)/i.test(url) || /\/init[^/]*\.mp4(?:[?#]|$)/i.test(url);
 }
 
+function isVideoDownload(filename, mime, url, targetUrl) {
+  if (mime && (mime.startsWith("video/") || mime === "application/x-mpegURL" || mime === "application/vnd.apple.mpegurl")) {
+    return true;
+  }
+  const videoExtRegex = /\.(mp4|mkv|webm|mov|avi|flv|wmv|m4v|3gp|ts|m3u8|f4v|vob|ogv|mpg|mpeg)($|\?)/i;
+  return videoExtRegex.test(filename || "") || videoExtRegex.test(url || "") || (Boolean(targetUrl) && videoExtRegex.test(targetUrl));
+}
+
 let extensionEnabled = true;
 let desktopAppInterceptionDisabled = false;
 const handledDownloadIds = new Set();
@@ -34,19 +42,59 @@ function rememberMediaForTab(tabId, items) {
   capturedMediaByTab.set(tabId, existing);
 }
 
+const tabVideoIdMap = new Map();
+
 chrome.tabs.onRemoved?.addListener((tabId) => {
   capturedMediaByTab.delete(tabId);
   youtubeDataByTab.delete(tabId);
   observedVideoUrlsByTab.delete(tabId);
+  tabVideoIdMap.delete(tabId);
 });
 
-// Check desktop app interception setting every 4 seconds
+chrome.tabs.onUpdated?.addListener((tabId, changeInfo) => {
+  if (changeInfo.url) {
+    try {
+      const u = new URL(changeInfo.url);
+      const newV = u.searchParams.get('v');
+      const oldV = tabVideoIdMap.get(tabId);
+      if (newV && oldV && newV !== oldV) {
+        capturedMediaByTab.delete(tabId);
+        youtubeDataByTab.delete(tabId);
+        observedVideoUrlsByTab.delete(tabId);
+        tabVideoIdMap.set(tabId, newV);
+      } else if (newV) {
+        tabVideoIdMap.set(tabId, newV);
+      }
+    } catch {}
+  }
+});
+
+let currentAppTheme = "dark";
+
+function broadcastTheme(theme) {
+  try {
+    chrome.tabs.query({}, (tabs) => {
+      for (const tab of tabs || []) {
+        if (tab.id) {
+          chrome.tabs.sendMessage(tab.id, { action: "themeChanged", theme }).catch(() => {});
+        }
+      }
+    });
+  } catch (e) {}
+}
+
+// Check desktop app interception setting and theme status
 async function checkDesktopAppStatus() {
   try {
     const res = await fetch(`http://127.0.0.1:${PORT}/status`, { cache: "no-store" });
     if (res.ok) {
       const data = await res.json();
       desktopAppInterceptionDisabled = data.enabled === false;
+      if (data.theme && data.theme !== currentAppTheme) {
+        currentAppTheme = data.theme;
+        chrome.storage.local.set({ appTheme: currentAppTheme });
+        broadcastTheme(currentAppTheme);
+      }
     } else if (res.status === 403) {
       desktopAppInterceptionDisabled = true;
     }
@@ -54,22 +102,31 @@ async function checkDesktopAppStatus() {
     // If backend is offline, leave extensionEnabled behavior intact
   }
 }
-setInterval(checkDesktopAppStatus, 4000);
+setInterval(checkDesktopAppStatus, 2000);
 checkDesktopAppStatus();
 
 // Initialize state
-chrome.storage.local.get("extensionEnabled", (data) => {
+chrome.storage.local.get(["extensionEnabled", "appTheme"], (data) => {
   if (data.extensionEnabled !== undefined) {
     extensionEnabled = data.extensionEnabled;
   } else {
     chrome.storage.local.set({ extensionEnabled: true });
   }
+  if (data.appTheme) {
+    currentAppTheme = data.appTheme;
+  }
 });
 
 // Watch changes
 chrome.storage.onChanged.addListener((changes, area) => {
-  if (area === "local" && changes.extensionEnabled) {
-    extensionEnabled = changes.extensionEnabled.newValue;
+  if (area === "local") {
+    if (changes.extensionEnabled) {
+      extensionEnabled = changes.extensionEnabled.newValue;
+    }
+    if (changes.appTheme) {
+      currentAppTheme = changes.appTheme.newValue;
+      broadcastTheme(currentAppTheme);
+    }
   }
 });
 
@@ -164,48 +221,97 @@ if (chrome.webRequest && chrome.webRequest.onBeforeRequest) {
   }
 }
 
-// 1.2 Detect streaming playlists and media URLs in network responses
-if (chrome.webRequest && chrome.webRequest.onResponseStarted) {
+// 1.1 Record active request headers for captured media URLs
+const requestHeadersByTab = new Map();
+function rememberRequestHeaders(details) {
+  if (details.tabId < 0 || !details.url || !details.url.startsWith("http")) return;
+  let tab = requestHeadersByTab.get(details.tabId);
+  if (!tab) {
+    tab = new Map();
+    requestHeadersByTab.set(details.tabId, tab);
+    if (requestHeadersByTab.size > 50) requestHeadersByTab.delete(requestHeadersByTab.keys().next().value);
+  }
+  const headers = {};
+  for (const h of details.requestHeaders || []) {
+    const name = h.name.toLowerCase();
+    if (['cookie', 'authorization', 'user-agent', 'referer', 'origin'].includes(name) && typeof h.value === 'string' && h.value.length <= 16384) {
+      headers[name] = h.value;
+    }
+  }
+  tab.set(details.url, headers);
+  if (tab.size > 100) tab.delete(tab.keys().next().value);
+}
+if (chrome.webRequest && chrome.webRequest.onBeforeSendHeaders) {
   try {
-    chrome.webRequest.onResponseStarted.addListener(
-      async (details) => {
+    chrome.webRequest.onBeforeSendHeaders.addListener(rememberRequestHeaders, { urls: ["http://*/*", "https://*/*"] }, ["requestHeaders", "extraHeaders"]);
+  } catch (e) {
+    try {
+      chrome.webRequest.onBeforeSendHeaders.addListener(rememberRequestHeaders, { urls: ["http://*/*", "https://*/*"] }, ["requestHeaders"]);
+    } catch {}
+  }
+}
+
+// 1.2 Detect streaming playlists and active media URLs in verified network responses
+if (chrome.webRequest && chrome.webRequest.onHeadersReceived) {
+  try {
+    chrome.webRequest.onHeadersReceived.addListener(
+      (details) => {
         if (!details.url || details.tabId < 0) return;
-        const u = details.url;
-        if (/\.m3u8(?:[?#]|$)/i.test(u)) {
-          try {
-            const resp = await fetch(u, { credentials: "omit" });
-            if (resp.ok) {
-              const text = await resp.text();
-              if (globalThis.parseHlsMaster) {
-                const variants = globalThis.parseHlsMaster(text, resp.url || u);
-                let title = "";
-                try {
-                  const t = await chrome.tabs.get(details.tabId);
-                  title = t?.title || "";
-                } catch {}
-                rememberMediaForTab(details.tabId, variants.map(v => ({ ...v, title })));
-              }
+        const mime = details.responseHeaders?.find(h => h.name.toLowerCase() === 'content-type')?.value || '';
+        const isSuccess = [200, 206].includes(details.statusCode);
+
+        // 1. YouTube media chunks: ONLY capture if HTTP 200/206 and content-type is video/audio
+        if (details.url.includes("googlevideo.com/videoplayback") && isSuccess && /^(video|audio)\//i.test(mime)) {
+          const captured = globalThis.youtubeMedia?.mediaUrl(details.url);
+          if (captured) {
+            const list = observedVideoUrlsByTab.get(details.tabId) || [];
+            if (!list.includes(captured)) {
+              list.unshift(captured);
+              if (list.length > 50) list.pop();
+              observedVideoUrlsByTab.set(details.tabId, list);
             }
-          } catch {}
-        } else if (/\.(mp4|webm|mkv|mov|mp3|m4a)(?:[?#]|$)/i.test(u) && !isFragment(u)) {
-          let title = "";
-          try {
-            const t = await chrome.tabs.get(details.tabId);
-            title = t?.title || "";
-          } catch {}
-          rememberMediaForTab(details.tabId, [{ url: u, title, format: "MP4" }]);
-        } else if (u.includes("googlevideo.com/videoplayback") && details.tabId >= 0) {
-          const list = observedVideoUrlsByTab.get(details.tabId) || [];
-          if (!list.includes(u)) {
-            list.push(u);
-            if (list.length > 50) list.shift();
-            observedVideoUrlsByTab.set(details.tabId, list);
           }
         }
+
+        // 2. Direct media files
+        if (isSuccess && /^(video|audio)\//i.test(mime) && !isFragment(details.url)) {
+          (async () => {
+            let title = "";
+            try {
+              const t = await chrome.tabs.get(details.tabId);
+              title = t?.title || "";
+            } catch {}
+            rememberMediaForTab(details.tabId, [{ url: details.url, title, format: mime.includes("audio") ? "MP3" : "MP4" }]);
+          })();
+        }
+
+        // 3. HLS master playlists
+        if (/\.m3u8(?:[?#]|$)/i.test(details.url) || /mpegurl/i.test(mime)) {
+          (async () => {
+            try {
+              const resp = await fetch(details.url, { credentials: "omit" });
+              if (resp.ok) {
+                const text = await resp.text();
+                if (globalThis.parseHlsMaster) {
+                  const variants = globalThis.parseHlsMaster(text, resp.url || details.url);
+                  let title = "";
+                  try {
+                    const t = await chrome.tabs.get(details.tabId);
+                    title = t?.title || "";
+                  } catch {}
+                  rememberMediaForTab(details.tabId, variants.map(v => ({ ...v, title })));
+                }
+              }
+            } catch {}
+          })();
+        }
       },
-      { urls: ["http://*/*", "https://*/*"] }
+      { urls: ["http://*/*", "https://*/*"] },
+      ["responseHeaders"]
     );
-  } catch (e) {}
+  } catch (e) {
+    console.warn("webRequest onHeadersReceived listener failed to attach:", e);
+  }
 }
 
 // 2. HTTPS Download Detection Pipeline (Instant Interception via onDeterminingFilename)
@@ -257,6 +363,15 @@ async function interceptDownloadItem(item) {
   } catch (e) {}
 
   const cleanFilename = filenameStr || extractFilename(targetRealUrl);
+  const isVideo = isVideoDownload(cleanFilename, mime, url, targetRealUrl);
+
+  // Files with size < 1.01 MB (1,059,062 bytes) are left for the browser to download natively,
+  // except for video files which are ALWAYS captured regardless of size.
+  const MIN_NON_VIDEO_SIZE = Math.round(1.01 * 1024 * 1024); // 1,059,062 bytes (~1.01 MB)
+  if (!isVideo && fileSize > 0 && fileSize < MIN_NON_VIDEO_SIZE) {
+    console.log(`[Extension] Non-video file size (${fileSize}B < 1.01MB). Leaving to browser natively:`, cleanFilename);
+    return false;
+  }
 
   const isBinaryExt =
     /\.(run|exe|zip|deb|dmg|msi|tar|gz|iso|apk|appimage|7z|rar|bz2|xz|pdf|docx?|xlsx?|pptx?|mp4|mkv|webm|mp3|wav|flac|bin|pkg|csv|epub|mobi)$/i.test(cleanFilename) ||
@@ -514,6 +629,11 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     return true;
   }
 
+  if (message.action === "getTheme") {
+    sendResponse({ ok: true, theme: currentAppTheme });
+    return true;
+  }
+
   if (message.action === "download" || message.type === "SEND_TO_DESKTOP") {
     if (!extensionEnabled) {
       sendResponse({ ok: false, success: false, error: "Extension is disabled." });
@@ -521,20 +641,31 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     }
     const item = message.item || message;
     (async () => {
-      const targetUrl = item.url;
-      const cookies = await getCookiesForUrl(targetUrl, sender?.tab?.url);
-      const payload = {
-        url: targetUrl,
-        audio_url: item.audioUrl || undefined,
-        filename: item.filename || extractFilename(targetUrl),
-        size: item.size || 0,
-        mime: item.mime || "",
-        referrer: sender?.tab?.url || "",
-        cookie: cookies,
-        userAgent: navigator.userAgent
-      };
-      const ok = await sendToDesktopApp(payload);
-      sendResponse({ ok, success: ok });
+      try {
+        const targetUrl = item.url;
+        const tabUrl = sender?.tab?.url || item.pageUrl || "";
+        const isYt = (targetUrl && (targetUrl.includes("googlevideo.com") || targetUrl.includes("youtube.com"))) || (tabUrl && tabUrl.includes("youtube.com"));
+        const bestReferrer = (isYt && (item.pageUrl || tabUrl)) ? (item.pageUrl || tabUrl) : (item.referrer || tabUrl || "");
+        const cookies = await getCookiesForUrl(targetUrl, tabUrl);
+        const payload = {
+          url: targetUrl,
+          audio_url: item.audioUrl || undefined,
+          filename: item.filename || extractFilename(targetUrl),
+          size: item.size || 0,
+          mime: item.mime || "",
+          referrer: bestReferrer,
+          page_url: item.pageUrl || tabUrl || undefined,
+          video_id: item.videoId || undefined,
+          quality: item.quality || undefined,
+          cookie: cookies || "",
+          userAgent: navigator.userAgent
+        };
+        const ok = await sendToDesktopApp(payload);
+        sendResponse({ ok, success: ok });
+      } catch (err) {
+        console.error("Error in download message handler:", err);
+        sendResponse({ ok: false, success: false, error: err.message });
+      }
     })();
     return true;
   }

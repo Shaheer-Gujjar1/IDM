@@ -33,11 +33,12 @@ async fn start_download(
     user_agent: Option<String>,
     audio_url: Option<String>,
     category: Option<String>,
+    size: Option<u64>,
     queue_only: Option<bool>,
     reuse_active: Option<bool>,
     manager: State<'_, Arc<DownloadManager>>,
 ) -> Result<String, String> {
-    println!("[Tauri IPC] start_download called: {}", url);
+    println!("[Tauri IPC] start_download called: {}, size: {:?}", url, size);
     manager
         .start_download(
             url,
@@ -48,6 +49,7 @@ async fn start_download(
             user_agent.unwrap_or_default(),
             audio_url,
             category,
+            size,
             queue_only.unwrap_or(false),
             reuse_active.unwrap_or(true),
         )
@@ -113,9 +115,18 @@ async fn cancel_download(
 #[tauri::command]
 async fn delete_task(
     id: String,
+    delete_file: Option<bool>,
     manager: State<'_, Arc<DownloadManager>>,
 ) -> Result<(), String> {
-    manager.delete_task(&id).await
+    manager.delete_task(&id, delete_file.unwrap_or(false)).await
+}
+
+#[tauri::command]
+async fn empty_trash(
+    delete_file: Option<bool>,
+    manager: State<'_, Arc<DownloadManager>>,
+) -> Result<(), String> {
+    manager.empty_trash(delete_file.unwrap_or(false)).await
 }
 
 #[tauri::command]
@@ -995,6 +1006,11 @@ pub fn run() {
                                         user_agent: Option<String>,
                                         #[serde(alias = "audioUrl")]
                                         audio_url: Option<String>,
+                                        #[serde(alias = "pageUrl", alias = "page_url")]
+                                        page_url: Option<String>,
+                                        #[serde(alias = "videoId", alias = "video_id")]
+                                        video_id: Option<String>,
+                                        quality: Option<String>,
                                     }
 
                                     let body_clean = body.trim_end_matches('\0').trim();
@@ -1008,6 +1024,21 @@ pub fn run() {
                                                             Access-Control-Allow-Origin: *\r\n\
                                                             Content-Type: text/plain\r\n\r\n\
                                                             Unsupported protocol";
+                                            let _ = stream.write_all(response.as_bytes()).await;
+                                            return;
+                                        }
+
+                                        // Non-video files under 1.01 MB are bypassed so browser downloads natively
+                                        const MIN_NON_VIDEO_SIZE: u64 = 1_059_062; // 1.01 MB
+                                        let is_video = preflight::detect_category(&filename, payload.mime.as_deref()) == "Video"
+                                            || payload.audio_url.is_some()
+                                            || preflight::detect_category(&target_download_url, payload.mime.as_deref()) == "Video";
+                                        if !is_video && total_size > 0 && total_size < MIN_NON_VIDEO_SIZE {
+                                            println!("[Capture Server] File size under 1.01 MB ({} B) for non-video. Preserving browser native download.", total_size);
+                                            let response = "HTTP/1.1 400 Bad Request\r\n\
+                                                            Access-Control-Allow-Origin: *\r\n\
+                                                            Content-Type: text/plain\r\n\r\n\
+                                                            Non-video file size under 1.01 MB threshold";
                                             let _ = stream.write_all(response.as_bytes()).await;
                                             return;
                                         }
@@ -1046,13 +1077,32 @@ pub fn run() {
                                             filename = "downloaded_file".to_string();
                                         }
 
+                                        let mut effective_referrer = payload.referrer.clone().unwrap_or_default();
+                                        if let Some(ref p) = payload.page_url {
+                                            if p.contains("youtube.com/watch") || p.contains("youtu.be/") || p.contains("youtube.com/shorts") {
+                                                effective_referrer = p.clone();
+                                            }
+                                        }
+                                        if effective_referrer.is_empty() || effective_referrer == "https://www.youtube.com/" {
+                                            if let Some(ref vid) = payload.video_id {
+                                                effective_referrer = format!("https://www.youtube.com/watch?v={}", vid);
+                                            }
+                                        }
+
+                                        if effective_referrer.contains("youtube.com/watch") || effective_referrer.contains("youtu.be/") || effective_referrer.contains("youtube.com/shorts") {
+                                            *manager.last_youtube_watch_url.write().await = Some(effective_referrer.clone());
+                                        }
+                                        if target_download_url.contains("youtube.com/watch") || target_download_url.contains("youtu.be/") || target_download_url.contains("youtube.com/shorts") {
+                                            *manager.last_youtube_watch_url.write().await = Some(target_download_url.clone());
+                                        }
+
                                         println!(
                                             "[Capture Server] Received download payload: URL={}, filename={}, size={}, cookie_len={}, referrer={}",
                                             target_download_url,
                                             filename,
                                             total_size,
                                             payload.cookie.as_ref().map(|c| c.len()).unwrap_or(0),
-                                            payload.referrer.as_deref().unwrap_or("none")
+                                            effective_referrer
                                         );
 
                                         let download_dir = dirs::download_dir()
@@ -1089,7 +1139,7 @@ pub fn run() {
                                                         save_path: task.save_path.clone(),
                                                         category: task.category.clone(),
                                                         cookie: payload.cookie.clone().unwrap_or_default(),
-                                                        referrer: payload.referrer.clone().unwrap_or_default(),
+                                                        referrer: effective_referrer.clone(),
                                                         user_agent: payload.user_agent.clone().unwrap_or_default(),
                                                         audio_url: task.audio_url.clone(),
                                                         total_size: std::sync::atomic::AtomicU64::new(task.total_size.load(std::sync::atomic::Ordering::Relaxed)),
@@ -1138,13 +1188,18 @@ pub fn run() {
                                             urlencoding::encode(&target_download_url),
                                             urlencoding::encode(&filename),
                                             urlencoding::encode(&payload.cookie.unwrap_or_default()),
-                                            urlencoding::encode(&payload.referrer.unwrap_or_default()),
+                                            urlencoding::encode(&effective_referrer),
                                             urlencoding::encode(&payload.user_agent.unwrap_or_default()),
                                             total_size,
                                             urlencoding::encode(&payload.audio_url.unwrap_or_default())
                                         );
                                         
-                                        let _ = tauri::WebviewWindowBuilder::new(
+                                        if let Some(existing_win) = app_handle.get_webview_window("popup-add") {
+                                            let _ = existing_win.close();
+                                            tokio::time::sleep(std::time::Duration::from_millis(60)).await;
+                                        }
+
+                                        let build_res = tauri::WebviewWindowBuilder::new(
                                             &app_handle,
                                             "popup-add",
                                             tauri::WebviewUrl::App(add_url.into()),
@@ -1152,7 +1207,20 @@ pub fn run() {
                                         .title("New Download Captured")
                                         .inner_size(520.0, 370.0)
                                         .center()
+                                        .always_on_top(true)
                                         .build();
+
+                                        match build_res {
+                                            Ok(new_win) => {
+                                                let _ = new_win.show();
+                                                let _ = new_win.unminimize();
+                                                let _ = new_win.set_focus();
+                                                println!("[Capture Server] popup-add window successfully spawned and focused.");
+                                            }
+                                            Err(e) => {
+                                                eprintln!("[Capture Server] Failed to spawn popup-add window: {}", e);
+                                            }
+                                        }
                                         
                                         let body = "{\"status\":\"ok\"}";
                                         let response = format!(
@@ -1192,6 +1260,7 @@ pub fn run() {
             redownload_and_open_progress,
             cancel_download,
             delete_task,
+            empty_trash,
             trash_task,
             restore_task,
             redownload_task,

@@ -33,7 +33,9 @@ import {
   Terminal,
   Folder,
   AlertTriangle,
-  AlertCircle
+  AlertCircle,
+  Link2,
+  RotateCcw
 } from "lucide-react";
 import { listen } from "@tauri-apps/api/event";
 import { invoke } from "@tauri-apps/api/core";
@@ -262,6 +264,7 @@ function App() {
   const [addModalDiskSpace, setAddModalDiskSpace] = useState("");
   const [addModalDiskSafe, setAddModalDiskSafe] = useState(true);
   const [addModalFileSize, setAddModalFileSize] = useState("");
+  const [addModalSizeRaw, setAddModalSizeRaw] = useState<number | undefined>(undefined);
   const [isProbingUrl, setIsProbingUrl] = useState(false);
   const [, setCategoryFoldersVersion] = useState(0);
   const probeTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -329,6 +332,8 @@ function App() {
   const [tasksToRemove, setTasksToRemove] = useState<DownloadProgress[]>([]);
   const [deleteFileFromDisk, setDeleteFileFromDisk] = useState(false);
   const [selectedTaskIds, setSelectedTaskIds] = useState<string[]>([]);
+  const [showEmptyTrashConfirm, setShowEmptyTrashConfirm] = useState(false);
+  const [emptyTrashDeleteFiles, setEmptyTrashDeleteFiles] = useState(false);
 
   // Updater State & Metrics
   const CURRENT_APP_VERSION = "0.8.0";
@@ -784,6 +789,9 @@ function App() {
             }
             if (res.formatted_size && res.formatted_size !== "Unknown") {
               setAddModalFileSize(res.formatted_size);
+              if (res.total_size && res.total_size > 0) {
+                setAddModalSizeRaw(res.total_size);
+              }
             }
           }
         } catch (e) {
@@ -1123,6 +1131,7 @@ function App() {
         referrer: popupReferrer || "",
         userAgent: popupUserAgent || "",
         category: addModalCategory || undefined,
+        size: addModalSizeRaw,
         queueOnly,
         reuseActive: true,
       });
@@ -1187,6 +1196,8 @@ function App() {
     }
 
     try {
+      const parsedSize = parseInt(popupSize, 10);
+      const validSize = !isNaN(parsedSize) && parsedSize > 0 ? parsedSize : undefined;
       const id = await invoke<string>("start_download", {
         url: popupUrl,
         filename: finalFilename,
@@ -1196,6 +1207,7 @@ function App() {
         userAgent: popupUserAgent || "",
         audioUrl: popupAudioUrl || undefined,
         category: popupCategory || undefined,
+        size: validSize,
         queueOnly,
         reuseActive: true,
       });
@@ -1351,7 +1363,7 @@ function App() {
       for (const task of tasksToRemove) {
         const isAlreadyTrash = getStatusText(task.status) === "Trash";
         if (isAlreadyTrash) {
-          await invoke("delete_task", { id: task.id });
+          await invoke("delete_task", { id: task.id, deleteFile: deleteFileFromDisk });
         } else {
           await invoke("trash_task", { id: task.id, deleteFile: deleteFileFromDisk });
         }
@@ -1379,6 +1391,74 @@ function App() {
     } finally {
       setShowRemoveConfirm(false);
       setTasksToRemove([]);
+    }
+  };
+
+  const handleRestore = async (e: React.MouseEvent, id: string) => {
+    e.stopPropagation();
+    try {
+      await invoke("restore_task", { id });
+      setDownloads((prev) =>
+        prev.map((d) => {
+          if (d.id === id) {
+            const isCompleted = d.total_size > 0 && d.downloaded >= d.total_size;
+            return {
+              ...d,
+              status: (isCompleted ? "Completed" : "Paused") as DownloadStatus,
+            };
+          }
+          return d;
+        })
+      );
+      setSelectedTaskIds((prev) => prev.filter((taskId) => taskId !== id));
+      if (selectedTask && selectedTask.id === id) {
+        const isCompleted = selectedTask.total_size > 0 && selectedTask.downloaded >= selectedTask.total_size;
+        setSelectedTask({
+          ...selectedTask,
+          status: (isCompleted ? "Completed" : "Paused") as DownloadStatus,
+        });
+      }
+    } catch (err) {
+      console.error("Failed to restore task:", err);
+    }
+  };
+
+  const handlePromptEmptyTrash = () => {
+    const trashTasks = downloads.filter((d) => getStatusText(d.status) === "Trash");
+    if (trashTasks.length === 0) return;
+    setEmptyTrashDeleteFiles(false);
+    setShowEmptyTrashConfirm(true);
+  };
+
+  const confirmEmptyTrash = async () => {
+    const trashTasks = downloads.filter((d) => getStatusText(d.status) === "Trash");
+    if (trashTasks.length === 0) {
+      setShowEmptyTrashConfirm(false);
+      return;
+    }
+    const trashIds = trashTasks.map((t) => t.id);
+
+    try {
+      await invoke("empty_trash", { deleteFile: emptyTrashDeleteFiles });
+      setDownloads((prev) => prev.filter((d) => !trashIds.includes(d.id)));
+      if (selectedTask && trashIds.includes(selectedTask.id)) {
+        setSelectedTask(null);
+      }
+      setSelectedTaskIds((prev) => prev.filter((id) => !trashIds.includes(id)));
+    } catch (err) {
+      console.error("Failed to empty trash via command, falling back:", err);
+      for (const t of trashTasks) {
+        try {
+          await invoke("delete_task", { id: t.id, deleteFile: emptyTrashDeleteFiles });
+        } catch (_) {}
+      }
+      setDownloads((prev) => prev.filter((d) => !trashIds.includes(d.id)));
+      if (selectedTask && trashIds.includes(selectedTask.id)) {
+        setSelectedTask(null);
+      }
+      setSelectedTaskIds((prev) => prev.filter((id) => !trashIds.includes(id)));
+    } finally {
+      setShowEmptyTrashConfirm(false);
     }
   };
 
@@ -2039,6 +2119,20 @@ function App() {
               Settings
             </div>
           )}
+
+          {activeCategory === "trash" && (
+            <div className="topbar-right-actions">
+              <button
+                className="empty-trash-btn"
+                onClick={handlePromptEmptyTrash}
+                disabled={downloads.filter((d) => getStatusText(d.status) === "Trash").length === 0}
+                title="Permanently empty all items in trash"
+              >
+                <Trash2 size={15} />
+                <span>Empty Trash</span>
+              </button>
+            </div>
+          )}
         </header>
 
         {/* Content Area */}
@@ -2518,8 +2612,8 @@ function App() {
                       </span>
                     </div>
                     <button
-                      className="btn btn-secondary btn-sm"
-                      style={{ display: "flex", alignItems: "center", gap: "6px" }}
+                      type="button"
+                      className="sync-browsers-btn"
                       disabled={syncingBrowsers}
                       onClick={handleSyncBrowsers}
                     >
@@ -2546,22 +2640,22 @@ function App() {
                     ))}
                   </div>
 
-                  <div style={{ marginTop: "10px", display: "flex", gap: "8px", alignItems: "center" }}>
+                  <div style={{ marginTop: "12px", display: "flex", gap: "8px", alignItems: "center" }}>
                     <input
                       type="text"
-                      className="form-input"
-                      style={{ fontSize: "12px", padding: "6px 10px", flex: 1 }}
+                      className="form-input native-bridge-input"
                       placeholder="Custom Chromium Extension ID (Optional 32-letter ID, e.g. from developer mode)"
                       value={customExtensionId}
                       onChange={(e) => setCustomExtensionId(e.target.value)}
                     />
                     <button
-                      className="btn btn-primary btn-sm"
-                      style={{ whiteSpace: "nowrap" }}
+                      type="button"
+                      className="save-link-btn"
                       onClick={handleSyncBrowsers}
                       disabled={syncingBrowsers}
                     >
-                      Save &amp; Link ID
+                      <Link2 size={13} />
+                      <span>Save &amp; Link ID</span>
                     </button>
                   </div>
                 </div>
@@ -2884,6 +2978,13 @@ function App() {
                         <div className="card-right-hover-actions">
                           {isTrash ? (
                             <div className="hover-actions-card">
+                              <button
+                                className="hover-card-btn restore-btn"
+                                onClick={(e) => handleRestore(e, d.id)}
+                                title="Restore download back to active list"
+                              >
+                                <RotateCcw size={14} /> Restore
+                              </button>
                               {!d.file_exists && (
                                 <button className="hover-card-btn success" onClick={(e) => { e.stopPropagation(); handleRedownload(e, d.id); }}>
                                   <Play size={14} /> Re-download
@@ -3282,6 +3383,16 @@ function App() {
             <div className="drawer-section" style={{ marginTop: "auto", borderTop: "1px solid rgba(255, 255, 255, 0.06)", paddingTop: "16px", display: "flex", gap: "10px", flexWrap: "wrap" }}>
               {getStatusText(selectedTask.status) === "Trash" ? (
                 <>
+                  <button
+                    className="action-btn action-btn-restore"
+                    style={{ flex: 1 }}
+                    onClick={(e) => handleRestore(e, selectedTask.id)}
+                    onMouseEnter={(e) => showTooltip("Restore Download", e, "top")}
+                    onMouseLeave={hideTooltip}
+                  >
+                    <RotateCcw size={14} />
+                    <span>Restore</span>
+                  </button>
                   {!selectedTask.file_exists && (
                     <button
                       className="action-btn"
@@ -3459,6 +3570,70 @@ function App() {
                 onClick={confirmRemoveTask}
               >
                 Confirm Delete {tasksToRemove.length > 1 ? `(${tasksToRemove.length})` : ""}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Empty Trash Confirmation Bottom Popup Modal */}
+      {showEmptyTrashConfirm && (
+        <div className="modal-backdrop-v2" onClick={() => setShowEmptyTrashConfirm(false)}>
+          <div className="modal-content-v2" style={{ borderTop: "2px solid var(--accent-red)" }} onClick={(e) => e.stopPropagation()}>
+            <div className="modal-header-v2">
+              <span className="modal-title-v2" style={{ color: "var(--accent-red)", display: "flex", alignItems: "center", gap: "12px", fontSize: "1.5rem" }}>
+                <Trash2 size={24} strokeWidth={2.5} />
+                Empty Trash ({downloads.filter((d) => getStatusText(d.status) === "Trash").length} {downloads.filter((d) => getStatusText(d.status) === "Trash").length === 1 ? "item" : "items"})
+              </span>
+              <button className="modal-close-btn-v2" onClick={() => setShowEmptyTrashConfirm(false)}>
+                <X size={20} />
+              </button>
+            </div>
+
+            <div className="modal-body-v2">
+              <p style={{ fontSize: "1rem", color: "var(--text-primary)", lineHeight: "1.6", margin: 0, fontWeight: 500 }}>
+                Are you sure you want to permanently delete all {downloads.filter((d) => getStatusText(d.status) === "Trash").length} items in the Trash? This action cannot be undone.
+              </p>
+
+              {downloads.filter((d) => getStatusText(d.status) === "Trash").length > 0 && (
+                <div className="bulk-delete-file-list">
+                  {downloads.filter((d) => getStatusText(d.status) === "Trash").slice(0, 5).map((t) => (
+                    <div key={t.id} className="bulk-delete-file-item">
+                      {getFileIcon(t.filename)}
+                      <span className="bulk-delete-filename" title={t.filename}>{t.filename}</span>
+                      <span className="bulk-delete-size">{t.total_size > 0 ? formatBytes(t.total_size) : "Unknown size"}</span>
+                    </div>
+                  ))}
+                  {downloads.filter((d) => getStatusText(d.status) === "Trash").length > 5 && (
+                    <div className="bulk-delete-more-text">
+                      + {downloads.filter((d) => getStatusText(d.status) === "Trash").length - 5} more files
+                    </div>
+                  )}
+                </div>
+              )}
+
+              <label className="custom-checkbox-container" style={{ marginTop: "14px", padding: "14px 16px", background: "rgba(255,255,255,0.03)", borderRadius: "12px", border: "1px solid rgba(255,255,255,0.05)" }}>
+                <input
+                  type="checkbox"
+                  checked={emptyTrashDeleteFiles}
+                  onChange={(e) => setEmptyTrashDeleteFiles(e.target.checked)}
+                />
+                <span className="custom-checkbox-checkmark"></span>
+                <span className="custom-checkbox-label" style={{ fontSize: "0.92rem" }}>
+                  Also delete downloaded {downloads.filter((d) => getStatusText(d.status) === "Trash").length > 1 ? "files" : "file"} from disk
+                </span>
+              </label>
+            </div>
+
+            <div className="modal-actions-v2">
+              <button className="hover-action-btn" style={{ width: "auto", padding: "0 24px" }} onClick={() => setShowEmptyTrashConfirm(false)}>
+                Cancel
+              </button>
+              <button
+                className="accent-pill danger-pill"
+                onClick={confirmEmptyTrash}
+              >
+                Permanently Empty Trash ({downloads.filter((d) => getStatusText(d.status) === "Trash").length})
               </button>
             </div>
           </div>

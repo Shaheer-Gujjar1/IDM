@@ -9,11 +9,14 @@
       const u = new URL(value);
       if (u.protocol !== 'https:' || !(u.hostname === 'googlevideo.com' || u.hostname.endsWith('.googlevideo.com')) || u.pathname !== '/videoplayback' || u.username || u.password || u.href.length > MAX_URL) return null;
       if (requireSabr) return u.searchParams.get('sabr') === '1' ? u.href : null;
-      if (u.searchParams.has('sq') || u.searchParams.get('source') === 'yt_live_broadcast' || u.searchParams.get('sabr') === '1') return null;
+      if (u.searchParams.get('source') === 'yt_live_broadcast' || u.searchParams.get('sabr') === '1') return null;
       if (u.searchParams.has('range')) {
         if ((u.searchParams.get('sparams') || '').split(',').includes('range')) return null;
         u.searchParams.delete('range');
       }
+      u.searchParams.delete('rn');
+      u.searchParams.delete('rbuf');
+      u.searchParams.delete('sq');
       return u.href;
     } catch { return null; }
   }
@@ -94,6 +97,9 @@
 
   function choices(data, observed = []) {
     if (!data) return [];
+    const videoId = data.videoId;
+    const pageUrl = videoId ? `https://www.youtube.com/watch?v=${videoId}` : '';
+
     const formats = data.formats.map(f => {
       const source = f.sourceUrl && new URL(f.sourceUrl);
       const match = source && observed.find(raw => {
@@ -102,45 +108,80 @@
           return u.searchParams.get('itag') === String(f.itag) && !!source.searchParams.get('id') && u.searchParams.get('id') === source.searchParams.get('id');
         } catch { return false; }
       });
-      return { ...f, url: match || (data.sabrUrl && data.ustreamerConfig ? null : f.url) };
-    }).filter(f => f.url && (!new URL(f.url).searchParams.has('expire') || Number(new URL(f.url).searchParams.get('expire')) * 1000 > Date.now() + 30000));
+      const fallbackUrl = videoId ? `https://www.youtube.com/watch?v=${videoId}&itag=${f.itag}` : null;
+      const rawUrl = match || f.url || f.sourceUrl || fallbackUrl;
+      const cleanUrl = rawUrl ? (mediaUrl(rawUrl) || rawUrl) : null;
+      return { ...f, url: cleanUrl };
+    }).filter(f => {
+      if (!f.url) return false;
+      try {
+        const u = new URL(f.url);
+        if (u.searchParams.has('expire')) {
+          return Number(u.searchParams.get('expire')) * 1000 > Date.now() + 30000;
+        }
+        return true;
+      } catch {
+        return false;
+      }
+    });
 
     const result = [], seen = new Set();
     const title = data.title.replace(/[<>:"/\\|?*\x00-\x1f]/g, '_').slice(0, 170);
-    const audio = formats.filter(f => /^audio\/mp4/i.test(f.mimeType) && (!f.audioTrack || f.audioTrack.audioIsDefault)).sort((a, b) => b.bitrate - a.bitrate)[0];
+    const audio = formats.filter(f => /^audio\//i.test(f.mimeType) && (!f.audioTrack || f.audioTrack.audioIsDefault)).sort((a, b) => (b.bitrate || 0) - (a.bitrate || 0))[0];
 
-    for (const f of formats.filter(f => /^video\/mp4/i.test(f.mimeType) && f.height).sort((a, b) => b.height - a.height || b.fps - a.fps || b.bitrate - a.bitrate)) {
+    for (const f of formats.filter(f => /^video\//i.test(f.mimeType) && f.height).sort((a, b) => b.height - a.height || b.fps - a.fps || b.bitrate - a.bitrate)) {
       const muxed = f.audioQuality || /mp4a/i.test(f.mimeType);
-      if (!muxed && !audio) continue;
+      const defaultAudioUrl = audio ? audio.url : (videoId ? `https://www.youtube.com/watch?v=${videoId}&itag=140` : undefined);
+      if (!muxed && !audio && !videoId) continue;
       const key = f.height + ':' + f.fps;
       if (seen.has(key)) continue;
       seen.add(key);
 
+      const estVideoSize = Math.round((Number(f.approxDurationMs || 0) / 1000) * ((Number(f.bitrate) || 2000000) / 8));
+      const estAudioSize = (!muxed && audio) ? Math.round((Number(audio.approxDurationMs || f.approxDurationMs || 0) / 1000) * ((Number(audio.bitrate) || 128000) / 8)) : 0;
+      const videoSize = Number(f.contentLength) || estVideoSize;
+      const audioSize = (!muxed && audio) ? (Number(audio.contentLength) || estAudioSize) : 0;
+      const combinedSize = videoSize + audioSize;
+      const qualityStr = f.height + 'p' + (f.fps > 30 ? ' ' + f.fps + 'fps' : '');
+
       result.push({
         url: f.url,
-        audioUrl: muxed ? undefined : audio.url,
+        audioUrl: muxed ? undefined : defaultAudioUrl,
         provider: 'youtube',
+        videoId,
+        pageUrl,
+        itag: f.itag,
         format: 'MP4',
         outputFormat: 'mp4',
-        quality: f.height + 'p' + (f.fps > 30 ? ' ' + f.fps + 'fps' : ''),
+        quality: qualityStr,
         audioState: 'Video + audio',
         title: data.title,
-        filename: title + '.mp4',
+        filename: `${title} [${qualityStr}].mp4`,
+        size: combinedSize,
         bitrate: f.bitrate
       });
     }
 
-    if (audio) {
-      result.push({
-        url: audio.url,
-        provider: 'youtube',
-        format: 'MP3',
-        outputFormat: 'mp3',
-        quality: 'Audio',
-        audioState: 'Audio only',
-        title: data.title,
-        filename: title + '.mp3'
-      });
+    if (audio || videoId) {
+      const audioUrl = (audio && audio.url) ? audio.url : (videoId ? `https://www.youtube.com/watch?v=${videoId}&itag=140` : '');
+      const estAudioOnlySize = Math.round((Number((audio && audio.approxDurationMs) || 0) / 1000) * ((Number((audio && audio.bitrate)) || 128000) / 8));
+      const audioOnlySize = (audio && Number(audio.contentLength)) || estAudioOnlySize;
+      if (audioUrl) {
+        result.push({
+          url: audioUrl,
+          provider: 'youtube',
+          videoId,
+          pageUrl,
+          itag: audio ? audio.itag : 140,
+          format: 'MP3',
+          outputFormat: 'mp3',
+          quality: 'Audio',
+          audioState: 'Audio only',
+          title: data.title,
+          filename: `${title} [Audio].mp3`,
+          size: audioOnlySize
+        });
+      }
     }
 
     return result;

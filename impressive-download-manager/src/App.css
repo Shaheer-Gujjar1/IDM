@@ -2452,6 +2452,152 @@ html[data-theme="light"] .native-bridge-badge.unregistered {
   border-color: #e2e8f0 !important;
 }
 
+/* Native Messaging Host Bridge Action Buttons */
+.sync-browsers-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  height: 34px;
+  padding: 0 15px;
+  border-radius: 10px;
+  font-family: 'Outfit', sans-serif;
+  font-size: 0.82rem;
+  font-weight: 600;
+  cursor: pointer;
+  background: rgba(6, 182, 212, 0.1);
+  border: 1px solid rgba(6, 182, 212, 0.3);
+  color: var(--accent-cyan, #06b6d4);
+  box-shadow: 0 2px 8px rgba(6, 182, 212, 0.12);
+  transition: all 0.2s cubic-bezier(0.16, 1, 0.3, 1);
+  user-select: none;
+  white-space: nowrap;
+}
+
+.sync-browsers-btn:hover:not(:disabled) {
+  background: rgba(6, 182, 212, 0.2);
+  border-color: rgba(6, 182, 212, 0.55);
+  color: #67e8f9;
+  transform: translateY(-1px);
+  box-shadow: 0 4px 14px rgba(6, 182, 212, 0.28);
+}
+
+.sync-browsers-btn:active:not(:disabled) {
+  transform: translateY(0);
+}
+
+.sync-browsers-btn:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+  transform: none;
+}
+
+html[data-theme="light"] .sync-browsers-btn {
+  background: #f0f9ff !important;
+  border: 1px solid #bae6fd !important;
+  color: #0284c7 !important;
+  box-shadow: 0 2px 6px rgba(2, 132, 199, 0.1) !important;
+}
+
+html[data-theme="light"] .sync-browsers-btn:hover:not(:disabled) {
+  background: #e0f2fe !important;
+  border-color: #38bdf8 !important;
+  color: #0369a1 !important;
+  box-shadow: 0 4px 12px rgba(2, 132, 199, 0.2) !important;
+}
+
+.save-link-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  height: 38px;
+  padding: 0 18px;
+  border-radius: 10px;
+  font-family: 'Outfit', sans-serif;
+  font-size: 0.82rem;
+  font-weight: 600;
+  cursor: pointer;
+  background: linear-gradient(135deg, #06b6d4 0%, #0891b2 100%);
+  border: 1px solid rgba(6, 182, 212, 0.5);
+  color: #ffffff !important;
+  box-shadow: 0 3px 12px rgba(6, 182, 212, 0.28);
+  transition: all 0.2s cubic-bezier(0.16, 1, 0.3, 1);
+  user-select: none;
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+
+.save-link-btn:hover:not(:disabled) {
+  background: linear-gradient(135deg, #0891b2 0%, #0e7490 100%);
+  border-color: rgba(6, 182, 212, 0.8);
+  box-shadow: 0 6px 18px rgba(6, 182, 212, 0.42);
+  transform: translateY(-1px);
+}
+
+.save-link-btn:active:not(:disabled) {
+  transform: translateY(0);
+}
+
+.save-link-btn:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+  transform: none;
+  box-shadow: none;
+}
+
+html[data-theme="light"] .save-link-btn {
+  background: linear-gradient(135deg, #0284c7 0%, #0369a1 100%) !important;
+  border-color: #0284c7 !important;
+  color: #ffffff !important;
+  box-shadow: 0 3px 12px rgba(2, 132, 199, 0.25) !important;
+}
+
+html[data-theme="light"] .save-link-btn:hover:not(:disabled) {
+  background: linear-gradient(135deg, #0369a1 0%, #075985 100%) !important;
+  box-shadow: 0 6px 16px rgba(2, 132, 199, 0.35) !important;
+}
+
+.native-bridge-input {
+  height: 38px;
+  font-size: 0.82rem;
+  border-radius: 10px;
+  padding: 0 12px;
+  flex: 1;
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid var(--border-color);
+  color: var(--text-primary);
+  font-family: 'Outfit', sans-serif;
+  transition: all 0.2s ease;
+}
+
+.native-bridge-input:focus {
+  background: rgba(255, 255, 255, 0.07);
+  border-color: var(--accent-cyan);
+  box-shadow: 0 0 0 3px rgba(6, 182, 212, 0.15);
+  outline: none;
+}
+
+html[data-theme="light"] .native-bridge-input {
+  background: #ffffff !important;
+  border-color: #cbd5e1 !important;
+  color: #0f172a !important;
+}
+
+html[data-theme="light"] .native-bridge-input:focus {
+  border-color: #0284c7 !important;
+  box-shadow: 0 0 0 3px rgba(2, 132, 199, 0.15) !important;
+}
+
+.spin, .animate-spin {
+  animation: spin-kf 0.8s linear infinite;
+}
+
+@keyframes spin-kf {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
+}
+
+
 /* Category Storage Card Inputs */
 .category-folder-row {
   display: flex;

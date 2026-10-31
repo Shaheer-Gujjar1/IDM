@@ -270,6 +270,7 @@ pub struct DownloadManager {
     pub minimize_to_tray: std::sync::atomic::AtomicBool,
     pub scheduler_config: Arc<tokio::sync::RwLock<SchedulerConfig>>,
     pub bridge_token: Arc<String>,
+    pub last_youtube_watch_url: Arc<tokio::sync::RwLock<Option<String>>>,
 }
 
 impl DownloadManager {
@@ -302,6 +303,7 @@ impl DownloadManager {
             minimize_to_tray: std::sync::atomic::AtomicBool::new(true),
             scheduler_config: Arc::new(tokio::sync::RwLock::new(SchedulerConfig::default())),
             bridge_token: Arc::new(token_hex),
+            last_youtube_watch_url: Arc::new(tokio::sync::RwLock::new(None)),
         }
     }
 
@@ -462,6 +464,7 @@ impl DownloadManager {
         user_agent: String,
         audio_url: Option<String>,
         category: Option<String>,
+        size: Option<u64>,
         queue_only: bool,
         reuse_active: bool,
     ) -> Result<String, String> {
@@ -571,7 +574,7 @@ impl DownloadManager {
             referrer,
             user_agent,
             audio_url: final_audio_url,
-            total_size: AtomicU64::new(0),
+            total_size: AtomicU64::new(size.unwrap_or(0)),
             downloaded: Arc::new(AtomicU64::new(0)),
             network_downloaded: Arc::new(AtomicU64::new(0)),
             speed_limiter: Mutex::new(Instant::now()),
@@ -631,47 +634,537 @@ impl DownloadManager {
         (ts_path.to_string_lossy().to_string(), file)
     }
 
+    pub fn clean_googlevideo_url(url: &str) -> String {
+        if let Ok(mut parsed) = reqwest::Url::parse(url) {
+            let is_gvs = parsed.host_str().map(|h| h.contains("googlevideo.com")).unwrap_or(false);
+            if is_gvs {
+                let sparams = parsed.query_pairs().find(|(k, _)| k == "sparams").map(|(_, v)| v.to_string()).unwrap_or_default();
+                let sparams_list: Vec<&str> = sparams.split(',').collect();
+                let has_range_in_sparams = sparams_list.contains(&"range");
+
+                let pairs: Vec<(String, String)> = parsed.query_pairs()
+                    .filter(|(k, _)| {
+                        if k == "rn" || k == "rbuf" || k == "sq" {
+                            return false;
+                        }
+                        if k == "range" && !has_range_in_sparams {
+                            return false;
+                        }
+                        true
+                    })
+                    .map(|(k, v)| (k.to_string(), v.to_string()))
+                    .collect();
+
+                parsed.query_pairs_mut().clear().extend_pairs(pairs);
+                return parsed.to_string();
+            }
+        }
+        url.to_string()
+    }
+
+    pub fn build_stream_client(url: &str) -> Result<reqwest::Client, String> {
+        let signed_ip: Option<std::net::IpAddr> = reqwest::Url::parse(url).ok().and_then(|u| {
+            u.query_pairs().find(|(k, _)| k == "ip").and_then(|(_, v)| v.parse::<std::net::IpAddr>().ok())
+        });
+
+        let mut builder = reqwest::Client::builder()
+            .redirect(reqwest::redirect::Policy::limited(10));
+
+        if let Some(ip) = signed_ip {
+            match ip {
+                std::net::IpAddr::V6(_) => {
+                    builder = builder.local_address(std::net::IpAddr::V6(std::net::Ipv6Addr::UNSPECIFIED));
+                }
+                std::net::IpAddr::V4(_) => {
+                    builder = builder.local_address(std::net::IpAddr::V4(std::net::Ipv4Addr::UNSPECIFIED));
+                }
+            }
+        }
+
+        builder.build().map_err(|e| e.to_string())
+    }
+
     pub async fn download_stream_to_file(
         client: reqwest::Client,
         url: String,
         dest_path: std::path::PathBuf,
         cookie: String,
+        referrer: String,
         user_agent: String,
         downloaded_tracker: Arc<AtomicU64>,
         network_tracker: Arc<AtomicU64>,
+        task_ref: Arc<DownloadTask>,
+        auto_calc_size: Arc<std::sync::atomic::AtomicBool>,
     ) -> Result<u64, String> {
         use tokio::io::AsyncWriteExt;
         use futures_util::StreamExt;
 
-        let mut req = client.get(&url);
-        if !cookie.is_empty() {
-            req = req.header("Cookie", cookie);
-        }
-        if !user_agent.is_empty() {
-            req = req.header("User-Agent", user_agent);
-        }
+        let clean_url = Self::clean_googlevideo_url(&url);
+        let is_youtube = clean_url.contains("googlevideo.com") || clean_url.contains("youtube.com");
 
-        let resp = req.send().await.map_err(|e| format!("HTTP request failed: {}", e))?;
-        if !resp.status().is_success() {
-            return Err(format!("Server returned HTTP status {}", resp.status()));
+        let ua = if !user_agent.is_empty() {
+            user_agent
+        } else {
+            "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36".to_string()
+        };
+
+        let ref_hdr = if is_youtube {
+            "https://www.youtube.com/".to_string()
+        } else if !referrer.is_empty() {
+            referrer
+        } else {
+            String::new()
+        };
+
+        // Compute fallback URL on redirector.googlevideo.com in case specific ISP cache node is unresolvable
+        let fallback_url = if let Ok(mut parsed) = reqwest::Url::parse(&clean_url) {
+            if let Some(host) = parsed.host_str() {
+                if host.ends_with(".googlevideo.com") && host != "redirector.googlevideo.com" {
+                    if parsed.set_host(Some("redirector.googlevideo.com")).is_ok() {
+                        Some(parsed.to_string())
+                    } else { None }
+                } else { None }
+            } else { None }
+        } else { None };
+
+        // Helper to construct request with exact required headers
+        let build_req = |target_url: &str, range_header: Option<String>, send_cookie: bool| {
+            let mut req = client.get(target_url);
+
+            if send_cookie && !cookie.is_empty() {
+                req = req.header("Cookie", &cookie);
+            }
+
+            req = req.header("User-Agent", &ua);
+
+            if is_youtube {
+                req = req.header("Referer", "https://www.youtube.com/");
+                req = req.header("Origin", "https://www.youtube.com");
+                req = req.header("Sec-Fetch-Mode", "cors");
+                req = req.header("Sec-Fetch-Site", "cross-site");
+                req = req.header("Sec-Fetch-Dest", "empty");
+                req = req.header("Accept-Language", "en-US,en;q=0.9");
+            } else if !ref_hdr.is_empty() {
+                req = req.header("Referer", &ref_hdr);
+                if let Ok(parsed) = reqwest::Url::parse(&ref_hdr) {
+                    if let Some(host) = parsed.host_str() {
+                        req = req.header("Origin", format!("{}://{}", parsed.scheme(), host));
+                    }
+                }
+            }
+
+            req = req.header("Accept", "*/*");
+            req = req.header("Accept-Encoding", "identity");
+
+            if let Some(r) = range_header {
+                req = req.header("Range", r);
+            }
+
+            req
+        };
+
+        // Determine if total size is already known via URL `clen` query parameter
+        let clen_from_url: Option<u64> = if let Ok(parsed) = reqwest::Url::parse(&clean_url) {
+            parsed.query_pairs().find(|(k, _)| k == "clen").and_then(|(_, v)| v.parse::<u64>().ok())
+        } else {
+            None
+        };
+
+        if let Some(clen) = clen_from_url {
+            if clen > 0 && auto_calc_size.load(Ordering::Relaxed) {
+                task_ref.total_size.fetch_add(clen, Ordering::Relaxed);
+            }
         }
 
         let mut file = tokio::fs::File::create(&dest_path).await.map_err(|e| format!("Cannot create part file: {}", e))?;
-        let mut stream = resp.bytes_stream();
         let mut total_written = 0u64;
+        let mut abort_rx_opt = task_ref.abort_tx.as_ref().map(|tx| tx.subscribe());
 
-        while let Some(chunk_res) = stream.next().await {
-            let chunk = chunk_res.map_err(|e| format!("Network chunk error: {}", e))?;
-            let len = chunk.len() as u64;
-            file.write_all(&chunk).await.map_err(|e| format!("Failed to write chunk: {}", e))?;
-            total_written += len;
-            downloaded_tracker.fetch_add(len, Ordering::Relaxed);
-            network_tracker.fetch_add(len, Ordering::Relaxed);
+        // For YouTube/GoogleVideo or servers providing clen, use 5MB chunked Range requests
+        // (Google Video Server mandates bounded byte range requests for DASH formats and returns 403 on open GETs)
+        const CHUNK_SIZE: u64 = 5 * 1024 * 1024; // 5 MB chunks
+
+        let mut target_total_len = clen_from_url;
+        let mut use_range = is_youtube || target_total_len.is_some();
+        let send_cookie = !is_youtube; // NEVER send YouTube cookies to googlevideo.com CDN
+        let mut active_stream_url = clean_url.clone();
+
+        if use_range {
+            let mut start = 0u64;
+            loop {
+                if let Some(ref mut rx) = abort_rx_opt {
+                    if rx.try_recv().is_ok() {
+                        return Err("Download paused or cancelled".to_string());
+                    }
+                }
+
+                let range_val = if let Some(tot) = target_total_len {
+                    if start >= tot { break; }
+                    let end = (start + CHUNK_SIZE - 1).min(tot - 1);
+                    format!("bytes={}-{}", start, end)
+                } else {
+                    format!("bytes={}-{}", start, start + CHUNK_SIZE - 1)
+                };
+
+                let resp_res = build_req(&active_stream_url, Some(range_val.clone()), send_cookie).send().await;
+                let resp = match resp_res {
+                    Ok(r) => r,
+                    Err(_orig_err) => {
+                        // If host is an unreachable/unresolvable ISP node, attempt fallback to redirector.googlevideo.com
+                        if let Some(ref fb) = fallback_url {
+                            if active_stream_url != *fb {
+                                if let Ok(fb_resp) = build_req(fb, Some(range_val.clone()), send_cookie).send().await {
+                                    active_stream_url = fb.clone();
+                                    fb_resp
+                                } else {
+                                    tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
+                                    build_req(&active_stream_url, Some(format!("bytes={}-", start)), send_cookie).send().await.map_err(|e2| format!("HTTP request failed: {}", e2))?
+                                }
+                            } else {
+                                tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
+                                build_req(&active_stream_url, Some(format!("bytes={}-", start)), send_cookie).send().await.map_err(|e2| format!("HTTP request failed: {}", e2))?
+                            }
+                        } else {
+                            tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
+                            build_req(&active_stream_url, Some(format!("bytes={}-", start)), send_cookie).send().await.map_err(|e2| format!("HTTP request failed: {}", e2))?
+                        }
+                    }
+                };
+
+                let status = resp.status();
+                if status == reqwest::StatusCode::PARTIAL_CONTENT {
+                    // Extract total length from Content-Range if not already known
+                    if target_total_len.is_none() {
+                        if let Some(cr) = resp.headers().get("content-range").and_then(|h| h.to_str().ok()) {
+                            if let Some(slash_idx) = cr.find('/') {
+                                if let Ok(tot) = cr[slash_idx + 1..].trim().parse::<u64>() {
+                                    target_total_len = Some(tot);
+                                    if auto_calc_size.load(Ordering::Relaxed) {
+                                        task_ref.total_size.fetch_add(tot, Ordering::Relaxed);
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    let mut stream = resp.bytes_stream();
+                    let mut chunk_bytes = 0u64;
+                    while let Some(res) = stream.next().await {
+                        let b = res.map_err(|e| format!("Network chunk error: {}", e))?;
+                        let len = b.len() as u64;
+                        file.write_all(&b).await.map_err(|e| format!("Failed to write chunk: {}", e))?;
+                        total_written += len;
+                        chunk_bytes += len;
+                        downloaded_tracker.fetch_add(len, Ordering::Relaxed);
+                        network_tracker.fetch_add(len, Ordering::Relaxed);
+                    }
+                    start += chunk_bytes;
+                    if chunk_bytes == 0 || (target_total_len.is_some() && start >= target_total_len.unwrap()) {
+                        break;
+                    }
+                } else if status == reqwest::StatusCode::OK {
+                    if let Some(cl) = resp.content_length() {
+                        if cl > 0 && auto_calc_size.load(Ordering::Relaxed) && target_total_len.is_none() {
+                            task_ref.total_size.fetch_add(cl, Ordering::Relaxed);
+                        }
+                    }
+                    let mut stream = resp.bytes_stream();
+                    while let Some(res) = stream.next().await {
+                        let b = res.map_err(|e| format!("Network chunk error: {}", e))?;
+                        let len = b.len() as u64;
+                        file.write_all(&b).await.map_err(|e| format!("Failed to write chunk: {}", e))?;
+                        total_written += len;
+                        downloaded_tracker.fetch_add(len, Ordering::Relaxed);
+                        network_tracker.fetch_add(len, Ordering::Relaxed);
+                    }
+                    break;
+                } else if status == reqwest::StatusCode::FORBIDDEN {
+                    return Err(
+                        "Video stream link expired or rejected by YouTube server (HTTP 403 Forbidden). Please refresh the YouTube video page in your browser to generate a fresh stream link and try again.".to_string()
+                    );
+                } else if status == reqwest::StatusCode::RANGE_NOT_SATISFIABLE && start == 0 {
+                    use_range = false;
+                    break;
+                } else {
+                    return Err(format!("Server returned HTTP status {}", status));
+                }
+            }
+        }
+
+        if !use_range {
+            let resp = build_req(&active_stream_url, None, send_cookie).send().await.map_err(|e| format!("HTTP request failed: {}", e))?;
+            if !resp.status().is_success() {
+                if !send_cookie && !cookie.is_empty() {
+                    let resp2 = build_req(&active_stream_url, None, true).send().await.map_err(|e| format!("HTTP request failed: {}", e))?;
+                    if !resp2.status().is_success() {
+                        return Err(format!("Server returned HTTP status {}", resp2.status()));
+                    }
+                    if let Some(cl) = resp2.content_length() {
+                        if cl > 0 && auto_calc_size.load(Ordering::Relaxed) {
+                            task_ref.total_size.fetch_add(cl, Ordering::Relaxed);
+                        }
+                    }
+                    let mut stream = resp2.bytes_stream();
+                    while let Some(res) = stream.next().await {
+                        let b = res.map_err(|e| format!("Network chunk error: {}", e))?;
+                        let len = b.len() as u64;
+                        file.write_all(&b).await.map_err(|e| format!("Failed to write chunk: {}", e))?;
+                        total_written += len;
+                        downloaded_tracker.fetch_add(len, Ordering::Relaxed);
+                        network_tracker.fetch_add(len, Ordering::Relaxed);
+                    }
+                    file.flush().await.map_err(|e| format!("Failed to flush stream file: {}", e))?;
+                    drop(file);
+                    return Ok(total_written);
+                }
+                return Err(format!("Server returned HTTP status {}", resp.status()));
+            }
+
+            if let Some(cl) = resp.content_length() {
+                if cl > 0 && auto_calc_size.load(Ordering::Relaxed) {
+                    task_ref.total_size.fetch_add(cl, Ordering::Relaxed);
+                }
+            }
+
+            let mut stream = resp.bytes_stream();
+            loop {
+                let chunk_opt = if let Some(ref mut rx) = abort_rx_opt {
+                    tokio::select! {
+                        _ = rx.recv() => break,
+                        item = stream.next() => item,
+                    }
+                } else {
+                    stream.next().await
+                };
+
+                match chunk_opt {
+                    Some(Ok(chunk)) => {
+                        let len = chunk.len() as u64;
+                        file.write_all(&chunk).await.map_err(|e| format!("Failed to write chunk: {}", e))?;
+                        total_written += len;
+                        downloaded_tracker.fetch_add(len, Ordering::Relaxed);
+                        network_tracker.fetch_add(len, Ordering::Relaxed);
+                    }
+                    Some(Err(e)) => return Err(format!("Network chunk error: {}", e)),
+                    None => break,
+                }
+            }
         }
 
         file.flush().await.map_err(|e| format!("Failed to flush stream file: {}", e))?;
         drop(file);
         Ok(total_written)
+    }
+
+    pub async fn try_download_via_ytdlp(
+        self: &Arc<Self>,
+        task: &Arc<DownloadTask>,
+        target_path: &str,
+    ) -> Result<u64, String> {
+        let ytdlp_bin = crate::mux::probe_ytdlp()
+            .ok_or_else(|| "yt-dlp is not available on this system".to_string())?;
+
+        let mut watch_url = if task.referrer.contains("youtube.com/watch") || task.referrer.contains("youtu.be/") || task.referrer.contains("youtube.com/shorts") {
+            Some(task.referrer.clone())
+        } else if task.original_url.contains("youtube.com/watch") || task.original_url.contains("youtu.be/") || task.original_url.contains("youtube.com/shorts") {
+            Some(task.original_url.clone())
+        } else {
+            None
+        };
+
+        if watch_url.is_none() {
+            if let Some(ref last) = *self.last_youtube_watch_url.read().await {
+                watch_url = Some(last.clone());
+            }
+        }
+
+        if watch_url.is_none() {
+            if let Ok(parsed) = reqwest::Url::parse(&task.original_url) {
+                if let Some((_, docid)) = parsed.query_pairs().find(|(k, _)| k == "docid" || k == "id" || k == "v") {
+                    if !docid.is_empty() && !docid.starts_with("o-") {
+                        watch_url = Some(format!("https://www.youtube.com/watch?v={}", docid));
+                    }
+                }
+            }
+        }
+
+        let url = watch_url.ok_or_else(|| "Could not determine YouTube video page URL".to_string())?;
+
+        println!("[Engine] Downloading YouTube video via yt-dlp: URL={}, target={}", url, target_path);
+
+        let is_audio = task.get_filename().to_lowercase().ends_with(".mp3")
+            || task.get_category().to_lowercase() == "audio";
+
+        let mut cmd = tokio::process::Command::new(&ytdlp_bin);
+        cmd.arg("--no-playlist")
+           .arg("--newline")
+           .arg("--progress")
+           .arg("--progress-template")
+           .arg("download:IDMPROG:%(progress.downloaded_bytes)s:%(progress.total_bytes)s:%(progress.speed)s:%(progress.eta)s");
+
+        if let Some(ffmpeg_bin) = crate::mux::probe_ffmpeg() {
+            cmd.arg("--ffmpeg-location").arg(ffmpeg_bin);
+        }
+
+        let itag_opt = reqwest::Url::parse(&task.original_url).ok().and_then(|u| {
+            u.query_pairs().find(|(k, _)| k == "itag").map(|(_, v)| v.to_string())
+        });
+
+        cmd.arg("--force-overwrites");
+
+        let fn_lower = task.get_filename().to_lowercase();
+        let target_height = if fn_lower.contains("2160") || fn_lower.contains("4k") {
+            2160
+        } else if fn_lower.contains("1440") || fn_lower.contains("2k") {
+            1440
+        } else if fn_lower.contains("1080") {
+            1080
+        } else if fn_lower.contains("720") {
+            720
+        } else if fn_lower.contains("480") {
+            480
+        } else if fn_lower.contains("360") {
+            360
+        } else {
+            1080
+        };
+
+        if is_audio {
+            cmd.arg("-x").arg("--audio-format").arg("mp3");
+        } else if let Some(ref itag) = itag_opt {
+            if itag == "18" {
+                cmd.arg("-f").arg("18/bestvideo[height<=360]+bestaudio/best[height<=360]/best");
+            } else {
+                cmd.arg("-f").arg(format!(
+                    "{}+bestaudio[ext=m4a]/{}+bestaudio/{}+ba/bestvideo[height<={}]+bestaudio/best[height<={}]/best",
+                    itag, itag, itag, target_height, target_height
+                ));
+            }
+            cmd.arg("--merge-output-format").arg("mp4");
+        } else {
+            cmd.arg("-f").arg(format!(
+                "bestvideo[height<={}]+bestaudio[ext=m4a]/bestvideo[height<={}]+bestaudio/best[height<={}]/best",
+                target_height, target_height, target_height
+            ));
+            cmd.arg("--merge-output-format").arg("mp4");
+        }
+
+        cmd.arg("-o").arg(target_path);
+        cmd.arg(&url);
+
+        cmd.stdout(std::process::Stdio::piped());
+        cmd.stderr(std::process::Stdio::piped());
+
+        let mut child = cmd.spawn().map_err(|e| format!("Failed to spawn yt-dlp: {}", e))?;
+        let stdout = child.stdout.take().ok_or_else(|| "Failed to capture yt-dlp stdout".to_string())?;
+
+        use tokio::io::AsyncBufReadExt;
+        let mut reader = tokio::io::BufReader::new(stdout).lines();
+
+        let mut last_downloaded = 0u64;
+        let mut last_total = 0u64;
+        let mut last_speed_time = std::time::Instant::now();
+        let mut last_speed_bytes = 0u64;
+        let mut smoothed_speed = 0.0f64;
+
+        while let Ok(Some(line)) = reader.next_line().await {
+            if let Some(idx) = line.find("IDMPROG:") {
+                let parts: Vec<&str> = line[idx + 8..].split(':').collect();
+                if parts.len() >= 4 {
+                    if let Ok(dl) = parts[0].trim().parse::<u64>() {
+                        let diff = dl.saturating_sub(last_downloaded);
+                        task.downloaded.fetch_add(diff, Ordering::Relaxed);
+                        task.network_downloaded.fetch_add(diff, Ordering::Relaxed);
+                        last_downloaded = dl;
+
+                        let now = std::time::Instant::now();
+                        let elapsed = now.duration_since(last_speed_time).as_secs_f64();
+                        if elapsed >= 0.4 {
+                            let bytes_diff = dl.saturating_sub(last_speed_bytes);
+                            let instant_speed = (bytes_diff as f64) / elapsed;
+                            smoothed_speed = if smoothed_speed == 0.0 {
+                                instant_speed
+                            } else {
+                                smoothed_speed * 0.70 + instant_speed * 0.30
+                            };
+                            last_speed_time = now;
+                            last_speed_bytes = dl;
+                            *task.speed.lock().unwrap() = smoothed_speed;
+                        }
+                    }
+                    if let Ok(tot) = parts[1].trim().parse::<u64>() {
+                        if tot > 0 {
+                            task.total_size.store(tot, Ordering::Relaxed);
+                            last_total = tot;
+                        }
+                    }
+                    let spd = *task.speed.lock().unwrap();
+                    let current_total_size = task.total_size.load(Ordering::Relaxed);
+                    let eta = if spd > 1024.0 && current_total_size > last_downloaded {
+                        let rem = current_total_size - last_downloaded;
+                        let rem_secs = (rem as f64 / spd).round() as u64;
+                        if rem_secs >= 60 {
+                            format!("{} mins {} secs", rem_secs / 60, rem_secs % 60)
+                        } else {
+                            format!("{} secs", rem_secs)
+                        }
+                    } else if parts[3].trim() != "NA" {
+                        format!("{}s", parts[3].trim())
+                    } else {
+                        "---".to_string()
+                    };
+                    *task.eta.lock().unwrap() = eta;
+
+                    if let Some(ref handle) = self.app_handle.lock().await.clone() {
+                        use tauri::Emitter;
+                        let progress = DownloadProgress {
+                            id: task.id.clone(),
+                            url: task.original_url.clone(),
+                            filename: task.get_filename(),
+                            save_path: task.get_save_path(),
+                            total_size: task.total_size.load(Ordering::Relaxed),
+                            downloaded: task.network_downloaded.load(Ordering::Relaxed),
+                            speed: *task.speed.lock().unwrap(),
+                            eta: task.eta.lock().unwrap().clone(),
+                            status: DownloadStatus::Downloading,
+                            file_exists: std::path::Path::new(target_path).exists(),
+                            speed_limited: false,
+                            category: task.get_category(),
+                        };
+                        let _ = handle.emit("download-progress", progress);
+                    }
+                }
+            }
+        }
+
+        let status = child.wait().await.map_err(|e| format!("yt-dlp process wait failed: {}", e))?;
+        if !status.success() {
+            return Err("yt-dlp process returned non-zero exit status".to_string());
+        }
+
+        // If yt-dlp wrote with an alternate extension (e.g. .mp4.webm or .mkv), reconcile it
+        let actual_path = if std::path::Path::new(target_path).exists() {
+            std::path::PathBuf::from(target_path)
+        } else if std::path::Path::new(&format!("{}.webm", target_path)).exists() {
+            let alt = std::path::PathBuf::from(format!("{}.webm", target_path));
+            let _ = std::fs::rename(&alt, target_path);
+            std::path::PathBuf::from(target_path)
+        } else if std::path::Path::new(&format!("{}.mkv", target_path)).exists() {
+            let alt = std::path::PathBuf::from(format!("{}.mkv", target_path));
+            let _ = std::fs::rename(&alt, target_path);
+            std::path::PathBuf::from(target_path)
+        } else {
+            std::path::PathBuf::from(target_path)
+        };
+
+        let final_size = std::fs::metadata(&actual_path).map(|m| m.len()).unwrap_or(last_total);
+        if final_size > 0 {
+            task.total_size.store(final_size, Ordering::Relaxed);
+            task.downloaded.store(final_size, Ordering::Relaxed);
+            task.network_downloaded.store(final_size, Ordering::Relaxed);
+        }
+
+        Ok(final_size)
     }
 
     pub async fn run_task(self: &Arc<Self>, task: Arc<DownloadTask>, is_resume: bool) -> Result<(), String> {
@@ -694,171 +1187,6 @@ impl DownloadManager {
             }
         };
 
-        // Phase 4: HLS Stream (.m3u8) Engine Interception
-        if task.original_url.contains(".m3u8") {
-            println!("[HLS Engine] Detected HLS stream download: {}", task.original_url);
-            let client = self.client.clone();
-            let source_url = task.original_url.clone();
-            let cookie = task.cookie.clone();
-            let user_agent = task.user_agent.clone();
-
-            let hls_plan_res = crate::hls::resolve_hls(&client, &source_url, &cookie, &user_agent, 0, &source_url).await;
-            match hls_plan_res {
-                Ok(plan) => {
-                    let cur_filename = task.get_filename();
-                    let clean_base = cur_filename.replace(".m3u8", "");
-                    let new_fn = format!("{}{}", clean_base, plan.extension);
-                    task.update_filename_and_path(&new_fn);
-
-                    let save_path_val = task.get_save_path();
-                    let temp_hls_dir = temp_dir.clone();
-
-                    let downloaded_tracker = task.downloaded.clone();
-                    let total_size_tracker = Arc::new(AtomicU64::new(0));
-
-                    match crate::hls::run_hls_stream_download(
-                        client,
-                        plan,
-                        temp_hls_dir,
-                        save_path_val.clone(),
-                        cookie,
-                        user_agent,
-                        downloaded_tracker,
-                        total_size_tracker.clone(),
-                        None,
-                    ).await {
-                        Ok(final_path) => {
-                            task.total_size.store(total_size_tracker.load(Ordering::Relaxed), Ordering::Relaxed);
-                            *task.status.lock().unwrap() = DownloadStatus::Completed;
-                            if final_path != save_path_val {
-                                let new_name = std::path::Path::new(&final_path)
-                                    .file_name()
-                                    .and_then(|f| f.to_str())
-                                    .unwrap_or(&new_fn);
-                                task.update_filename_and_path(new_name);
-                            }
-                            return Ok(());
-                        }
-                        Err(e) => {
-                            *task.status.lock().unwrap() = DownloadStatus::Failed(format!("HLS download failed: {}", e));
-                            return Err(e);
-                        }
-                    }
-                }
-                Err(e) => {
-                    eprintln!("[HLS Engine] Could not resolve HLS manifest: {}. Falling back to standard engine...", e);
-                }
-            }
-        }
-
-        // Phase 5: YouTube / Dual-Stream Lossless Muxing Engine
-        if let Some(ref audio_target_url) = task.audio_url {
-            let video_source_url = task.original_url.clone();
-            let audio_source_url = audio_target_url.clone();
-            let cookie = task.cookie.clone();
-            let user_agent = task.user_agent.clone();
-            let save_path_val = task.get_save_path();
-            let downloaded_tracker = task.downloaded.clone();
-            let network_tracker = task.network_downloaded.clone();
-            let total_size_tracker = &task.total_size;
-
-            let _ = tokio::fs::create_dir_all(&temp_dir).await;
-            let video_track_path = temp_dir.join("video.track");
-            let audio_track_path = temp_dir.join("audio.track");
-
-            let client = reqwest::Client::builder()
-                .redirect(reqwest::redirect::Policy::limited(10))
-                .build()
-                .map_err(|e| e.to_string())?;
-
-            let (v_res, a_res) = tokio::join!(
-                Self::download_stream_to_file(
-                    client.clone(),
-                    video_source_url,
-                    video_track_path.clone(),
-                    cookie.clone(),
-                    user_agent.clone(),
-                    downloaded_tracker.clone(),
-                    network_tracker.clone(),
-                ),
-                Self::download_stream_to_file(
-                    client.clone(),
-                    audio_source_url,
-                    audio_track_path.clone(),
-                    cookie.clone(),
-                    user_agent.clone(),
-                    downloaded_tracker.clone(),
-                    network_tracker.clone(),
-                )
-            );
-
-            let v_bytes = v_res.map_err(|e| format!("Video stream download failed: {}", e))?;
-            let a_bytes = a_res.map_err(|e| format!("Audio stream download failed: {}", e))?;
-            total_size_tracker.store(v_bytes + a_bytes, Ordering::Relaxed);
-
-            *task.status.lock().unwrap() = DownloadStatus::Assembling;
-
-            let (final_path, _) = Self::allocate_collision_free_path(&save_path_val);
-            let final_path_buf = std::path::PathBuf::from(&final_path);
-
-            match crate::mux::mux_dual_stream(&video_track_path, &audio_track_path, &final_path_buf).await {
-                Ok(()) => {
-                    let _ = std::fs::remove_file(&video_track_path);
-                    let _ = std::fs::remove_file(&audio_track_path);
-                    let _ = std::fs::remove_dir(&temp_dir);
-                    *task.status.lock().unwrap() = DownloadStatus::Completed;
-                    if final_path != save_path_val {
-                        if let Some(name) = std::path::Path::new(&final_path).file_name().and_then(|f| f.to_str()) {
-                            task.update_filename_and_path(name);
-                        }
-                    }
-                    return Ok(());
-                }
-                Err(mux_err) => {
-                    eprintln!("[Dual Stream Muxer] FFmpeg mux notice: {}. Preserving separate tracks safely.", mux_err);
-                    let _ = std::fs::rename(&video_track_path, &final_path);
-                    let audio_fallback = format!("{}.audio.m4a", final_path);
-                    let _ = std::fs::rename(&audio_track_path, &audio_fallback);
-                    let _ = std::fs::remove_dir(&temp_dir);
-                    *task.status.lock().unwrap() = DownloadStatus::Completed;
-                    return Ok(());
-                }
-            }
-        }
-
-        let temp_dir_exists = temp_dir.exists();
-        let chunks_empty = task.chunks.lock().unwrap().is_empty();
-        let should_initialize = !is_resume || chunks_empty || !temp_dir_exists;
-
-        if should_initialize {
-            task.downloaded.store(0, Ordering::Relaxed);
-            task.network_downloaded.store(0, Ordering::Relaxed);
-
-            if temp_dir.exists() {
-                let _ = std::fs::remove_dir_all(&temp_dir);
-            }
-            if let Err(e) = std::fs::create_dir_all(&temp_dir) {
-                return Err(format!("Could not create temp directory: {}", e));
-            }
-
-            let mut chunks = task.chunks.lock().unwrap();
-            chunks.clear();
-            // Initial Chunk 0 is open-ended until probe or worker receives response headers
-            chunks.push(ActiveChunk {
-                id: uuid::Uuid::new_v4().to_string(),
-                start: 0,
-                end: Arc::new(AtomicU64::new(0)),
-                downloaded: Arc::new(AtomicU64::new(0)),
-                active: Arc::new(std::sync::atomic::AtomicBool::new(false)),
-            });
-        } else {
-            if !temp_dir.exists() {
-                if let Err(e) = std::fs::create_dir_all(&temp_dir) {
-                    return Err(format!("Could not create temp directory: {}", e));
-                }
-            }
-        }
-
         let abort_tx = match task.abort_tx.as_ref() {
             Some(tx) => tx,
             None => return Err("Missing abort channel".to_string()),
@@ -874,9 +1202,9 @@ impl DownloadManager {
         let manager_for_save = self.clone();
         let manager_for_reporting = self.clone();
 
-        // Speed & Progress reporting loop
+        // Speed & Progress reporting loop (Spans ALL downloads: HLS, Dual-Stream, and Chunks)
         tokio::spawn(async move {
-            let mut interval = tokio::time::interval(Duration::from_millis(800));
+            let mut interval = tokio::time::interval(Duration::from_millis(400));
             let mut samples: std::collections::VecDeque<(u64, Instant)> = std::collections::VecDeque::with_capacity(4);
             samples.push_back((task_for_reporting.network_downloaded.load(Ordering::Relaxed), Instant::now()));
             let mut save_ticks = 0;
@@ -948,7 +1276,7 @@ impl DownloadManager {
                         }
 
                         save_ticks += 1;
-                        if save_ticks >= 37 {
+                        if save_ticks >= 75 {
                             save_ticks = 0;
                             let manager_clone = manager_for_save.clone();
                             tokio::spawn(async move {
@@ -961,6 +1289,540 @@ impl DownloadManager {
                 }
             }
         });
+
+        // Phase 4: HLS Stream (.m3u8) Engine Interception
+        if task.original_url.contains(".m3u8") {
+            println!("[HLS Engine] Detected HLS stream download: {}", task.original_url);
+            let client = self.client.clone();
+            let source_url = task.original_url.clone();
+            let cookie = task.cookie.clone();
+            let user_agent = task.user_agent.clone();
+
+            let hls_plan_res = crate::hls::resolve_hls(&client, &source_url, &cookie, &user_agent, 0, &source_url).await;
+            match hls_plan_res {
+                Ok(plan) => {
+                    let cur_filename = task.get_filename();
+                    let clean_base = cur_filename.replace(".m3u8", "");
+                    let new_fn = format!("{}{}", clean_base, plan.extension);
+                    task.update_filename_and_path(&new_fn);
+
+                    let save_path_val = task.get_save_path();
+                    let temp_hls_dir = temp_dir.clone();
+
+                    let downloaded_tracker = task.downloaded.clone();
+                    let total_size_tracker = Arc::new(AtomicU64::new(task.total_size.load(Ordering::Relaxed)));
+
+                    match crate::hls::run_hls_stream_download(
+                        client,
+                        plan,
+                        temp_hls_dir,
+                        save_path_val.clone(),
+                        cookie,
+                        user_agent,
+                        downloaded_tracker,
+                        total_size_tracker.clone(),
+                        None,
+                    ).await {
+                        Ok(final_path) => {
+                            task.total_size.store(total_size_tracker.load(Ordering::Relaxed), Ordering::Relaxed);
+                            *task.status.lock().unwrap() = DownloadStatus::Completed;
+                            if final_path != save_path_val {
+                                let new_name = std::path::Path::new(&final_path)
+                                    .file_name()
+                                    .and_then(|f| f.to_str())
+                                    .unwrap_or(&new_fn);
+                                task.update_filename_and_path(new_name);
+                            }
+                            let cur_filename = task.get_filename();
+                            let cur_save_path = task.get_save_path();
+                            let progress = DownloadProgress {
+                                id: task.id.clone(),
+                                url: task.original_url.clone(),
+                                filename: cur_filename,
+                                save_path: cur_save_path.clone(),
+                                total_size: task.total_size.load(Ordering::Relaxed),
+                                downloaded: task.network_downloaded.load(Ordering::Relaxed),
+                                speed: 0.0,
+                                eta: "0s".to_string(),
+                                status: DownloadStatus::Completed,
+                                file_exists: std::path::Path::new(&cur_save_path).exists(),
+                                speed_limited: false,
+                                category: task.get_category(),
+                            };
+                            if let Some(ref handle) = self.app_handle.lock().await.clone() {
+                                use tauri::Emitter;
+                                let _ = handle.emit("download-progress", progress);
+                            }
+                            let _ = self.save_history().await;
+                            return Ok(());
+                        }
+                        Err(e) => {
+                            let err_msg = format!("HLS download failed: {}", e);
+                            *task.status.lock().unwrap() = DownloadStatus::Failed(err_msg.clone());
+                            let cur_filename = task.get_filename();
+                            let cur_save_path = task.get_save_path();
+                            let progress = DownloadProgress {
+                                id: task.id.clone(),
+                                url: task.original_url.clone(),
+                                filename: cur_filename,
+                                save_path: cur_save_path.clone(),
+                                total_size: task.total_size.load(Ordering::Relaxed),
+                                downloaded: task.network_downloaded.load(Ordering::Relaxed),
+                                speed: 0.0,
+                                eta: "---".to_string(),
+                                status: DownloadStatus::Failed(err_msg.clone()),
+                                file_exists: std::path::Path::new(&cur_save_path).exists(),
+                                speed_limited: false,
+                                category: task.get_category(),
+                            };
+                            if let Some(ref handle) = self.app_handle.lock().await.clone() {
+                                use tauri::Emitter;
+                                let _ = handle.emit("download-progress", progress);
+                            }
+                            return Err(e);
+                        }
+                    }
+                }
+                Err(e) => {
+                    eprintln!("[HLS Engine] Could not resolve HLS manifest: {}. Falling back to standard engine...", e);
+                }
+            }
+        }
+
+        // Phase 5: YouTube Watch Page Direct Engine OR Dual-Stream / Single-Stream Engine
+        let is_youtube_watch = task.original_url.contains("youtube.com/watch")
+            || task.original_url.contains("youtu.be/")
+            || task.original_url.contains("youtube.com/shorts");
+
+        if is_youtube_watch {
+            let final_target = task.get_save_path();
+            match self.try_download_via_ytdlp(&task, &final_target).await {
+                Ok(dl_bytes) => {
+                    *task.status.lock().unwrap() = DownloadStatus::Completed;
+                    let cur_filename = task.get_filename();
+                    let cur_save_path = task.get_save_path();
+                    let completed_progress = DownloadProgress {
+                        id: task.id.clone(),
+                        url: task.original_url.clone(),
+                        filename: cur_filename,
+                        save_path: cur_save_path.clone(),
+                        total_size: dl_bytes,
+                        downloaded: dl_bytes,
+                        speed: 0.0,
+                        eta: "0s".to_string(),
+                        status: DownloadStatus::Completed,
+                        file_exists: std::path::Path::new(&cur_save_path).exists(),
+                        speed_limited: false,
+                        category: task.get_category(),
+                    };
+                    if let Some(ref handle) = self.app_handle.lock().await.clone() {
+                        use tauri::Emitter;
+                        let _ = handle.emit("download-progress", completed_progress);
+                    }
+                    let _ = self.save_history().await;
+                    return Ok(());
+                }
+                Err(e) => {
+                    let err_msg = format!("YouTube download failed: {}", e);
+                    *task.status.lock().unwrap() = DownloadStatus::Failed(err_msg.clone());
+                    let cur_filename = task.get_filename();
+                    let cur_save_path = task.get_save_path();
+                    let progress = DownloadProgress {
+                        id: task.id.clone(),
+                        url: task.original_url.clone(),
+                        filename: cur_filename,
+                        save_path: cur_save_path.clone(),
+                        total_size: task.total_size.load(Ordering::Relaxed),
+                        downloaded: task.network_downloaded.load(Ordering::Relaxed),
+                        speed: 0.0,
+                        eta: "---".to_string(),
+                        status: DownloadStatus::Failed(err_msg.clone()),
+                        file_exists: std::path::Path::new(&cur_save_path).exists(),
+                        speed_limited: false,
+                        category: task.get_category(),
+                    };
+                    if let Some(ref handle) = self.app_handle.lock().await.clone() {
+                        use tauri::Emitter;
+                        let _ = handle.emit("download-progress", progress);
+                    }
+                    return Err(e);
+                }
+            }
+        }
+
+        let is_youtube_stream = task.original_url.contains("googlevideo.com") || task.original_url.contains("youtube.com/videoplayback");
+        if task.audio_url.is_some() || is_youtube_stream {
+            if let Some(ref audio_target_url) = task.audio_url {
+            let video_source_url = task.original_url.clone();
+            let audio_source_url = audio_target_url.clone();
+            let cookie = task.cookie.clone();
+            let referrer = task.referrer.clone();
+            let user_agent = task.user_agent.clone();
+            let save_path_val = task.get_save_path();
+            let downloaded_tracker = task.downloaded.clone();
+            let network_tracker = task.network_downloaded.clone();
+
+            let _ = tokio::fs::create_dir_all(&temp_dir).await;
+            let video_track_path = temp_dir.join("video.track");
+            let audio_track_path = temp_dir.join("audio.track");
+
+            let client = Self::build_stream_client(&video_source_url)?;
+
+            let auto_calc_size = Arc::new(std::sync::atomic::AtomicBool::new(task.total_size.load(Ordering::Relaxed) == 0));
+
+            let (v_res, a_res) = tokio::join!(
+                Self::download_stream_to_file(
+                    client.clone(),
+                    video_source_url,
+                    video_track_path.clone(),
+                    cookie.clone(),
+                    referrer.clone(),
+                    user_agent.clone(),
+                    downloaded_tracker.clone(),
+                    network_tracker.clone(),
+                    task.clone(),
+                    auto_calc_size.clone(),
+                ),
+                Self::download_stream_to_file(
+                    client.clone(),
+                    audio_source_url,
+                    audio_track_path.clone(),
+                    cookie.clone(),
+                    referrer.clone(),
+                    user_agent.clone(),
+                    downloaded_tracker.clone(),
+                    network_tracker.clone(),
+                    task.clone(),
+                    auto_calc_size.clone(),
+                )
+            );
+
+            let v_bytes = match v_res {
+                Ok(b) => b,
+                Err(e) => {
+                    let final_target = task.get_save_path();
+                    if let Ok(dl_bytes) = self.try_download_via_ytdlp(&task, &final_target).await {
+                        *task.status.lock().unwrap() = DownloadStatus::Completed;
+                        let cur_filename = task.get_filename();
+                        let cur_save_path = task.get_save_path();
+                        let completed_progress = DownloadProgress {
+                            id: task.id.clone(),
+                            url: task.original_url.clone(),
+                            filename: cur_filename,
+                            save_path: cur_save_path.clone(),
+                            total_size: dl_bytes,
+                            downloaded: dl_bytes,
+                            speed: 0.0,
+                            eta: "0s".to_string(),
+                            status: DownloadStatus::Completed,
+                            file_exists: std::path::Path::new(&cur_save_path).exists(),
+                            speed_limited: false,
+                            category: task.get_category(),
+                        };
+                        if let Some(ref handle) = self.app_handle.lock().await.clone() {
+                            use tauri::Emitter;
+                            let _ = handle.emit("download-progress", completed_progress);
+                        }
+                        let _ = self.save_history().await;
+                        return Ok(());
+                    }
+
+                    let err_msg = format!("Video stream download failed: {}", e);
+                    *task.status.lock().unwrap() = DownloadStatus::Failed(err_msg.clone());
+                    let cur_filename = task.get_filename();
+                    let cur_save_path = task.get_save_path();
+                    let progress = DownloadProgress {
+                        id: task.id.clone(),
+                        url: task.original_url.clone(),
+                        filename: cur_filename,
+                        save_path: cur_save_path.clone(),
+                        total_size: task.total_size.load(Ordering::Relaxed),
+                        downloaded: task.network_downloaded.load(Ordering::Relaxed),
+                        speed: 0.0,
+                        eta: "---".to_string(),
+                        status: DownloadStatus::Failed(err_msg.clone()),
+                        file_exists: std::path::Path::new(&cur_save_path).exists(),
+                        speed_limited: false,
+                        category: task.get_category(),
+                    };
+                    if let Some(ref handle) = self.app_handle.lock().await.clone() {
+                        use tauri::Emitter;
+                        let _ = handle.emit("download-progress", progress);
+                    }
+                    return Err(err_msg);
+                }
+            };
+            let a_bytes = match a_res {
+                Ok(b) => b,
+                Err(e) => {
+                    let err_msg = format!("Audio stream download failed: {}", e);
+                    *task.status.lock().unwrap() = DownloadStatus::Failed(err_msg.clone());
+                    let cur_filename = task.get_filename();
+                    let cur_save_path = task.get_save_path();
+                    let progress = DownloadProgress {
+                        id: task.id.clone(),
+                        url: task.original_url.clone(),
+                        filename: cur_filename,
+                        save_path: cur_save_path.clone(),
+                        total_size: task.total_size.load(Ordering::Relaxed),
+                        downloaded: task.network_downloaded.load(Ordering::Relaxed),
+                        speed: 0.0,
+                        eta: "---".to_string(),
+                        status: DownloadStatus::Failed(err_msg.clone()),
+                        file_exists: std::path::Path::new(&cur_save_path).exists(),
+                        speed_limited: false,
+                        category: task.get_category(),
+                    };
+                    if let Some(ref handle) = self.app_handle.lock().await.clone() {
+                        use tauri::Emitter;
+                        let _ = handle.emit("download-progress", progress);
+                    }
+                    return Err(err_msg);
+                }
+            };
+
+            let total_stream_bytes = v_bytes + a_bytes;
+            task.total_size.store(total_stream_bytes, Ordering::Relaxed);
+            task.downloaded.store(total_stream_bytes, Ordering::Relaxed);
+            task.network_downloaded.store(total_stream_bytes, Ordering::Relaxed);
+
+            *task.status.lock().unwrap() = DownloadStatus::Assembling;
+            let cur_filename = task.get_filename();
+            let cur_save_path = task.get_save_path();
+            let assembling_progress = DownloadProgress {
+                id: task.id.clone(),
+                url: task.original_url.clone(),
+                filename: cur_filename,
+                save_path: cur_save_path.clone(),
+                total_size: total_stream_bytes,
+                downloaded: total_stream_bytes,
+                speed: 0.0,
+                eta: "Assembling...".to_string(),
+                status: DownloadStatus::Assembling,
+                file_exists: std::path::Path::new(&cur_save_path).exists(),
+                speed_limited: false,
+                category: task.get_category(),
+            };
+            if let Some(ref handle) = self.app_handle.lock().await.clone() {
+                use tauri::Emitter;
+                let _ = handle.emit("download-progress", assembling_progress);
+            }
+
+            let (final_path, _) = Self::allocate_collision_free_path(&save_path_val);
+            let final_path_buf = std::path::PathBuf::from(&final_path);
+
+            match crate::mux::mux_dual_stream(&video_track_path, &audio_track_path, &final_path_buf).await {
+                Ok(()) => {
+                    let _ = std::fs::remove_file(&video_track_path);
+                    let _ = std::fs::remove_file(&audio_track_path);
+                    let _ = std::fs::remove_dir(&temp_dir);
+                    *task.status.lock().unwrap() = DownloadStatus::Completed;
+                    if final_path != save_path_val {
+                        if let Some(name) = std::path::Path::new(&final_path).file_name().and_then(|f| f.to_str()) {
+                            task.update_filename_and_path(name);
+                        }
+                    }
+                    let cur_filename = task.get_filename();
+                    let cur_save_path = task.get_save_path();
+                    let completed_progress = DownloadProgress {
+                        id: task.id.clone(),
+                        url: task.original_url.clone(),
+                        filename: cur_filename,
+                        save_path: cur_save_path.clone(),
+                        total_size: total_stream_bytes,
+                        downloaded: total_stream_bytes,
+                        speed: 0.0,
+                        eta: "0s".to_string(),
+                        status: DownloadStatus::Completed,
+                        file_exists: std::path::Path::new(&cur_save_path).exists(),
+                        speed_limited: false,
+                        category: task.get_category(),
+                    };
+                    if let Some(ref handle) = self.app_handle.lock().await.clone() {
+                        use tauri::Emitter;
+                        let _ = handle.emit("download-progress", completed_progress);
+                    }
+                    let _ = self.save_history().await;
+                    return Ok(());
+                }
+                Err(mux_err) => {
+                    eprintln!("[Dual Stream Muxer] FFmpeg mux notice: {}. Preserving separate tracks safely.", mux_err);
+                    let _ = std::fs::rename(&video_track_path, &final_path);
+                    let audio_fallback = format!("{}.audio.m4a", final_path);
+                    let _ = std::fs::rename(&audio_track_path, &audio_fallback);
+                    let _ = std::fs::remove_dir(&temp_dir);
+                    *task.status.lock().unwrap() = DownloadStatus::Completed;
+                    let cur_filename = task.get_filename();
+                    let cur_save_path = task.get_save_path();
+                    let completed_progress = DownloadProgress {
+                        id: task.id.clone(),
+                        url: task.original_url.clone(),
+                        filename: cur_filename,
+                        save_path: cur_save_path.clone(),
+                        total_size: total_stream_bytes,
+                        downloaded: total_stream_bytes,
+                        speed: 0.0,
+                        eta: "0s".to_string(),
+                        status: DownloadStatus::Completed,
+                        file_exists: std::path::Path::new(&cur_save_path).exists(),
+                        speed_limited: false,
+                        category: task.get_category(),
+                    };
+                    if let Some(ref handle) = self.app_handle.lock().await.clone() {
+                        use tauri::Emitter;
+                        let _ = handle.emit("download-progress", completed_progress);
+                    }
+                    let _ = self.save_history().await;
+                    return Ok(());
+                }
+            }
+        } else {
+                // Single-stream YouTube format (360p or audio track)
+                let video_source_url = task.original_url.clone();
+                let cookie = task.cookie.clone();
+                let referrer = task.referrer.clone();
+                let user_agent = task.user_agent.clone();
+                let save_path_val = task.get_save_path();
+                let downloaded_tracker = task.downloaded.clone();
+                let network_tracker = task.network_downloaded.clone();
+
+                let (final_path, _) = Self::allocate_collision_free_path(&save_path_val);
+                let final_path_buf = std::path::PathBuf::from(&final_path);
+
+                let client = Self::build_stream_client(&video_source_url)?;
+
+                let auto_calc_size = Arc::new(std::sync::atomic::AtomicBool::new(task.total_size.load(Ordering::Relaxed) == 0));
+
+                match Self::download_stream_to_file(
+                    client,
+                    video_source_url,
+                    final_path_buf.clone(),
+                    cookie,
+                    referrer,
+                    user_agent,
+                    downloaded_tracker,
+                    network_tracker,
+                    task.clone(),
+                    auto_calc_size,
+                ).await {
+                    Ok(total_bytes) => {
+                        *task.status.lock().unwrap() = DownloadStatus::Completed;
+                        if final_path != save_path_val {
+                            if let Some(name) = std::path::Path::new(&final_path).file_name().and_then(|f| f.to_str()) {
+                                task.update_filename_and_path(name);
+                            }
+                        }
+                        let cur_filename = task.get_filename();
+                        let cur_save_path = task.get_save_path();
+                        let completed_progress = DownloadProgress {
+                            id: task.id.clone(),
+                            url: task.original_url.clone(),
+                            filename: cur_filename,
+                            save_path: cur_save_path.clone(),
+                            total_size: total_bytes,
+                            downloaded: total_bytes,
+                            speed: 0.0,
+                            eta: "0s".to_string(),
+                            status: DownloadStatus::Completed,
+                            file_exists: std::path::Path::new(&cur_save_path).exists(),
+                            speed_limited: false,
+                            category: task.get_category(),
+                        };
+                        if let Some(ref handle) = self.app_handle.lock().await.clone() {
+                            use tauri::Emitter;
+                            let _ = handle.emit("download-progress", completed_progress);
+                        }
+                        let _ = self.save_history().await;
+                        return Ok(());
+                    }
+                    Err(e) => {
+                        let final_target = task.get_save_path();
+                        if let Ok(dl_bytes) = self.try_download_via_ytdlp(&task, &final_target).await {
+                            *task.status.lock().unwrap() = DownloadStatus::Completed;
+                            let cur_filename = task.get_filename();
+                            let cur_save_path = task.get_save_path();
+                            let completed_progress = DownloadProgress {
+                                id: task.id.clone(),
+                                url: task.original_url.clone(),
+                                filename: cur_filename,
+                                save_path: cur_save_path.clone(),
+                                total_size: dl_bytes,
+                                downloaded: dl_bytes,
+                                speed: 0.0,
+                                eta: "0s".to_string(),
+                                status: DownloadStatus::Completed,
+                                file_exists: std::path::Path::new(&cur_save_path).exists(),
+                                speed_limited: false,
+                                category: task.get_category(),
+                            };
+                            if let Some(ref handle) = self.app_handle.lock().await.clone() {
+                                use tauri::Emitter;
+                                let _ = handle.emit("download-progress", completed_progress);
+                            }
+                            let _ = self.save_history().await;
+                            return Ok(());
+                        }
+
+                        let err_msg = format!("Video stream download failed: {}", e);
+                        *task.status.lock().unwrap() = DownloadStatus::Failed(err_msg.clone());
+                        let cur_filename = task.get_filename();
+                        let cur_save_path = task.get_save_path();
+                        let progress = DownloadProgress {
+                            id: task.id.clone(),
+                            url: task.original_url.clone(),
+                            filename: cur_filename,
+                            save_path: cur_save_path.clone(),
+                            total_size: task.total_size.load(Ordering::Relaxed),
+                            downloaded: task.network_downloaded.load(Ordering::Relaxed),
+                            speed: 0.0,
+                            eta: "---".to_string(),
+                            status: DownloadStatus::Failed(err_msg.clone()),
+                            file_exists: std::path::Path::new(&cur_save_path).exists(),
+                            speed_limited: false,
+                            category: task.get_category(),
+                        };
+                        if let Some(ref handle) = self.app_handle.lock().await.clone() {
+                            use tauri::Emitter;
+                            let _ = handle.emit("download-progress", progress);
+                        }
+                        return Err(e);
+                    }
+                }
+            }
+        }
+
+        let temp_dir_exists = temp_dir.exists();
+        let chunks_empty = task.chunks.lock().unwrap().is_empty();
+        let should_initialize = !is_resume || chunks_empty || !temp_dir_exists;
+
+        if should_initialize {
+            task.downloaded.store(0, Ordering::Relaxed);
+            task.network_downloaded.store(0, Ordering::Relaxed);
+
+            if temp_dir.exists() {
+                let _ = std::fs::remove_dir_all(&temp_dir);
+            }
+            if let Err(e) = std::fs::create_dir_all(&temp_dir) {
+                return Err(format!("Could not create temp directory: {}", e));
+            }
+
+            let mut chunks = task.chunks.lock().unwrap();
+            chunks.clear();
+            // Initial Chunk 0 is open-ended until probe or worker receives response headers
+            chunks.push(ActiveChunk {
+                id: uuid::Uuid::new_v4().to_string(),
+                start: 0,
+                end: Arc::new(AtomicU64::new(0)),
+                downloaded: Arc::new(AtomicU64::new(0)),
+                active: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            });
+        } else {
+            if !temp_dir.exists() {
+                if let Err(e) = std::fs::create_dir_all(&temp_dir) {
+                    return Err(format!("Could not create temp directory: {}", e));
+                }
+            }
+        }
 
         // XDM Dynamic Chunk Spawner Logic
         let (worker_completed_tx, mut worker_completed_rx) = tokio::sync::mpsc::unbounded_channel::<String>();
@@ -1795,16 +2657,59 @@ impl DownloadManager {
         }
     }
 
-    pub async fn delete_task(&self, id: &str) -> Result<(), String> {
+    pub async fn delete_task(&self, id: &str, delete_file: bool) -> Result<(), String> {
+        let app_handle_opt = self.app_handle.lock().await.clone();
         let mut tasks = self.tasks.write().await;
         if let Some(task) = tasks.remove(id) {
             if let Some(ref tx) = task.abort_tx { let _ = tx.send(()); }
+
+            let temp_dir = if let Some(ref handle) = app_handle_opt {
+                let mut p = handle.path().app_data_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
+                p.push("temp"); p.push(&task.id); p
+            } else { std::path::PathBuf::from(format!("./temp/{}", task.id)) };
+
+            let path = task.get_save_path();
+            tokio::spawn(async move {
+                if delete_file { let _ = tokio::fs::remove_file(path).await; }
+                let _ = tokio::fs::remove_dir_all(temp_dir).await;
+            });
+
             drop(tasks);
             let _ = self.save_history().await;
             Ok(())
         } else {
             Err("Task not found".to_string())
         }
+    }
+
+    pub async fn empty_trash(&self, delete_file: bool) -> Result<(), String> {
+        let app_handle_opt = self.app_handle.lock().await.clone();
+        let mut tasks = self.tasks.write().await;
+        let trash_ids: Vec<String> = tasks
+            .iter()
+            .filter(|(_, t)| *t.status.lock().unwrap() == DownloadStatus::Trash)
+            .map(|(id, _)| id.clone())
+            .collect();
+
+        for id in trash_ids {
+            if let Some(task) = tasks.remove(&id) {
+                if let Some(ref tx) = task.abort_tx { let _ = tx.send(()); }
+
+                let temp_dir = if let Some(ref handle) = app_handle_opt {
+                    let mut p = handle.path().app_data_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
+                    p.push("temp"); p.push(&task.id); p
+                } else { std::path::PathBuf::from(format!("./temp/{}", task.id)) };
+
+                let path = task.get_save_path();
+                tokio::spawn(async move {
+                    if delete_file { let _ = tokio::fs::remove_file(path).await; }
+                    let _ = tokio::fs::remove_dir_all(temp_dir).await;
+                });
+            }
+        }
+        drop(tasks);
+        let _ = self.save_history().await;
+        Ok(())
     }
 
     pub async fn trash_task(&self, id: &str, delete_file: bool) -> Result<(), String> {
@@ -2272,6 +3177,7 @@ mod tests {
             String::new(),
             None,
             None,
+            None,
             false,
             false,
         ).await.expect("start_download failed");
@@ -2370,6 +3276,7 @@ mod tests {
             String::new(),
             String::new(),
             String::new(),
+            None,
             None,
             None,
             false,
@@ -2659,6 +3566,7 @@ mod tests {
             String::new(),
             Some(audio_url),
             None,
+            None,
             false,
             false,
         ).await.expect("Dual stream start_download failed");
@@ -2777,6 +3685,7 @@ mod tests {
             String::new(),
             None,
             Some("Compressed".to_string()),
+            None,
             true, // queue_only to keep it queued/paused
             true,
         ).await.expect("First download start failed");
@@ -2791,6 +3700,7 @@ mod tests {
             String::new(),
             None,
             Some("Compressed".to_string()),
+            None,
             false,
             true,
         ).await.expect("Second download start failed");
@@ -2810,6 +3720,7 @@ mod tests {
             String::new(),
             String::new(),
             String::new(),
+            None,
             None,
             None,
             true, // queue_only
@@ -2908,6 +3819,7 @@ mod tests {
             String::new(),
             String::new(),
             String::new(),
+            None,
             None,
             None,
             false,

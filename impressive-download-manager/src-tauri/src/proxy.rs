@@ -10,6 +10,7 @@ use hyper_util::rt::{TokioIo, TokioExecutor};
 use hyper_util::server::conn::auto;
 use http_body_util::{Full, combinators::BoxBody, BodyExt, Empty};
 use bytes::Bytes;
+use tauri::Manager;
 
 pub struct ProxyServer {
     pub running: Arc<AtomicBool>,
@@ -219,7 +220,11 @@ async fn handle_http_passthrough(
                 cl
             );
 
-            let _ = tauri::WebviewWindowBuilder::new(
+            if let Some(existing_win) = handle.get_webview_window("popup-add") {
+                let _ = existing_win.close();
+            }
+
+            if let Ok(new_win) = tauri::WebviewWindowBuilder::new(
                 handle,
                 "popup-add",
                 tauri::WebviewUrl::App(add_url.into()),
@@ -227,7 +232,12 @@ async fn handle_http_passthrough(
             .title("New Download Captured")
             .inner_size(520.0, 370.0)
             .center()
-            .build();
+            .always_on_top(true)
+            .build() {
+                let _ = new_win.show();
+                let _ = new_win.unminimize();
+                let _ = new_win.set_focus();
+            }
         }
 
         // Return clean fake response to browser so it cancels native download

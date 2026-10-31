@@ -339,5 +339,19 @@ test('Phase 8 Reliability: background.js Interception Execution & No TDZ Referen
   );
 });
 
+test('Phase 9 Functionality: App Theme Synchronization for Video Download Popup', () => {
+  const bgJs = fs.readFileSync(path.join(__dirname, 'background.js'), 'utf8');
+  const contentJs = fs.readFileSync(path.join(__dirname, 'content.js'), 'utf8');
+
+  assert(bgJs.includes('broadcastTheme(currentAppTheme)'), 'background.js must broadcast theme changes to tabs');
+  assert(bgJs.includes('appTheme'), 'background.js must track and persist appTheme');
+
+  assert(contentJs.includes("action === 'themeChanged'"), 'content.js must listen for themeChanged messages');
+  assert(contentJs.includes("host.setAttribute('data-theme'"), 'content.js must set data-theme attribute on host element');
+  assert(contentJs.includes('--idm-bg-bar'), 'content.js must define IDM popup bar theme variables');
+  assert(contentJs.includes('detectPreferredTheme'), 'content.js must define detectPreferredTheme to prevent ReferenceError in position()');
+  assert(contentJs.includes('resolveTheme'), 'content.js must define resolveTheme');
+});
+
 
 
