@@ -454,6 +454,9 @@ pub struct DownloadManager {
     pub intercept_downloads: std::sync::atomic::AtomicBool,
     pub minimize_to_tray: std::sync::atomic::AtomicBool,
     pub scheduler_config: Arc<tokio::sync::RwLock<SchedulerConfig>>,
+    pub power_manager: Arc<crate::power::PowerManager>,
+    pub clipboard_sniffer: Arc<crate::clipboard::ClipboardSniffer>,
+    pub site_logins: Arc<crate::site_logins::SiteLoginsManager>,
     pub bridge_token: Arc<String>,
     pub last_youtube_watch_url: Arc<tokio::sync::RwLock<Option<String>>>,
 }
@@ -473,6 +476,7 @@ impl DownloadManager {
             .unwrap_or_default();
 
         let token_hex: String = (0..32).map(|_| format!("{:02x}", rand::random::<u8>())).collect();
+        let site_logins = crate::site_logins::get_global_site_logins();
 
         Self {
             tasks: RwLock::new(HashMap::new()),
@@ -484,6 +488,9 @@ impl DownloadManager {
             intercept_downloads: std::sync::atomic::AtomicBool::new(true),
             minimize_to_tray: std::sync::atomic::AtomicBool::new(true),
             scheduler_config: Arc::new(tokio::sync::RwLock::new(SchedulerConfig::default())),
+            power_manager: Arc::new(crate::power::PowerManager::new()),
+            clipboard_sniffer: Arc::new(crate::clipboard::ClipboardSniffer::new()),
+            site_logins,
             bridge_token: Arc::new(token_hex),
             last_youtube_watch_url: Arc::new(tokio::sync::RwLock::new(None)),
         }
@@ -491,6 +498,12 @@ impl DownloadManager {
 
     pub async fn set_app_handle(&self, handle: tauri::AppHandle) {
         *self.app_handle.lock().await = Some(handle.clone());
+
+        use tauri::Manager;
+        if let Ok(app_dir) = handle.path().app_data_dir() {
+            let logins_path = app_dir.join("site_logins.json");
+            self.site_logins.set_storage_path(logins_path);
+        }
 
         // Write bridge.json for authenticated loopback IPC
         let handle_clone = handle.clone();
@@ -567,7 +580,32 @@ impl DownloadManager {
                 let _ = tokio::fs::write(history_path, serialized).await;
             }
         }
+        self.check_auto_shutdown().await;
         Ok(())
+    }
+
+    pub async fn check_auto_shutdown(&self) {
+        let (has_active, has_completed) = {
+            let tasks_guard = self.tasks.read().await;
+            let mut active = false;
+            let mut completed = false;
+            for t in tasks_guard.values() {
+                let st = t.status.lock().unwrap().clone();
+                match st {
+                    DownloadStatus::Downloading | DownloadStatus::Queued | DownloadStatus::Assembling => {
+                        active = true;
+                    }
+                    DownloadStatus::Completed => {
+                        completed = true;
+                    }
+                    _ => {}
+                }
+            }
+            (active, completed)
+        };
+
+        let app_handle_guard = self.app_handle.lock().await;
+        self.power_manager.on_tasks_evaluated(has_active, has_completed, app_handle_guard.as_ref()).await;
     }
 
     pub async fn load_history(&self) -> Result<(), String> {
@@ -1034,6 +1072,7 @@ impl DownloadManager {
 
             req = req.header("User-Agent", &ua);
 
+            let is_bilibili = url.contains("bilibili.com") || url.contains("bilivideo.com") || url.contains("b23.tv");
             if is_youtube {
                 req = req.header("Referer", "https://www.youtube.com/");
                 req = req.header("Origin", "https://www.youtube.com");
@@ -1041,6 +1080,13 @@ impl DownloadManager {
                 req = req.header("Sec-Fetch-Site", "cross-site");
                 req = req.header("Sec-Fetch-Dest", "empty");
                 req = req.header("Accept-Language", "en-US,en;q=0.9");
+            } else if is_bilibili {
+                req = req.header("Referer", "https://www.bilibili.com/");
+                req = req.header("Origin", "https://www.bilibili.com");
+                req = req.header("Sec-Fetch-Mode", "cors");
+                req = req.header("Sec-Fetch-Site", "cross-site");
+                req = req.header("Sec-Fetch-Dest", "empty");
+                req = req.header("Accept-Language", "en-US,en;q=0.9,zh-CN;q=0.8,zh;q=0.7");
             } else if !ref_hdr.is_empty() {
                 req = req.header("Referer", &ref_hdr);
                 if let Ok(parsed) = reqwest::Url::parse(&ref_hdr) {
@@ -1052,6 +1098,10 @@ impl DownloadManager {
 
             req = req.header("Accept", "*/*");
             req = req.header("Accept-Encoding", "identity");
+
+            if let Some(cred) = crate::site_logins::get_global_site_logins().find_credentials_for_url(&url) {
+                req = req.header("Authorization", crate::site_logins::generate_basic_auth_header(&cred));
+            }
 
             if let Some(r) = range_header {
                 req = req.header("Range", r);
@@ -1875,6 +1925,86 @@ impl DownloadManager {
                 }
                 Err(e) => {
                     eprintln!("[HLS Engine] Could not resolve HLS manifest: {}. Falling back to standard engine...", e);
+                }
+            }
+        }
+
+        // Phase 4.5: MPEG-DASH (.mpd) Stream Engine Interception
+        if crate::dash::is_dash_url(&task.original_url) {
+            println!("[DASH Engine] Detected MPEG-DASH manifest stream: {}", task.original_url);
+            let client = self.client.clone();
+            let source_url = task.original_url.clone();
+            let cookie = task.cookie.clone();
+            let user_agent = task.user_agent.clone();
+
+            let mut req = client.get(&source_url).timeout(Duration::from_secs(30));
+            if !cookie.is_empty() {
+                req = req.header(reqwest::header::COOKIE, &cookie);
+            }
+            if !user_agent.is_empty() {
+                req = req.header(reqwest::header::USER_AGENT, &user_agent);
+            }
+
+            if let Ok(resp) = req.send().await {
+                if resp.status().is_success() {
+                    if let Ok(xml_text) = resp.text().await {
+                        if let Ok(manifest) = crate::dash::parse_dash_manifest(&xml_text, &source_url) {
+                            if let Ok(plan) = crate::dash::resolve_dash_plan(&manifest, &source_url) {
+                                let cur_filename = task.get_filename();
+                                let clean_base = cur_filename.replace(".mpd", "");
+                                let new_fn = format!("{}.mp4", clean_base);
+                                task.update_filename_and_path(&new_fn);
+
+                                let save_path_val = task.get_save_path();
+                                let temp_dash_dir = temp_dir.clone();
+                                let downloaded_tracker = task.downloaded.clone();
+                                let total_size_tracker = Arc::new(AtomicU64::new(task.total_size.load(Ordering::Relaxed)));
+                                let abort_rx = task.abort_tx.as_ref().map(|tx| tx.subscribe());
+
+                                match crate::dash::run_dash_stream_download(
+                                    client.clone(),
+                                    plan,
+                                    temp_dash_dir,
+                                    save_path_val.clone(),
+                                    downloaded_tracker,
+                                    total_size_tracker.clone(),
+                                    abort_rx,
+                                ).await {
+                                    Ok(_final_path) => {
+                                        task.total_size.store(total_size_tracker.load(Ordering::Relaxed), Ordering::Relaxed);
+                                        *task.status.lock().unwrap() = DownloadStatus::Completed;
+                                        let cur_filename = task.get_filename();
+                                        let cur_save_path = task.get_save_path();
+                                        let progress = DownloadProgress {
+                                            id: task.id.clone(),
+                                            url: task.original_url.clone(),
+                                            filename: cur_filename,
+                                            save_path: cur_save_path.clone(),
+                                            total_size: task.total_size.load(Ordering::Relaxed),
+                                            downloaded: task.network_downloaded.load(Ordering::Relaxed),
+                                            speed: 0.0,
+                                            eta: "0s".to_string(),
+                                            status: DownloadStatus::Completed,
+                                            file_exists: std::path::Path::new(&cur_save_path).exists(),
+                                            speed_limited: false,
+                                            category: task.get_category(),
+                                        };
+                                        if let Some(ref handle) = self.app_handle.lock().await.clone() {
+                                            use tauri::Emitter;
+                                            let _ = handle.emit("download-progress", progress);
+                                        }
+                                        let _ = self.save_history().await;
+                                        return Ok(());
+                                    }
+                                    Err(e) => {
+                                        let err_msg = format!("DASH stream download failed: {}", e);
+                                        *task.status.lock().unwrap() = DownloadStatus::Failed(err_msg.clone());
+                                        return Err(e);
+                                    }
+                                }
+                            }
+                        }
+                    }
                 }
             }
         }

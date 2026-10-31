@@ -38,7 +38,13 @@ import {
   RotateCcw,
   ShieldCheck,
   Copy,
-  Check
+  Check,
+  Power,
+  ClipboardCheck,
+  Tv,
+  Key,
+  Eye,
+  EyeOff
 } from "lucide-react";
 import { listen } from "@tauri-apps/api/event";
 import { invoke } from "@tauri-apps/api/core";
@@ -87,6 +93,46 @@ interface ChecksumResult {
   expected: string | null;
   matched: boolean;
   file_size_bytes: number;
+}
+
+interface ClipboardDetectionResult {
+  isValid: boolean;
+  url: string;
+  protocol: string;
+  extension: string | null;
+  category: string;
+  suggestedFilename: string;
+  isMediaOrArchive: boolean;
+  reason: string;
+}
+
+interface BilibiliPageItem {
+  page: number;
+  cid: number;
+  part: string;
+  durationSeconds: number;
+  url: string;
+}
+
+interface BilibiliVideoInfo {
+  bvid: string;
+  aid: number;
+  title: string;
+  author: string;
+  thumbnail: string;
+  description: string;
+  durationSeconds: number;
+  pageCount: number;
+  pages: BilibiliPageItem[];
+  currentPage: number;
+}
+
+interface SiteCredential {
+  id: string;
+  sitePattern: string;
+  username: string;
+  password: string;
+  createdAt: number;
 }
 
 interface DiskSpaceInfo {
@@ -282,6 +328,60 @@ function App() {
   const [, setCategoryFoldersVersion] = useState(0);
   const probeTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
+  // Bilibili Multi-Part / Video State
+  const [bilibiliInfo, setBilibiliInfo] = useState<BilibiliVideoInfo | null>(null);
+  const [selectedBilibiliPages, setSelectedBilibiliPages] = useState<number[]>([]);
+  const [isResolvingBilibili, setIsResolvingBilibili] = useState(false);
+
+  // Site Logins & Auth State
+  const [siteLogins, setSiteLogins] = useState<SiteCredential[]>([]);
+  const [showAddSiteLoginModal, setShowAddSiteLoginModal] = useState(false);
+  const [siteLoginPattern, setSiteLoginPattern] = useState("");
+  const [siteLoginUsername, setSiteLoginUsername] = useState("");
+  const [siteLoginPassword, setSiteLoginPassword] = useState("");
+  const [visiblePasswords, setVisiblePasswords] = useState<Record<string, boolean>>({});
+  const [matchedCredential, setMatchedCredential] = useState<SiteCredential | null>(null);
+
+  const loadSiteLogins = async () => {
+    try {
+      const list = await invoke<SiteCredential[]>("get_site_logins");
+      setSiteLogins(list || []);
+    } catch (err) {
+      console.warn("Failed to load site logins:", err);
+    }
+  };
+
+  const handleSaveSiteLogin = async () => {
+    if (!siteLoginPattern.trim() || !siteLoginUsername.trim()) return;
+    try {
+      await invoke("add_or_update_site_login", {
+        credential: {
+          id: "",
+          sitePattern: siteLoginPattern.trim(),
+          username: siteLoginUsername.trim(),
+          password: siteLoginPassword,
+          createdAt: 0,
+        },
+      });
+      setShowAddSiteLoginModal(false);
+      setSiteLoginPattern("");
+      setSiteLoginUsername("");
+      setSiteLoginPassword("");
+      await loadSiteLogins();
+    } catch (err) {
+      console.error("Save site login failed:", err);
+    }
+  };
+
+  const handleDeleteSiteLogin = async (id: string) => {
+    try {
+      await invoke("delete_site_login", { id });
+      await loadSiteLogins();
+    } catch (err) {
+      console.error("Delete site login failed:", err);
+    }
+  };
+
   // Drawer State
   const [selectedTask, setSelectedTask] = useState<DownloadProgress | null>(null);
 
@@ -425,6 +525,7 @@ function App() {
   useEffect(() => {
     if (activeCategory === "settings") {
       loadIntegrationStatus();
+      loadSiteLogins();
     }
   }, [activeCategory]);
 
@@ -646,6 +747,110 @@ function App() {
     }).catch(console.error);
   };
 
+  // Auto-Shutdown / Completion Action State
+  const [autoShutdownAction, setAutoShutdownAction] = useState<string>(() => {
+    return localStorage.getItem("auto_shutdown_action") || "none";
+  });
+  const [autoShutdownEnabled, setAutoShutdownEnabled] = useState<boolean>(() => {
+    return localStorage.getItem("auto_shutdown_enabled") === "true";
+  });
+  const [shutdownCountdown, setShutdownCountdown] = useState<{ action: string; secondsLeft: number } | null>(null);
+
+  const syncAutoShutdownConfig = (action: string, enabled: boolean) => {
+    invoke("set_auto_shutdown_config", {
+      config: {
+        action,
+        enabled,
+        countdown_seconds: 30,
+      },
+    }).catch(console.error);
+  };
+
+  const cancelShutdown = () => {
+    invoke("cancel_auto_shutdown").catch(console.error);
+    setShutdownCountdown(null);
+  };
+
+  // Clipboard URL Sniffer & Auto-Monitor State
+  const [clipboardSnifferEnabled, setClipboardSnifferEnabled] = useState<boolean>(() => {
+    const saved = localStorage.getItem("clipboard_sniffer_enabled");
+    return saved !== null ? saved === "true" : true;
+  });
+  const [clipboardStrictMode, setClipboardStrictMode] = useState<boolean>(() => {
+    const saved = localStorage.getItem("clipboard_strict_mode");
+    return saved !== null ? saved === "true" : true;
+  });
+  const [clipboardAutoOpenModal, setClipboardAutoOpenModal] = useState<boolean>(() => {
+    const saved = localStorage.getItem("clipboard_auto_open_modal");
+    return saved !== null ? saved === "true" : true;
+  });
+  const [sniffedClipboardLink, setSniffedClipboardLink] = useState<ClipboardDetectionResult | null>(null);
+
+  const syncClipboardSnifferConfig = (enabled: boolean, strictMode: boolean, autoOpenModal: boolean) => {
+    invoke("set_clipboard_sniffer_config", {
+      config: {
+        enabled,
+        strictMode,
+        autoOpenModal,
+        ignoredDomains: ["localhost", "127.0.0.1"],
+      },
+    }).catch(console.error);
+  };
+
+  const handleOpenAddModalWithPrefill = (url: string, suggestedFilename?: string, category?: string) => {
+    setShowAddModal(true);
+    handleUrlChange(url);
+    if (suggestedFilename && suggestedFilename !== "downloaded_file") {
+      setCustomFilename(suggestedFilename);
+    }
+    if (category) {
+      setAddModalCategory(category);
+      const folder = getCategoryFolder(category, defaultSaveDir);
+      setSavePath(folder);
+      checkDiskSpace(folder, setAddModalDiskSpace, setAddModalDiskSafe);
+    }
+  };
+
+  // Background Clipboard Monitoring Hook
+  useEffect(() => {
+    if (!clipboardSnifferEnabled) return;
+
+    let isPolling = false;
+
+    const checkClipboardForLinks = async () => {
+      if (isPolling || !document.hasFocus()) return;
+      isPolling = true;
+      try {
+        const text = await navigator.clipboard.readText();
+        if (text && text.trim().length > 0 && text.trim().length < 8192) {
+          const res = await invoke<ClipboardDetectionResult | null>("sniff_clipboard_text", {
+            text: text.trim(),
+          });
+          if (res && res.isValid) {
+            if (clipboardAutoOpenModal) {
+              handleOpenAddModalWithPrefill(res.url, res.suggestedFilename, res.category);
+            } else {
+              setSniffedClipboardLink(res);
+            }
+          }
+        }
+      } catch {
+        // Silently catch clipboard reading permission errors when window is inactive
+      } finally {
+        isPolling = false;
+      }
+    };
+
+    window.addEventListener("focus", checkClipboardForLinks);
+    const interval = setInterval(checkClipboardForLinks, 2000);
+
+    return () => {
+      window.removeEventListener("focus", checkClipboardForLinks);
+      clearInterval(interval);
+    };
+  }, [clipboardSnifferEnabled, clipboardStrictMode, clipboardAutoOpenModal, defaultSaveDir]);
+
+
   const [activeTooltip, setActiveTooltip] = useState<{ title: string; x: number; y: number; pos?: "right" | "top" | "bottom" } | null>(null);
 
   const showTooltip = (title: string, e: React.MouseEvent, pos: "right" | "top" | "bottom" = "right") => {
@@ -773,9 +978,20 @@ function App() {
     setShowAddModal(true);
     try {
       const text = await navigator.clipboard.readText();
-      if (text.startsWith("http://") || text.startsWith("https://")) {
-        setInputUrl(text);
-        setCustomFilename(extractFilename(text));
+      if (text && text.trim()) {
+        const sniffed = await invoke<ClipboardDetectionResult | null>("sniff_clipboard_text", { text: text.trim() });
+        if (sniffed && sniffed.isValid) {
+          handleUrlChange(sniffed.url);
+          if (sniffed.suggestedFilename && sniffed.suggestedFilename !== "downloaded_file") {
+            setCustomFilename(sniffed.suggestedFilename);
+          }
+          if (sniffed.category) {
+            setAddModalCategory(sniffed.category);
+          }
+        } else if (text.startsWith("http://") || text.startsWith("https://")) {
+          setInputUrl(text);
+          setCustomFilename(extractFilename(text));
+        }
       }
     } catch (e) {
       console.warn("Clipboard reading failed:", e);
@@ -835,6 +1051,38 @@ function App() {
           setIsProbingUrl(false);
         }
       }, 500);
+    }
+
+    if (val.includes("bilibili.com") || val.includes("b23.tv")) {
+      setIsResolvingBilibili(true);
+      invoke<BilibiliVideoInfo>("resolve_bilibili_video", { url: val, cookie: null })
+        .then((info) => {
+          if (info) {
+            setBilibiliInfo(info);
+            setSelectedBilibiliPages(info.pages.map((p) => p.page));
+            if (info.title) {
+              setCustomFilename(`${info.title.replace(/[<>:"/\\|?*\x00-\x1f]/g, "_")}.mp4`);
+            }
+            setAddModalCategory("Video");
+          }
+        })
+        .catch((err) => {
+          console.warn("Bilibili resolve error:", err);
+        })
+        .finally(() => {
+          setIsResolvingBilibili(false);
+        });
+    } else {
+      setBilibiliInfo(null);
+      setSelectedBilibiliPages([]);
+    }
+
+    if (val.startsWith("http://") || val.startsWith("https://") || val.startsWith("ftp://")) {
+      invoke<SiteCredential | null>("resolve_site_credential", { url: val })
+        .then((cred) => setMatchedCredential(cred))
+        .catch(() => setMatchedCredential(null));
+    } else {
+      setMatchedCredential(null);
     }
   };
 
@@ -919,6 +1167,31 @@ function App() {
       })
       .catch(() => {
         syncSchedulerConfig(schedulerEnabled, startTime, endTime, activeDays);
+      });
+
+    invoke<any>("get_auto_shutdown_config")
+      .then((cfg) => {
+        if (cfg) {
+          setAutoShutdownAction(cfg.action || "none");
+          setAutoShutdownEnabled(cfg.enabled || false);
+          localStorage.setItem("auto_shutdown_action", cfg.action || "none");
+          localStorage.setItem("auto_shutdown_enabled", String(cfg.enabled || false));
+        }
+      })
+      .catch(() => {
+        syncAutoShutdownConfig(autoShutdownAction, autoShutdownEnabled);
+      });
+
+    invoke<any>("get_clipboard_sniffer_config")
+      .then((cfg) => {
+        if (cfg) {
+          setClipboardSnifferEnabled(cfg.enabled !== false);
+          setClipboardStrictMode(cfg.strictMode !== false);
+          setClipboardAutoOpenModal(cfg.autoOpenModal !== false);
+        }
+      })
+      .catch(() => {
+        syncClipboardSnifferConfig(clipboardSnifferEnabled, clipboardStrictMode, clipboardAutoOpenModal);
       });
 
     if (mode) {
@@ -1085,6 +1358,7 @@ function App() {
   useEffect(() => {
     let unlistenProgress: (() => void) | undefined;
     let unlistenIntercept: (() => void) | undefined;
+    let unlistenShutdown: (() => void) | undefined;
 
     async function setupListeners() {
       unlistenProgress = await listen<DownloadProgress>("download-progress", (event) => {
@@ -1138,6 +1412,17 @@ function App() {
           setPopupReferrer(event.payload.referrer || "");
           setShowAddModal(true);
         });
+
+        unlistenShutdown = await listen<{ action: string; seconds_left: number; is_cancelled: boolean }>("auto-shutdown-countdown", (event) => {
+          if (event.payload.is_cancelled || event.payload.seconds_left === 0) {
+            setShutdownCountdown(null);
+          } else {
+            setShutdownCountdown({
+              action: event.payload.action,
+              secondsLeft: event.payload.seconds_left,
+            });
+          }
+        });
       }
     }
 
@@ -1146,6 +1431,7 @@ function App() {
     return () => {
       if (unlistenProgress) unlistenProgress();
       if (unlistenIntercept) unlistenIntercept();
+      if (unlistenShutdown) unlistenShutdown();
     };
   }, []);
 
@@ -1159,6 +1445,59 @@ function App() {
     }
 
     console.log("[main-add] Invoking start_download with URL:", inputUrl);
+
+    // Multi-Part Bilibili Batch Download
+    if (bilibiliInfo && bilibiliInfo.pageCount > 1 && selectedBilibiliPages.length > 1) {
+      setIsStartingDownload(true);
+      const targetFolder = savePath || defaultSaveDir;
+      if (rememberCategoryFolder) {
+        saveCategoryFolder("Video", targetFolder);
+      }
+      for (const pNum of selectedBilibiliPages) {
+        const pageItem = bilibiliInfo.pages.find((p) => p.page === pNum);
+        if (!pageItem) continue;
+        const partFilename = `${bilibiliInfo.title} - P${pageItem.page} ${pageItem.part}`.replace(/[<>:"/\\|?*\x00-\x1f]/g, "_") + ".mp4";
+        const partSavePath = `${targetFolder.endsWith("/") ? targetFolder : targetFolder + "/"}${partFilename}`;
+        try {
+          const id = await invoke<string>("start_download", {
+            url: pageItem.url,
+            filename: partFilename,
+            savePath: partSavePath,
+            cookie: popupCookie || "",
+            referrer: "https://www.bilibili.com/",
+            userAgent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+            category: "Video",
+            queueOnly,
+            reuseActive: true,
+          });
+          const added_at = Date.now();
+          recordTaskTimestamp(id, added_at);
+          const newTask: DownloadProgress = {
+            id,
+            filename: partFilename,
+            total_size: 0,
+            downloaded: 0,
+            speed: 0,
+            eta: "---",
+            status: queueOnly ? "Paused" : "Queued",
+            url: pageItem.url,
+            save_path: partSavePath,
+            category: "Video",
+            added_at,
+          };
+          setDownloads((prev) => [newTask, ...prev]);
+        } catch (err) {
+          console.warn("Failed to queue bilibili part:", err);
+        }
+      }
+      setIsStartingDownload(false);
+      setShowAddModal(false);
+      setInputUrl("");
+      setCustomFilename("");
+      setBilibiliInfo(null);
+      setSelectedBilibiliPages([]);
+      return;
+    }
 
     setIsStartingDownload(true);
     const finalFilename = customFilename || extractFilename(inputUrl);
@@ -2123,6 +2462,155 @@ function App() {
 
       {/* Main Container */}
       <div className="main-canvas">
+        {shutdownCountdown && (
+          <div style={{
+            background: "linear-gradient(90deg, rgba(239, 68, 68, 0.25), rgba(220, 38, 38, 0.15))",
+            border: "1px solid rgba(239, 68, 68, 0.5)",
+            color: "#fecaca",
+            padding: "14px 20px",
+            margin: "16px 16px 0 16px",
+            borderRadius: "12px",
+            display: "flex",
+            justifyContent: "space-between",
+            alignItems: "center",
+            boxShadow: "0 8px 24px rgba(239, 68, 68, 0.25)",
+            backdropFilter: "blur(12px)",
+            zIndex: 100,
+          }}>
+            <div style={{ display: "flex", alignItems: "center", gap: "14px" }}>
+              <div style={{
+                width: "40px",
+                height: "40px",
+                borderRadius: "50%",
+                background: "rgba(239, 68, 68, 0.3)",
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "center",
+                border: "1px solid rgba(239, 68, 68, 0.5)"
+              }}>
+                <Power size={22} color="#f87171" />
+              </div>
+              <div>
+                <div style={{ fontWeight: 700, fontSize: "0.95rem", color: "#ffffff" }}>
+                  All downloads completed! System will {shutdownCountdown.action} in {shutdownCountdown.secondsLeft}s
+                </div>
+                <div style={{ fontSize: "0.8rem", color: "#fca5a5", marginTop: "2px" }}>
+                  Auto-shutdown on completion is active. Click Cancel to remain awake.
+                </div>
+              </div>
+            </div>
+            <button
+              onClick={cancelShutdown}
+              style={{
+                background: "#ef4444",
+                color: "#ffffff",
+                border: "none",
+                borderRadius: "8px",
+                padding: "8px 18px",
+                fontWeight: 700,
+                fontSize: "0.85rem",
+                cursor: "pointer",
+                boxShadow: "0 2px 8px rgba(239, 68, 68, 0.4)",
+                transition: "all 0.2s ease",
+              }}
+            >
+              Cancel {shutdownCountdown.action.toUpperCase()}
+            </button>
+          </div>
+        )}
+
+        {sniffedClipboardLink && (
+          <div style={{
+            background: "linear-gradient(90deg, rgba(30, 58, 138, 0.45), rgba(15, 23, 42, 0.6))",
+            border: "1px solid rgba(59, 130, 246, 0.55)",
+            color: "#e2e8f0",
+            padding: "14px 20px",
+            margin: "16px 16px 0 16px",
+            borderRadius: "12px",
+            display: "flex",
+            justifyContent: "space-between",
+            alignItems: "center",
+            boxShadow: "0 8px 24px rgba(59, 130, 246, 0.25)",
+            backdropFilter: "blur(12px)",
+            zIndex: 99,
+          }}>
+            <div style={{ display: "flex", alignItems: "center", gap: "14px", minWidth: 0 }}>
+              <div style={{
+                width: "40px",
+                height: "40px",
+                borderRadius: "50%",
+                background: "rgba(59, 130, 246, 0.25)",
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "center",
+                border: "1px solid rgba(59, 130, 246, 0.45)",
+                flexShrink: 0
+              }}>
+                <ClipboardCheck size={22} color="#60a5fa" />
+              </div>
+              <div style={{ minWidth: 0 }}>
+                <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+                  <span style={{ fontWeight: 700, fontSize: "0.95rem", color: "#ffffff" }}>
+                    Clipboard Link Detected
+                  </span>
+                  <span style={{
+                    fontSize: "0.7rem",
+                    padding: "2px 8px",
+                    borderRadius: "100px",
+                    background: "rgba(59, 130, 246, 0.25)",
+                    border: "1px solid rgba(59, 130, 246, 0.45)",
+                    color: "#93c5fd",
+                    fontWeight: 600
+                  }}>
+                    {sniffedClipboardLink.protocol.toUpperCase()}
+                  </span>
+                </div>
+                <div style={{ fontSize: "0.82rem", color: "#93c5fd", marginTop: "2px", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                  <strong>{sniffedClipboardLink.suggestedFilename}</strong> &bull; <span style={{ color: "#94a3b8" }}>{sniffedClipboardLink.url}</span>
+                </div>
+              </div>
+            </div>
+            <div style={{ display: "flex", alignItems: "center", gap: "10px", flexShrink: 0, marginLeft: "14px" }}>
+              <button
+                onClick={() => {
+                  const item = sniffedClipboardLink;
+                  setSniffedClipboardLink(null);
+                  handleOpenAddModalWithPrefill(item.url, item.suggestedFilename, item.category);
+                }}
+                style={{
+                  background: "#2563eb",
+                  color: "#ffffff",
+                  border: "none",
+                  borderRadius: "8px",
+                  padding: "8px 16px",
+                  fontWeight: 600,
+                  fontSize: "0.85rem",
+                  cursor: "pointer",
+                  boxShadow: "0 2px 8px rgba(37, 99, 235, 0.4)",
+                  transition: "all 0.2s ease",
+                }}
+              >
+                Download Now
+              </button>
+              <button
+                onClick={() => setSniffedClipboardLink(null)}
+                style={{
+                  background: "rgba(255, 255, 255, 0.08)",
+                  color: "#94a3b8",
+                  border: "1px solid rgba(255, 255, 255, 0.12)",
+                  borderRadius: "8px",
+                  padding: "8px 12px",
+                  fontSize: "0.85rem",
+                  cursor: "pointer",
+                }}
+              >
+                Dismiss
+              </button>
+            </div>
+          </div>
+        )}
+
+
         {initError && (
           <div style={{
             background: "rgba(239, 68, 68, 0.15)",
@@ -2823,6 +3311,236 @@ function App() {
                 )}
               </div>
 
+              <div className="settings-section-card">
+                <div className="settings-section-header">
+                  <Power size={18} />
+                  <span className="settings-section-title">On Completion Power Actions</span>
+                </div>
+                <div className="settings-control-row">
+                  <div className="settings-info-col">
+                    <span className="settings-title">Action When All Downloads Finish</span>
+                    <span className="settings-desc">Automatically shut down, sleep, or exit IDM when all active downloads finish.</span>
+                  </div>
+                  <label className="switch-container">
+                    <input
+                      type="checkbox"
+                      className="switch-input"
+                      checked={autoShutdownEnabled}
+                      onChange={(e) => {
+                        const val = e.target.checked;
+                        setAutoShutdownEnabled(val);
+                        localStorage.setItem("auto_shutdown_enabled", String(val));
+                        syncAutoShutdownConfig(autoShutdownAction, val);
+                      }}
+                    />
+                    <span className="switch-slider"></span>
+                  </label>
+                </div>
+                {autoShutdownEnabled && (
+                  <div className="settings-grid" style={{ marginTop: "12px" }}>
+                    <div className="form-group settings-grid-full">
+                      <span className="form-label">System Action</span>
+                      <select
+                        className="form-input"
+                        value={autoShutdownAction}
+                        onChange={(e) => {
+                          const val = e.target.value;
+                          setAutoShutdownAction(val);
+                          localStorage.setItem("auto_shutdown_action", val);
+                          syncAutoShutdownConfig(val, autoShutdownEnabled);
+                        }}
+                        style={{ background: "var(--bg-secondary)", color: "var(--text-primary)" }}
+                      >
+                        <option value="shutdown">⚡ Shut Down Computer (Power Off)</option>
+                        <option value="sleep">🌙 Put Computer to Sleep (Suspend)</option>
+                        <option value="hibernate">❄️ Hibernate Computer</option>
+                        <option value="quit">🚪 Exit Impressive Download Manager</option>
+                      </select>
+                    </div>
+                  </div>
+                )}
+              </div>
+
+              {/* Clipboard Download URL Sniffer Card */}
+              <div className="settings-section-card">
+                <div className="settings-section-header">
+                  <ClipboardCheck size={18} />
+                  <span className="settings-section-title">Clipboard URL Auto-Monitor &amp; Sniffer</span>
+                </div>
+                <div className="settings-control-row">
+                  <div className="settings-info-col">
+                    <span className="settings-title">Monitor System Clipboard</span>
+                    <span className="settings-desc">Automatically detect copied download links (media, software, archives, torrents, ed2k) and capture them instantly.</span>
+                  </div>
+                  <label className="switch-container">
+                    <input
+                      type="checkbox"
+                      className="switch-input"
+                      checked={clipboardSnifferEnabled}
+                      onChange={(e) => {
+                        const val = e.target.checked;
+                        setClipboardSnifferEnabled(val);
+                        localStorage.setItem("clipboard_sniffer_enabled", String(val));
+                        syncClipboardSnifferConfig(val, clipboardStrictMode, clipboardAutoOpenModal);
+                      }}
+                    />
+                    <span className="switch-slider"></span>
+                  </label>
+                </div>
+                {clipboardSnifferEnabled && (
+                  <div className="settings-grid" style={{ marginTop: "12px", display: "grid", gridTemplateColumns: "1fr 1fr", gap: "12px" }}>
+                    <div className="form-group">
+                      <span className="form-label">Link Filter Mode</span>
+                      <select
+                        className="form-input"
+                        value={clipboardStrictMode ? "strict" : "all"}
+                        onChange={(e) => {
+                          const isStrict = e.target.value === "strict";
+                          setClipboardStrictMode(isStrict);
+                          localStorage.setItem("clipboard_strict_mode", String(isStrict));
+                          syncClipboardSnifferConfig(clipboardSnifferEnabled, isStrict, clipboardAutoOpenModal);
+                        }}
+                        style={{ background: "var(--bg-secondary)", color: "var(--text-primary)" }}
+                      >
+                        <option value="strict">🛡️ Smart Filter (Media, Archives, Software, Torrents)</option>
+                        <option value="all">🌐 Catch All URLs (Any Valid HTTP/HTTPS Link)</option>
+                      </select>
+                    </div>
+                    <div className="form-group">
+                      <span className="form-label">Capture Action</span>
+                      <select
+                        className="form-input"
+                        value={clipboardAutoOpenModal ? "modal" : "toast"}
+                        onChange={(e) => {
+                          const isModal = e.target.value === "modal";
+                          setClipboardAutoOpenModal(isModal);
+                          localStorage.setItem("clipboard_auto_open_modal", String(isModal));
+                          syncClipboardSnifferConfig(clipboardSnifferEnabled, clipboardStrictMode, isModal);
+                        }}
+                        style={{ background: "var(--bg-secondary)", color: "var(--text-primary)" }}
+                      >
+                        <option value="modal">⚡ Open Pre-Flight Add Modal Automatically</option>
+                        <option value="toast">💬 Show Floating Notification Toast</option>
+                      </select>
+                    </div>
+                  </div>
+                )}
+              </div>
+
+              {/* Site Logins & HTTP Auth Store Card */}
+              <div className="settings-section-card">
+                <div className="settings-section-header" style={{ justifyContent: "space-between" }}>
+                  <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+                    <Key size={18} />
+                    <span className="settings-section-title">Site Logins &amp; HTTP Authentication</span>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => setShowAddSiteLoginModal(true)}
+                    style={{
+                      background: "rgba(59, 130, 246, 0.2)",
+                      border: "1px solid rgba(59, 130, 246, 0.4)",
+                      color: "#60a5fa",
+                      padding: "4px 12px",
+                      borderRadius: "6px",
+                      fontSize: "0.8rem",
+                      cursor: "pointer",
+                      display: "flex",
+                      alignItems: "center",
+                      gap: "6px",
+                      fontWeight: 600,
+                    }}
+                  >
+                    <Plus size={14} /> Add Login
+                  </button>
+                </div>
+
+                <div className="settings-control-row">
+                  <div className="settings-info-col">
+                    <span className="settings-title">Automatic Authorization Headers</span>
+                    <span className="settings-desc">Attach stored credentials to private servers, intranets, debrid hosts, and password-protected websites (HTTP Basic &amp; FTP).</span>
+                  </div>
+                </div>
+
+                {siteLogins.length === 0 ? (
+                  <div style={{
+                    padding: "16px",
+                    textAlign: "center",
+                    color: "var(--text-secondary)",
+                    fontSize: "0.82rem",
+                    background: "rgba(255, 255, 255, 0.02)",
+                    borderRadius: "8px",
+                    border: "1px dashed rgba(255, 255, 255, 0.1)",
+                    marginTop: "8px",
+                  }}>
+                    No site credentials configured yet. Click "Add Login" to save authorization for specific websites.
+                  </div>
+                ) : (
+                  <div style={{ display: "flex", flexDirection: "column", gap: "8px", marginTop: "10px" }}>
+                    {siteLogins.map((cred) => {
+                      const isPwdVisible = visiblePasswords[cred.id] || false;
+                      return (
+                        <div
+                          key={cred.id}
+                          style={{
+                            display: "flex",
+                            alignItems: "center",
+                            justifyContent: "space-between",
+                            padding: "10px 14px",
+                            background: "rgba(255, 255, 255, 0.03)",
+                            border: "1px solid rgba(255, 255, 255, 0.08)",
+                            borderRadius: "8px",
+                            fontSize: "0.82rem",
+                          }}
+                        >
+                          <div style={{ display: "flex", alignItems: "center", gap: "12px", minWidth: 0 }}>
+                            <div style={{
+                              width: "32px",
+                              height: "32px",
+                              borderRadius: "6px",
+                              background: "rgba(59, 130, 246, 0.15)",
+                              display: "flex",
+                              alignItems: "center",
+                              justifyContent: "center",
+                              border: "1px solid rgba(59, 130, 246, 0.3)",
+                              flexShrink: 0,
+                            }}>
+                              <Key size={16} color="#60a5fa" />
+                            </div>
+                            <div style={{ minWidth: 0 }}>
+                              <div style={{ fontWeight: 600, color: "#ffffff", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                                {cred.sitePattern}
+                              </div>
+                              <div style={{ fontSize: "0.75rem", color: "var(--text-secondary)", marginTop: "2px" }}>
+                                User: <strong>{cred.username}</strong> &bull; Password: {isPwdVisible ? cred.password : "••••••••"}
+                              </div>
+                            </div>
+                          </div>
+                          <div style={{ display: "flex", alignItems: "center", gap: "8px", flexShrink: 0 }}>
+                            <button
+                              type="button"
+                              onClick={() => setVisiblePasswords({ ...visiblePasswords, [cred.id]: !isPwdVisible })}
+                              style={{ background: "none", border: "none", color: "#94a3b8", cursor: "pointer", padding: "4px" }}
+                              title={isPwdVisible ? "Hide Password" : "Show Password"}
+                            >
+                              {isPwdVisible ? <EyeOff size={15} /> : <Eye size={15} />}
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => handleDeleteSiteLogin(cred.id)}
+                              style={{ background: "none", border: "none", color: "#f87171", cursor: "pointer", padding: "4px" }}
+                              title="Delete Credential"
+                            >
+                              <Trash2 size={15} />
+                            </button>
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
+              </div>
+
               <div className="visual-updater-card">
                 <div className="visual-updater-header">
                   <div className="visual-updater-title">
@@ -3184,6 +3902,11 @@ function App() {
                       <RefreshCw size={12} className="spin" /> Probing server headers...
                     </span>
                   )}
+                  {isResolvingBilibili && (
+                    <span style={{ fontSize: "0.75rem", color: "#f472b6", display: "flex", alignItems: "center", gap: "6px" }}>
+                      <RefreshCw size={12} className="spin" /> Parsing Bilibili episodes...
+                    </span>
+                  )}
                 </div>
                 <input
                   type="text"
@@ -3320,6 +4043,155 @@ function App() {
                 </div>
               )}
 
+              {/* Bilibili Multi-Part Episode Batch Selector */}
+              {bilibiliInfo && (
+                <div style={{
+                  background: "linear-gradient(135deg, rgba(236, 72, 153, 0.08), rgba(30, 41, 59, 0.4))",
+                  border: "1px solid rgba(236, 72, 153, 0.35)",
+                  borderRadius: "12px",
+                  padding: "14px",
+                  display: "flex",
+                  flexDirection: "column",
+                  gap: "12px",
+                }}>
+                  <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+                    <div style={{ display: "flex", alignItems: "center", gap: "10px" }}>
+                      <div style={{
+                        width: "36px",
+                        height: "36px",
+                        borderRadius: "8px",
+                        background: "rgba(236, 72, 153, 0.2)",
+                        display: "flex",
+                        alignItems: "center",
+                        justifyContent: "center",
+                        border: "1px solid rgba(236, 72, 153, 0.4)",
+                        flexShrink: 0
+                      }}>
+                        <Tv size={20} color="#f472b6" />
+                      </div>
+                      <div>
+                        <div style={{ fontWeight: 700, fontSize: "0.95rem", color: "#ffffff" }}>
+                          Bilibili Media &amp; Multi-Part Parser
+                        </div>
+                        <div style={{ fontSize: "0.78rem", color: "#f472b6" }}>
+                          {bilibiliInfo.author ? `Uploader: ${bilibiliInfo.author} • ` : ""}{bilibiliInfo.pageCount} {bilibiliInfo.pageCount === 1 ? "Episode / Part" : "Episodes / Parts"}
+                        </div>
+                      </div>
+                    </div>
+                    {bilibiliInfo.pageCount > 1 && (
+                      <div style={{ display: "flex", gap: "6px" }}>
+                        <button
+                          type="button"
+                          onClick={() => setSelectedBilibiliPages(bilibiliInfo.pages.map((p) => p.page))}
+                          style={{
+                            background: "rgba(236, 72, 153, 0.15)",
+                            border: "1px solid rgba(236, 72, 153, 0.3)",
+                            color: "#f472b6",
+                            padding: "4px 8px",
+                            borderRadius: "6px",
+                            fontSize: "0.72rem",
+                            cursor: "pointer",
+                          }}
+                        >
+                          Select All
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => setSelectedBilibiliPages([])}
+                          style={{
+                            background: "rgba(255, 255, 255, 0.05)",
+                            border: "1px solid rgba(255, 255, 255, 0.1)",
+                            color: "#94a3b8",
+                            padding: "4px 8px",
+                            borderRadius: "6px",
+                            fontSize: "0.72rem",
+                            cursor: "pointer",
+                          }}
+                        >
+                          Clear
+                        </button>
+                      </div>
+                    )}
+                  </div>
+
+                  {bilibiliInfo.pageCount > 1 && (
+                    <div style={{
+                      maxHeight: "160px",
+                      overflowY: "auto",
+                      display: "flex",
+                      flexDirection: "column",
+                      gap: "6px",
+                      paddingRight: "4px",
+                    }}>
+                      {bilibiliInfo.pages.map((item) => {
+                        const isChecked = selectedBilibiliPages.includes(item.page);
+                        const durMinutes = Math.floor(item.durationSeconds / 60);
+                        const durSeconds = item.durationSeconds % 60;
+                        const formattedDur = `${durMinutes}:${durSeconds.toString().padStart(2, "0")}`;
+                        return (
+                          <label
+                            key={item.page}
+                            style={{
+                              display: "flex",
+                              alignItems: "center",
+                              justifyContent: "space-between",
+                              padding: "6px 10px",
+                              borderRadius: "6px",
+                              background: isChecked ? "rgba(236, 72, 153, 0.12)" : "rgba(255, 255, 255, 0.03)",
+                              border: isChecked ? "1px solid rgba(236, 72, 153, 0.25)" : "1px solid rgba(255, 255, 255, 0.05)",
+                              cursor: "pointer",
+                              fontSize: "0.8rem",
+                            }}
+                          >
+                            <div style={{ display: "flex", alignItems: "center", gap: "8px", overflow: "hidden" }}>
+                              <input
+                                type="checkbox"
+                                checked={isChecked}
+                                onChange={(e) => {
+                                  if (e.target.checked) {
+                                    setSelectedBilibiliPages([...selectedBilibiliPages, item.page]);
+                                  } else {
+                                    setSelectedBilibiliPages(selectedBilibiliPages.filter((p) => p !== item.page));
+                                  }
+                                }}
+                                style={{ accentColor: "#ec4899" }}
+                              />
+                              <span style={{ color: "#ffffff", fontWeight: isChecked ? 600 : 400, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                                P{item.page}: {item.part}
+                              </span>
+                            </div>
+                            {item.durationSeconds > 0 && (
+                              <span style={{ color: "#94a3b8", fontSize: "0.72rem", flexShrink: 0, marginLeft: "8px" }}>
+                                {formattedDur}
+                              </span>
+                            )}
+                          </label>
+                        );
+                      })}
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {/* Authenticated Site Login Badge */}
+              {matchedCredential && (
+                <div style={{
+                  background: "rgba(16, 185, 129, 0.12)",
+                  border: "1px solid rgba(16, 185, 129, 0.35)",
+                  borderRadius: "10px",
+                  padding: "10px 14px",
+                  display: "flex",
+                  alignItems: "center",
+                  gap: "10px",
+                }}>
+                  <Key size={16} color="#34d399" />
+                  <span style={{ fontSize: "0.82rem", color: "#d1fae5" }}>
+                    Authenticated via Saved Site Login: <strong>{matchedCredential.username}</strong> ({matchedCredential.sitePattern})
+                  </span>
+                </div>
+              )}
+
+
               {/* Pre-flight Info & Disk Space Bar */}
               <div className="preflight-pill-bar">
                 <div className="preflight-pill-badge" style={{ color: "var(--text-secondary)" }}>
@@ -3381,7 +4253,7 @@ function App() {
                 disabled={!inputUrl || isStartingDownload}
               >
                 <Download size={17} />
-                <span>Start Download</span>
+                <span>{bilibiliInfo && bilibiliInfo.pageCount > 1 && selectedBilibiliPages.length > 1 ? `Download Selected (${selectedBilibiliPages.length} Episodes)` : "Start Download"}</span>
               </button>
             </div>
           </div>
@@ -3511,6 +4383,7 @@ function App() {
                           type="button"
                           onClick={() => {
                             navigator.clipboard.writeText(computedHash);
+                            invoke("mark_internal_clipboard_copy", { text: computedHash }).catch(console.error);
                             setCopiedHash(true);
                             setTimeout(() => setCopiedHash(false), 2000);
                           }}
@@ -3890,6 +4763,84 @@ function App() {
             >
               Let's Go
             </button>
+          </div>
+        </div>
+      )}
+
+      {/* Modal: Add Site Login Credential */}
+      {showAddSiteLoginModal && (
+        <div className="modal-backdrop-v2" onClick={() => setShowAddSiteLoginModal(false)}>
+          <div
+            className="modal-content-v2"
+            style={{ maxWidth: 440, borderTop: "2px solid #3b82f6" }}
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="modal-header-v2">
+              <span className="modal-title-v2" style={{ color: "#60a5fa", display: "flex", alignItems: "center", gap: "10px", fontSize: "1.25rem" }}>
+                <Key size={22} />
+                Add Site Login Credential
+              </span>
+              <button className="modal-close-btn-v2" onClick={() => setShowAddSiteLoginModal(false)}>
+                <X size={18} />
+              </button>
+            </div>
+
+            <div className="modal-body-v2" style={{ display: "flex", flexDirection: "column", gap: "14px" }}>
+              <div className="form-group-v2">
+                <span className="form-label-v2">Website / Domain / URL Pattern</span>
+                <input
+                  type="text"
+                  placeholder="e.g. *.corp.internal, vault.debrid.com, 192.168.1.100"
+                  className="spotlight-input"
+                  style={{ padding: "8px 12px", fontSize: "0.85rem" }}
+                  value={siteLoginPattern}
+                  onChange={(e) => setSiteLoginPattern(e.target.value)}
+                  autoFocus
+                />
+              </div>
+
+              <div className="form-group-v2">
+                <span className="form-label-v2">Username / Login ID</span>
+                <input
+                  type="text"
+                  placeholder="e.g. admin or john_doe"
+                  className="spotlight-input"
+                  style={{ padding: "8px 12px", fontSize: "0.85rem" }}
+                  value={siteLoginUsername}
+                  onChange={(e) => setSiteLoginUsername(e.target.value)}
+                />
+              </div>
+
+              <div className="form-group-v2">
+                <span className="form-label-v2">Password / Access Token</span>
+                <input
+                  type="password"
+                  placeholder="Enter password or token..."
+                  className="spotlight-input"
+                  style={{ padding: "8px 12px", fontSize: "0.85rem" }}
+                  value={siteLoginPassword}
+                  onChange={(e) => setSiteLoginPassword(e.target.value)}
+                />
+              </div>
+            </div>
+
+            <div className="modal-actions-v2">
+              <button
+                className="hover-action-btn"
+                style={{ width: "auto", padding: "0 18px", height: "38px" }}
+                onClick={() => setShowAddSiteLoginModal(false)}
+              >
+                Cancel
+              </button>
+              <button
+                className="accent-pill"
+                style={{ height: "38px", padding: "0 22px" }}
+                onClick={handleSaveSiteLogin}
+                disabled={!siteLoginPattern.trim() || !siteLoginUsername.trim()}
+              >
+                Save Credential
+              </button>
+            </div>
           </div>
         </div>
       )}

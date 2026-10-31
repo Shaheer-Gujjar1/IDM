@@ -30,7 +30,7 @@ pub fn detect_category(filename: &str, mime_type: Option<&str>) -> &'static str 
     // 1. Check MIME type first if available
     if let Some(mime) = mime_type {
         let m = mime.to_lowercase();
-        if m.starts_with("video/") {
+        if m.starts_with("video/") || m.contains("dash+xml") || m.contains("mpegurl") {
             return "Video";
         }
         if m.starts_with("audio/") {
@@ -75,7 +75,7 @@ pub fn detect_category(filename: &str, mime_type: Option<&str>) -> &'static str 
     };
 
     match ext {
-        "mp4" | "webm" | "mkv" | "mov" | "avi" | "m4v" | "flv" | "3gp" | "ts" | "m3u8" | "wmv" => "Video",
+        "mp4" | "webm" | "mkv" | "mov" | "avi" | "m4v" | "flv" | "3gp" | "ts" | "m3u8" | "mpd" | "wmv" => "Video",
         "mp3" | "m4a" | "aac" | "flac" | "ogg" | "wav" | "wma" | "opus" | "m4b" => "Audio",
         "zip" | "7z" | "rar" | "tar" | "gz" | "bz2" | "xz" | "iso" | "dmg" | "tgz" | "torrent" => "Compressed",
         "pdf" | "doc" | "docx" | "xls" | "xlsx" | "ppt" | "pptx" | "txt" | "csv" | "epub" | "rtf" | "md" | "odt" | "ods" => "Documents",
@@ -307,6 +307,9 @@ pub async fn probe_download_url(
     let build_request = move |mut req: reqwest::RequestBuilder| {
         if crate::huggingface::is_huggingface_url(&target_ref) {
             req = crate::huggingface::apply_huggingface_auth(req, None);
+        }
+        if let Some(cred) = crate::site_logins::get_global_site_logins().find_credentials_for_url(&target_ref) {
+            req = req.header("Authorization", crate::site_logins::generate_basic_auth_header(&cred));
         }
         profile.apply_headers(req, &target_ref, referrer.unwrap_or(""), cookie.unwrap_or(""), false)
     };

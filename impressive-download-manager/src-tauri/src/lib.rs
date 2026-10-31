@@ -12,6 +12,11 @@ pub mod huggingface;
 pub mod ftp;
 pub mod ed2k;
 pub mod youtube_batch;
+pub mod dash;
+pub mod power;
+pub mod clipboard;
+pub mod bilibili;
+pub mod site_logins;
 
 use std::sync::Arc;
 use tauri::{State, Manager};
@@ -592,6 +597,111 @@ async fn set_scheduler_config(
     manager: tauri::State<'_, Arc<DownloadManager>>,
 ) -> Result<(), String> {
     manager.save_scheduler_config(config).await
+}
+
+#[tauri::command]
+async fn get_auto_shutdown_config(
+    manager: tauri::State<'_, Arc<DownloadManager>>,
+) -> Result<power::AutoShutdownConfig, String> {
+    Ok(manager.power_manager.get_config().await)
+}
+
+#[tauri::command]
+async fn set_auto_shutdown_config(
+    config: power::AutoShutdownConfig,
+    manager: tauri::State<'_, Arc<DownloadManager>>,
+) -> Result<(), String> {
+    manager.power_manager.set_config(config).await;
+    Ok(())
+}
+
+#[tauri::command]
+async fn cancel_auto_shutdown(
+    manager: tauri::State<'_, Arc<DownloadManager>>,
+) -> Result<(), String> {
+    manager.power_manager.cancel_countdown();
+    Ok(())
+}
+
+#[tauri::command]
+async fn sniff_clipboard_text(
+    text: String,
+    manager: tauri::State<'_, Arc<DownloadManager>>,
+) -> Result<Option<clipboard::ClipboardDetectionResult>, String> {
+    Ok(manager.clipboard_sniffer.inspect_and_sniff(&text))
+}
+
+#[tauri::command]
+async fn get_clipboard_sniffer_config(
+    manager: tauri::State<'_, Arc<DownloadManager>>,
+) -> Result<clipboard::ClipboardSnifferConfig, String> {
+    Ok(manager.clipboard_sniffer.get_config())
+}
+
+#[tauri::command]
+async fn set_clipboard_sniffer_config(
+    config: clipboard::ClipboardSnifferConfig,
+    manager: tauri::State<'_, Arc<DownloadManager>>,
+) -> Result<(), String> {
+    manager.clipboard_sniffer.set_config(config);
+    Ok(())
+}
+
+#[tauri::command]
+async fn mark_internal_clipboard_copy(
+    text: String,
+    manager: tauri::State<'_, Arc<DownloadManager>>,
+) -> Result<(), String> {
+    manager.clipboard_sniffer.mark_internal_copy(&text);
+    Ok(())
+}
+
+#[tauri::command]
+async fn reset_clipboard_sniffer_history(
+    manager: tauri::State<'_, Arc<DownloadManager>>,
+) -> Result<(), String> {
+    manager.clipboard_sniffer.reset_last_sniffed();
+    Ok(())
+}
+
+#[tauri::command]
+async fn resolve_bilibili_video(
+    url: String,
+    cookie: Option<String>,
+    manager: tauri::State<'_, Arc<DownloadManager>>,
+) -> Result<bilibili::BilibiliVideoInfo, String> {
+    bilibili::resolve_bilibili_video(&manager.client, &url, cookie.as_deref()).await
+}
+
+#[tauri::command]
+async fn get_site_logins(
+    manager: tauri::State<'_, Arc<DownloadManager>>,
+) -> Result<Vec<site_logins::SiteCredential>, String> {
+    Ok(manager.site_logins.get_all())
+}
+
+#[tauri::command]
+async fn add_or_update_site_login(
+    credential: site_logins::SiteCredential,
+    manager: tauri::State<'_, Arc<DownloadManager>>,
+) -> Result<site_logins::SiteCredential, String> {
+    manager.site_logins.add_or_update(credential)
+}
+
+#[tauri::command]
+async fn delete_site_login(
+    id: String,
+    manager: tauri::State<'_, Arc<DownloadManager>>,
+) -> Result<bool, String> {
+    Ok(manager.site_logins.delete(&id))
+}
+
+#[tauri::command]
+async fn resolve_site_credential(
+    url: String,
+    manager: tauri::State<'_, Arc<DownloadManager>>,
+) -> Result<Option<site_logins::SiteCredential>, String> {
+    Ok(manager.site_logins.find_credentials_for_url(&url))
 }
 
 #[tauri::command]
@@ -1374,7 +1484,20 @@ pub fn run() {
             resolve_youtube_playlist,
             download_youtube_subtitles,
             parse_ed2k_links,
-            verify_ed2k_checksum
+            verify_ed2k_checksum,
+            get_auto_shutdown_config,
+            set_auto_shutdown_config,
+            cancel_auto_shutdown,
+            sniff_clipboard_text,
+            get_clipboard_sniffer_config,
+            set_clipboard_sniffer_config,
+            mark_internal_clipboard_copy,
+            reset_clipboard_sniffer_history,
+            resolve_bilibili_video,
+            get_site_logins,
+            add_or_update_site_login,
+            delete_site_login,
+            resolve_site_credential
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
